@@ -16,6 +16,7 @@ package util
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -555,6 +556,28 @@ func ExtractOrgRepo(gitURL string) (org, repo string) {
 	return parts[len(parts)-2], parts[len(parts)-1]
 }
 
+// authenticatedCloneURL embeds OAuth2 credentials in an HTTPS clone URL.
+//
+// It parses the URL rather than substituting on the scheme prefix: a remote
+// that already carries userinfo (Azure DevOps emits
+// "https://org@dev.azure.com/org/project/_git/repo") would otherwise end up
+// with two "@" separators and fail to resolve. url.UserPassword also escapes
+// tokens containing reserved characters.
+//
+// The original URL is returned unchanged when there is no token, and when it
+// cannot be parsed, leaving git to report the malformed remote itself.
+func authenticatedCloneURL(cloneURL, token string) string {
+	if token == "" {
+		return cloneURL
+	}
+	parsed, err := url.Parse(cloneURL)
+	if err != nil || parsed.Scheme == "" {
+		return cloneURL
+	}
+	parsed.User = url.UserPassword("oauth2", token)
+	return parsed.String()
+}
+
 // CloneSharedWorkspace clones a git repository into the specified workspace path
 // for use as a shared workspace project. It configures git identity and optionally
 // uses a token for authentication.
@@ -564,7 +587,7 @@ func ExtractOrgRepo(gitURL string) (org, repo string) {
 func CloneSharedWorkspace(workspacePath, cloneURL, branch, token string) error {
 	authURL := cloneURL
 	if token != "" {
-		authURL = strings.Replace(cloneURL, "https://", "https://oauth2:"+token+"@", 1)
+		authURL = authenticatedCloneURL(cloneURL, token)
 	}
 
 	args := []string{"clone"}

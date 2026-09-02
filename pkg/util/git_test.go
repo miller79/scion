@@ -894,3 +894,57 @@ func TestGitError_UserGuidance(t *testing.T) {
 		}
 	}
 }
+
+func TestAuthenticatedCloneURL(t *testing.T) {
+	const token = "ghp_exampletoken"
+
+	tests := []struct {
+		name     string
+		cloneURL string
+		token    string
+		want     string
+	}{
+		{
+			name:     "plain https remote gets credentials",
+			cloneURL: "https://github.com/org/repo.git",
+			token:    token,
+			want:     "https://oauth2:" + token + "@github.com/org/repo.git",
+		},
+		{
+			name:     "remote that already carries userinfo is not doubled up",
+			cloneURL: "https://org@dev.azure.com/org/project/_git/repo",
+			token:    token,
+			want:     "https://oauth2:" + token + "@dev.azure.com/org/project/_git/repo",
+		},
+		{
+			name:     "empty token leaves the URL alone",
+			cloneURL: "https://github.com/org/repo.git",
+			token:    "",
+			want:     "https://github.com/org/repo.git",
+		},
+		{
+			name:     "token with reserved characters is escaped",
+			cloneURL: "https://github.com/org/repo.git",
+			token:    "p@ss/word",
+			want:     "https://oauth2:p%40ss%2Fword@github.com/org/repo.git",
+		},
+		{
+			name:     "unparseable remote is returned unchanged",
+			cloneURL: "not a url",
+			token:    token,
+			want:     "not a url",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := authenticatedCloneURL(tt.cloneURL, tt.token)
+			if got != tt.want {
+				t.Errorf("authenticatedCloneURL(%q, token) = %q, want %q", tt.cloneURL, got, tt.want)
+			}
+			if tt.token != "" && strings.Count(got, "@") > 1 {
+				t.Errorf("result contains more than one @ separator: %q", got)
+			}
+		})
+	}
+}
