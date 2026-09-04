@@ -929,6 +929,30 @@ func TestAuthenticatedCloneURL(t *testing.T) {
 			want:     "https://oauth2:p%40ss%2Fword@github.com/org/repo.git",
 		},
 		{
+			name:     "non-default port is preserved",
+			cloneURL: "https://host.example.com:8443/org/repo.git",
+			token:    token,
+			want:     "https://oauth2:" + token + "@host.example.com:8443/org/repo.git",
+		},
+		{
+			name:     "scp-style ssh remote is left alone",
+			cloneURL: "git@github.com:org/repo.git",
+			token:    token,
+			want:     "git@github.com:org/repo.git",
+		},
+		{
+			name:     "ssh scheme is left alone rather than given an oauth token",
+			cloneURL: "ssh://git@github.com/org/repo.git",
+			token:    token,
+			want:     "ssh://git@github.com/org/repo.git",
+		},
+		{
+			name:     "plain http is left alone",
+			cloneURL: "http://internal.example.com/org/repo.git",
+			token:    token,
+			want:     "http://internal.example.com/org/repo.git",
+		},
+		{
 			name:     "unparseable remote is returned unchanged",
 			cloneURL: "not a url",
 			token:    token,

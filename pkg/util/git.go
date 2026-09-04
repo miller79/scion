@@ -564,14 +564,19 @@ func ExtractOrgRepo(gitURL string) (org, repo string) {
 // with two "@" separators and fail to resolve. url.UserPassword also escapes
 // tokens containing reserved characters.
 //
-// The original URL is returned unchanged when there is no token, and when it
-// cannot be parsed, leaving git to report the malformed remote itself.
+// Only https remotes are rewritten. The previous implementation keyed off the
+// literal "https://" prefix, so ssh:// and git:// remotes were left alone;
+// url.Parse alone would happily inject an OAuth token into those, so the
+// scheme is checked explicitly to preserve that behaviour.
+//
+// The original URL is returned unchanged when there is no token, when it
+// cannot be parsed, and when it is not https.
 func authenticatedCloneURL(cloneURL, token string) string {
 	if token == "" {
 		return cloneURL
 	}
 	parsed, err := url.Parse(cloneURL)
-	if err != nil || parsed.Scheme == "" {
+	if err != nil || parsed.Scheme != "https" {
 		return cloneURL
 	}
 	parsed.User = url.UserPassword("oauth2", token)
