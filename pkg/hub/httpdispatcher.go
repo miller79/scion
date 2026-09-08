@@ -1722,6 +1722,12 @@ func (d *HTTPAgentDispatcher) resolveAsNeededForKeys(
 		if len(agent.Ancestry) > 1 && d.authzService != nil {
 			agentID := agent.ID
 			ancestry := agent.Ancestry
+			// The synthetic identity must carry the agent's real scopes.
+			// Agent authority is derived from JWT scopes (buildAgentSyntheticBindings),
+			// and agentScopeRestriction denies everything when the scope list is
+			// empty, so an identity built without them can never be allowed.
+			role, additionalScopes := agentRoleAndScopes(agent)
+			scopes := append(ScopesForRole(role), additionalScopes...)
 			resolveOpts = &secret.ResolveOpts{
 				AgentAncestry: ancestry,
 				AuthzCheck: func(s secret.SecretMeta) bool {
@@ -1730,11 +1736,17 @@ func (d *HTTPAgentDispatcher) resolveAsNeededForKeys(
 							Claims:    jwt.Claims{Subject: agentID},
 							ProjectID: agent.ProjectID,
 							Ancestry:  ancestry,
+							Scopes:    scopes,
 						},
 					}, Resource{
 						Type: "secret",
 						ID:   s.ID,
 					}, ActionRead)
+					if !decision.Allowed && d.debug {
+						d.log.Debug("progeny secret denied by authz",
+							"agent_id", agentID, "secret", s.Name, "secret_id", s.ID,
+							"reason", decision.Reason, "scopes", len(scopes))
+					}
 					return decision.Allowed
 				},
 			}
@@ -2754,6 +2766,17 @@ func (d *HTTPAgentDispatcher) resolveSecrets(ctx context.Context, agent *store.A
 	if len(agent.Ancestry) > 1 && d.authzService != nil {
 		agentID := agent.ID
 		ancestry := agent.Ancestry
+		// The synthetic identity must carry the agent's real scopes.
+		// Agent authority is derived from JWT scopes (buildAgentSyntheticBindings),
+		// and agentScopeRestriction denies everything when the scope list is
+		// empty, so an identity built without them can never be allowed.
+		role, additionalScopes := agentRoleAndScopes(agent)
+		scopes := append(ScopesForRole(role), additionalScopes...)
+		if d.debug {
+			d.log.Debug("resolveSecrets: progeny resolution enabled",
+				"agent_id", agentID, "ancestry_len", len(ancestry),
+				"role", string(role), "scopes", len(scopes))
+		}
 		resolveOpts = &secret.ResolveOpts{
 			AgentAncestry: ancestry,
 			AuthzCheck: func(s secret.SecretMeta) bool {
@@ -2762,11 +2785,17 @@ func (d *HTTPAgentDispatcher) resolveSecrets(ctx context.Context, agent *store.A
 						Claims:    jwt.Claims{Subject: agentID},
 						ProjectID: agent.ProjectID,
 						Ancestry:  ancestry,
+						Scopes:    scopes,
 					},
 				}, Resource{
 					Type: "secret",
 					ID:   s.ID,
 				}, ActionRead)
+				if !decision.Allowed && d.debug {
+					d.log.Debug("progeny secret denied by authz",
+						"agent_id", agentID, "secret", s.Name, "secret_id", s.ID,
+						"reason", decision.Reason, "scopes", len(scopes))
+				}
 				return decision.Allowed
 			},
 		}
