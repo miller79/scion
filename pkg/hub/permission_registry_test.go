@@ -110,7 +110,12 @@ func TestAgentTokenScopesMapToRegistry(t *testing.T) {
 		ScopeAgentTokenRefresh: {"agent.token_refresh"},
 		ScopeAgentPortForward:  {"agent.port_forward"},
 		ScopeIdentityToken:     {"agent.identity_token"},
-		ScopeProjectRead:       {"project.read"},
+		// project:read is documented on the constant as covering "agents,
+		// templates, skills, harness configs, projects", and
+		// checkAgentReadScope() already enforces it for template reads at the
+		// handler layer. The registry never declared it, so the authz kernel
+		// denied template.read to every agent and template resolution failed.
+		ScopeProjectRead:       {"project.read", "template.list", "template.read"},
 	}
 	for scope, wantIDs := range want {
 		gotIDs := registryPermissionIDsForAgentScope(string(scope))
