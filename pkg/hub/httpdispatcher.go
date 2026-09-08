@@ -42,6 +42,12 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// permissionProjectSecretRead is the registry permission ID that governs an
+// agent reading secrets during resolution (pkg/hub/permissions/registry.go).
+// It is declared on ResourceProject, so it cannot be derived from a
+// resource type of "secret".
+const permissionProjectSecretRead = "project.secret_read"
+
 // HTTPRuntimeBrokerClient is an HTTP-based implementation of RuntimeBrokerClient.
 // It communicates with remote runtime brokers via their REST API.
 type HTTPRuntimeBrokerClient struct {
@@ -1731,17 +1737,27 @@ func (d *HTTPAgentDispatcher) resolveAsNeededForKeys(
 			resolveOpts = &secret.ResolveOpts{
 				AgentAncestry: ancestry,
 				AuthzCheck: func(s secret.SecretMeta) bool {
-					decision := d.authzService.CheckAccess(ctx, &agentIdentityWrapper{
+					ident := &agentIdentityWrapper{
 						AgentTokenClaims: &AgentTokenClaims{
 							Claims:    jwt.Claims{Subject: agentID},
 							ProjectID: agent.ProjectID,
 							Ancestry:  ancestry,
 							Scopes:    scopes,
 						},
-					}, Resource{
-						Type: "secret",
-						ID:   s.ID,
-					}, ActionRead)
+					}
+					// Name the permission explicitly. Deriving it from
+					// (resource="secret", action="read") finds no registry entry -
+					// agent secret access is registered as project.secret_read on
+					// ResourceProject - so derivePermissionID falls through to its
+					// "<resource>.<action>" fallback and asks for "secret.read",
+					// which no role grants and which does not exist in the registry.
+					decision := d.authzService.Decide(ctx, AuthzRequest{
+						Principal:  principalContextForIdentity(ident),
+						Credential: credentialContextForIdentity(ident),
+						Resource:   Resource{Type: "secret", ID: s.ID},
+						Action:     ActionRead,
+						Permission: permissionProjectSecretRead,
+					})
 					if !decision.Allowed && d.debug {
 						d.log.Debug("progeny secret denied by authz",
 							"agent_id", agentID, "secret", s.Name, "secret_id", s.ID,
@@ -2780,17 +2796,27 @@ func (d *HTTPAgentDispatcher) resolveSecrets(ctx context.Context, agent *store.A
 		resolveOpts = &secret.ResolveOpts{
 			AgentAncestry: ancestry,
 			AuthzCheck: func(s secret.SecretMeta) bool {
-				decision := d.authzService.CheckAccess(ctx, &agentIdentityWrapper{
+				ident := &agentIdentityWrapper{
 					AgentTokenClaims: &AgentTokenClaims{
 						Claims:    jwt.Claims{Subject: agentID},
 						ProjectID: agent.ProjectID,
 						Ancestry:  ancestry,
 						Scopes:    scopes,
 					},
-				}, Resource{
-					Type: "secret",
-					ID:   s.ID,
-				}, ActionRead)
+				}
+				// Name the permission explicitly. Deriving it from
+				// (resource="secret", action="read") finds no registry entry -
+				// agent secret access is registered as project.secret_read on
+				// ResourceProject - so derivePermissionID falls through to its
+				// "<resource>.<action>" fallback and asks for "secret.read",
+				// which no role grants and which does not exist in the registry.
+				decision := d.authzService.Decide(ctx, AuthzRequest{
+					Principal:  principalContextForIdentity(ident),
+					Credential: credentialContextForIdentity(ident),
+					Resource:   Resource{Type: "secret", ID: s.ID},
+					Action:     ActionRead,
+					Permission: permissionProjectSecretRead,
+				})
 				if !decision.Allowed && d.debug {
 					d.log.Debug("progeny secret denied by authz",
 						"agent_id", agentID, "secret", s.Name, "secret_id", s.ID,
