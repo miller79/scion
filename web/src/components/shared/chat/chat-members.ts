@@ -134,8 +134,12 @@ export interface ChatAgentMember {
    * that is precisely how the gate failed twice: the server omitted false via
    * omitempty, and the page's own mappers dropped the field while rebuilding
    * member objects. A permission gate should fail closed.
+   *
+   * Explicitly `| undefined` because exactOptionalPropertyTypes is on: the
+   * mappers below pass the field through unconditionally, and "present but
+   * undefined" has to be assignable for that to typecheck.
    */
-  canAttach?: boolean;
+  canAttach?: boolean | undefined;
 }
 
 export type ChatMember = ChatHumanMember | ChatAgentMember;
