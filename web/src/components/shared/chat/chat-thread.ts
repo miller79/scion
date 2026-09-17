@@ -1801,6 +1801,20 @@ export class ScionChatThread extends LitElement {
   // ---------------------------------------------------------------------------
 
   /** Handle reply action from a message. Sets the composer reply-to context. */
+  /**
+   * Clear the composer's reply context. The composer cannot do this itself —
+   * `replyTo` is a property we own and push down, so a local assignment there
+   * is overwritten on our next render.
+   */
+  private handleComposerCancelReply(): void {
+    this.composerReplyTo = null;
+  }
+
+  /** Clear the composer's edit context. See handleComposerCancelReply. */
+  private handleComposerCancelEdit(): void {
+    this.composerEditMessage = null;
+  }
+
   private handleMessageReply(
     e: CustomEvent<{ messageId: string; senderName: string; content: string }>
   ): void {
@@ -2736,6 +2750,8 @@ export class ScionChatThread extends LitElement {
           .conversationKey=${this.conversationKey}
           .replyTo=${this.composerReplyTo}
           .editMessage=${this.composerEditMessage}
+          @chat-cancel-reply=${this.handleComposerCancelReply}
+          @chat-cancel-edit=${this.handleComposerCancelEdit}
           @chat-send=${this.handleChatSendV2}
           @chat-edit=${this.handleChatEditV2}
           @chat-typing=${() => this.sendTypingEvent()}
