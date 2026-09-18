@@ -28,6 +28,12 @@ import { debugLog } from '../../client/debug-log.js';
 import type { DebugEntry, DebugCategory } from '../../client/debug-log.js';
 import { stateManager } from '../../client/state.js';
 
+/**
+ * Per-browser preference for showing the debug control. Set by `?debug=1`,
+ * cleared by `?debug=0`.
+ */
+const DEBUG_PANEL_PREF_KEY = 'scion.debugPanel';
+
 interface DebugData {
   debug: boolean;
   timestamp: string;
@@ -76,8 +82,31 @@ export class ScionDebugPanel extends LitElement {
   @state()
   private error: string | null = null;
 
+  /**
+   * Whether this Hub actually serves the debug endpoint.
+   *
+   * Starts false and is only raised once `/auth/debug` answers. It used to
+   * start true and drop to false on a 404 — but that 404 was only ever fetched
+   * when the user clicked the toggle, so a Hub running without `--debug`
+   * displayed a button that covered the UI beneath it and did nothing until
+   * someone clicked it once. Fail closed instead: show nothing until the Hub
+   * has said the feature exists.
+   */
   @state()
-  private debugAvailable = true;
+  private debugAvailable = false;
+
+  /**
+   * Whether this viewer asked to see the debug control.
+   *
+   * Server-side `--debug` makes the panel *available*; it should not put a
+   * fixed overlay on top of every user's UI. The toggle is pinned to the
+   * viewport corner above everything, and in chat both bottom corners are
+   * scrollable interactive lists (members sidebar, space rail), so there is no
+   * corner it can sit in without covering something. Opt in with `?debug=1`,
+   * opt out with `?debug=0`; the choice persists per browser.
+   */
+  @state()
+  private debugEnabled = false;
 
   @state()
   private logEntries: readonly DebugEntry[] = [];
@@ -506,6 +535,67 @@ export class ScionDebugPanel extends LitElement {
     stateManager.addEventListener('projects-updated', this.stateUpdateHandler);
     stateManager.addEventListener('brokers-updated', this.stateUpdateHandler);
     this.logEntries = [...debugLog.log];
+
+    this.debugEnabled = this.resolveDebugPreference();
+    if (this.debugEnabled) {
+      void this.probeDebugAvailability();
+    }
+  }
+
+  /**
+   * Resolve the viewer's preference, honouring `?debug=1` / `?debug=0` and
+   * otherwise falling back to what was stored previously.
+   *
+   * Storage can throw or come back empty (private windows, blocked site data),
+   * so every access is guarded and the fallback is "not shown" — the state
+   * that cannot obstruct anything.
+   */
+  private resolveDebugPreference(): boolean {
+    let stored: string | null = null;
+    try {
+      stored = localStorage.getItem(DEBUG_PANEL_PREF_KEY);
+    } catch {
+      /* storage unavailable — treat as unset */
+    }
+
+    let requested: boolean | null = null;
+    try {
+      const param = new URLSearchParams(window.location.search).get('debug');
+      if (param === '1' || param === 'true') requested = true;
+      if (param === '0' || param === 'false') requested = false;
+    } catch {
+      /* malformed URL — ignore */
+    }
+
+    if (requested === null) {
+      return stored === '1';
+    }
+
+    try {
+      if (requested) {
+        localStorage.setItem(DEBUG_PANEL_PREF_KEY, '1');
+      } else {
+        localStorage.removeItem(DEBUG_PANEL_PREF_KEY);
+      }
+    } catch {
+      /* preference is not persisted; it still applies to this page */
+    }
+    return requested;
+  }
+
+  /**
+   * Ask the Hub once whether the debug endpoint exists. A 404 means the Hub
+   * was not started with `--debug`, so the control stays hidden.
+   */
+  private async probeDebugAvailability(): Promise<void> {
+    try {
+      const response = await fetch('/auth/debug', { credentials: 'include' });
+      this.debugAvailable = response.ok;
+    } catch {
+      // Network failure tells us nothing about the feature; stay hidden rather
+      // than render a control that may lead nowhere.
+      this.debugAvailable = false;
+    }
   }
 
   override disconnectedCallback(): void {
@@ -639,7 +729,8 @@ export class ScionDebugPanel extends LitElement {
   }
 
   override render() {
-    if (!this.debugAvailable) {
+    // Both must hold: the viewer asked for it, and the Hub actually serves it.
+    if (!this.debugEnabled || !this.debugAvailable) {
       return html``;
     }
 
