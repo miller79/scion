@@ -115,6 +115,75 @@ describe('debug control visibility', () => {
   });
 });
 
+/** Ctrl+Shift+D, as the browser would deliver it. */
+function pressShortcut(): void {
+  window.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'D', ctrlKey: true, shiftKey: true, bubbles: true })
+  );
+}
+
+async function settle(el: HTMLElement): Promise<void> {
+  await new Promise((r) => setTimeout(r, 0));
+  await (el as HTMLElement & { updateComplete: Promise<unknown> }).updateComplete;
+}
+
+describe('summoning the panel without an on-screen control', () => {
+  it('opens on Ctrl+Shift+D even though nothing is displayed', async () => {
+    // The point of the fix: no pill on screen, so there is nothing in the way —
+    // and the panel is still reachable when it is actually needed.
+    const el = await mountPanel();
+    expect(renderedText(el)).not.toContain('Debug');
+
+    pressShortcut();
+    await settle(el);
+
+    expect(renderedText(el)).toContain('Debug Panel');
+  });
+
+  it('closes again on a second press', async () => {
+    const el = await mountPanel();
+
+    pressShortcut();
+    await settle(el);
+    expect(renderedText(el)).toContain('Debug Panel');
+
+    pressShortcut();
+    await settle(el);
+    expect(renderedText(el)).not.toContain('Debug Panel');
+  });
+
+  it('does not open when the Hub has no debug endpoint', async () => {
+    serveDebug(false);
+    const el = await mountPanel();
+
+    pressShortcut();
+    await settle(el);
+
+    expect(renderedText(el)).not.toContain('Debug Panel');
+  });
+
+  it('summoning does not leave a pill behind for the viewer who did not opt in', async () => {
+    const el = await mountPanel();
+
+    pressShortcut();
+    await settle(el);
+
+    // The panel is open, but the fixed corner button — the thing that covered
+    // the members sidebar — must not appear.
+    expect(renderedText(el)).not.toContain('Hide Debug');
+    expect(renderedText(el)).not.toContain('Show Debug');
+  });
+
+  it('ignores the shortcut without the modifiers', async () => {
+    const el = await mountPanel();
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'D', bubbles: true }));
+    await settle(el);
+
+    expect(renderedText(el)).not.toContain('Debug Panel');
+  });
+});
+
 describe('the opt-in persists per browser', () => {
   it('remembers the choice without the query parameter', async () => {
     setSearch('?debug=1');

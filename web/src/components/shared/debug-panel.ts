@@ -540,6 +540,37 @@ export class ScionDebugPanel extends LitElement {
     if (this.debugEnabled) {
       void this.probeDebugAvailability();
     }
+    window.addEventListener('keydown', this.shortcutHandler);
+  }
+
+  /**
+   * Ctrl/Cmd+Shift+D opens and closes the panel.
+   *
+   * This is the "appear when needed" path: with no pill on screen there is
+   * nothing to click, and nothing covering the UI, so the panel has to be
+   * summonable. Availability is probed lazily on the first press, so a viewer
+   * who never uses the shortcut still costs the Hub no request.
+   */
+  private shortcutHandler = (event: KeyboardEvent): void => {
+    if (!(event.ctrlKey || event.metaKey) || !event.shiftKey) return;
+    if (event.key !== 'D' && event.key !== 'd') return;
+    event.preventDefault();
+    void this.toggleViaShortcut();
+  };
+
+  private async toggleViaShortcut(): Promise<void> {
+    if (this.expanded) {
+      this.expanded = false;
+      return;
+    }
+    if (!this.debugAvailable) {
+      await this.probeDebugAvailability();
+      if (!this.debugAvailable) return; // Hub has no debug endpoint — stay silent.
+    }
+    this.expanded = true;
+    if (!this.debugData) {
+      void this.loadDebugData();
+    }
   }
 
   /**
@@ -607,6 +638,7 @@ export class ScionDebugPanel extends LitElement {
     stateManager.removeEventListener('agents-updated', this.stateUpdateHandler);
     stateManager.removeEventListener('projects-updated', this.stateUpdateHandler);
     stateManager.removeEventListener('brokers-updated', this.stateUpdateHandler);
+    window.removeEventListener('keydown', this.shortcutHandler);
   }
 
   private scrollLogToBottom(): void {
@@ -729,8 +761,10 @@ export class ScionDebugPanel extends LitElement {
   }
 
   override render() {
-    // Both must hold: the viewer asked for it, and the Hub actually serves it.
-    if (!this.debugEnabled || !this.debugAvailable) {
+    // Nothing without Hub support. Beyond that: the pill is opt-in, but the
+    // panel itself can be summoned by shortcut without one, so an opened panel
+    // is reason enough to render.
+    if (!this.debugAvailable || (!this.debugEnabled && !this.expanded)) {
       return html``;
     }
 
@@ -745,10 +779,14 @@ export class ScionDebugPanel extends LitElement {
             : 'red';
 
     return html`
-      <button class="toggle-button" @click=${() => this.togglePanel()}>
-        <span class="dot ${dotClass}"></span>
-        <span>${this.expanded ? 'Hide' : 'Show'} Debug</span>
-      </button>
+      ${this.debugEnabled
+        ? html`
+            <button class="toggle-button" @click=${() => this.togglePanel()}>
+              <span class="dot ${dotClass}"></span>
+              <span>${this.expanded ? 'Hide' : 'Show'} Debug</span>
+            </button>
+          `
+        : nothing}
 
       <div class="panel ${this.expanded ? 'open' : ''}">
         <div class="panel-header">
