@@ -293,11 +293,17 @@ func (s *Server) handleAdminRoleBindings(w http.ResponseWriter, r *http.Request)
 // /api/v1/admin/role-bindings. It peeks at the request body to determine
 // the scope and applies scope-appropriate authorization:
 //
-//   - Project-scoped requests skip the hub-level role_binding.create check.
-//     Authorization is delegated to ProjectMembershipService which checks
-//     project.manage and the governance matrix. This allows project owners
-//     (who lack hub-level role_binding.create) to manage their project's
-//     membership through the admin API.
+//   - Project-scoped requests for built-in roles skip the hub-level
+//     role_binding.create check. Authorization is delegated to
+//     ProjectMembershipService which checks project.manage and the
+//     governance matrix. This allows project owners (who lack hub-level
+//     role_binding.create) to manage their project's membership through the
+//     admin API.
+//
+//   - Project-scoped requests for custom roles are allowed for an owner of
+//     that project assigning to a user or group; anyone else needs hub-level
+//     role_binding.create. The CanDelegate ceiling in createRoleBinding
+//     applies in both cases.
 //
 //   - System-scoped requests require role_binding.create at hub scope —
 //     same as before.
@@ -310,10 +316,12 @@ func (s *Server) createRoleBindingScopeAware(w http.ResponseWriter, r *http.Requ
 	}
 	_ = r.Body.Close()
 
-	// Lightweight peek: unmarshal just enough to know scope and role.
+	// Lightweight peek: unmarshal just enough to know scope, role and target.
 	var peek struct {
 		ScopeType        string `json:"scopeType"`
+		ScopeID          string `json:"scopeId"`
 		RoleDefinitionID string `json:"roleDefinitionId"`
+		PrincipalType    string `json:"principalType"`
 	}
 	if err := json.Unmarshal(bodyBytes, &peek); err != nil {
 		BadRequest(w, "invalid request body: "+err.Error())
@@ -337,15 +345,17 @@ func (s *Server) createRoleBindingScopeAware(w http.ResponseWriter, r *http.Requ
 	//   membership service (project.manage + governance matrix) — no hub-level
 	//   role_binding.create needed. This allows project owners to manage
 	//   members via the admin API.
-	// - Custom project-scoped roles and system-scoped requests require
-	//   hub-level role_binding.create permission.
+	// - Custom project-scoped roles may be assigned by a project owner on
+	//   their own project (see ownerMayAssignCustomProjectRole); otherwise
+	//   they require hub-level role_binding.create, as do system-scoped
+	//   requests. Either way createRoleBinding still applies the CanDelegate
+	//   ceiling, so an owner can only grant permissions they hold themselves.
 	requireHubAuth := peek.ScopeType != store.RoleScopeProject
 	if peek.ScopeType == store.RoleScopeProject && peek.RoleDefinitionID != "" {
 		// Check if this is a built-in project role.
 		roleDef, err := s.store.GetRoleDefinition(r.Context(), peek.RoleDefinitionID)
 		if err == nil && !validProjectRoles[roleDef.Name] {
-			// Custom project role — require hub-level auth.
-			requireHubAuth = true
+			requireHubAuth = !s.ownerMayAssignCustomProjectRole(r.Context(), user, peek.ScopeID, peek.PrincipalType)
 		}
 		// If role lookup fails, createRoleBinding will handle the error.
 	}
@@ -369,6 +379,41 @@ func (s *Server) createRoleBindingScopeAware(w http.ResponseWriter, r *http.Requ
 	// Replay the body so createRoleBinding can parse it normally.
 	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	s.createRoleBinding(w, r, user)
+}
+
+// ownerMayAssignCustomProjectRole reports whether the caller may assign a
+// custom project-scoped role on the given project without hub-level
+// role_binding.create.
+//
+// Custom project roles are additive to built-in membership, and the
+// membership governance matrix already lets a project owner remove any
+// project-scoped binding — custom ones included — through the members API.
+// Assignment mirrors that: the caller must be an owner of the target project
+// itself. Project admins are not included, because governance only lets them
+// manage the built-in member role, so they could assign a custom role they
+// could not later remove.
+//
+// Agent principals are excluded: a custom binding on an agent is a delegation
+// grant, and that stays a hub-admin decision.
+//
+// This only relaxes the entry gate. createRoleBinding still runs CanDelegate,
+// so the owner can grant only permissions their own bindings carry.
+func (s *Server) ownerMayAssignCustomProjectRole(ctx context.Context, user UserIdentity, scopeID, principalType string) bool {
+	if s.membershipService == nil || scopeID == "" {
+		return false
+	}
+	if principalType != store.RoleBindingPrincipalUser && principalType != store.RoleBindingPrincipalGroup {
+		return false
+	}
+	projectID := scopeID
+	if gouuid.Validate(scopeID) != nil {
+		project, err := s.store.GetProjectBySlugCaseInsensitive(ctx, scopeID)
+		if err != nil || project == nil {
+			return false
+		}
+		projectID = project.ID
+	}
+	return s.membershipService.projectEffectiveRole(ctx, user.ID(), projectID) == store.ProjectRoleOwner
 }
 
 // handleAdminRoleBindingByID handles DELETE on /api/v1/admin/role-bindings/:id
