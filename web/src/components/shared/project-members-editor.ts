@@ -21,6 +21,8 @@
  *  - Adding a member = POST /api/v1/projects/{id}/members
  *  - Changing a member's role = PATCH /api/v1/projects/{id}/members/{bindingID}
  *  - Removing a member = DELETE /api/v1/projects/{id}/members/{bindingID}
+ *  - Assigning a custom project role = POST /api/v1/admin/role-bindings
+ *    (owners only; the members API accepts built-in roles only)
  *  - Shows provenance (direct vs. group-derived)
  *  - Owner protection: prevents removing the last direct owner
  *
@@ -95,6 +97,9 @@ export class ScionProjectMembersEditor extends LitElement {
   @state() private loading = true;
   @state() private members: ProjectMemberBinding[] = [];
   @state() private projectRoles: ProjectRole[] = [];
+  /** Custom project-scoped roles. These add to a principal's membership role
+   *  rather than replacing it, so they are not offered in "Change role". */
+  @state() private customRoles: ProjectRole[] = [];
   @state() private error: string | null = null;
 
   // Add dialog state
@@ -497,14 +502,14 @@ export class ScionProjectMembersEditor extends LitElement {
         this.capabilities = null;
       }
 
-      // Load project roles for the role picker — only built-in membership
-      // roles (owner/admin/member). Custom project-scoped roles are managed
-      // via the admin role-bindings page, not the project membership editor.
+      // Load project roles for the role picker. Built-in membership roles
+      // (owner/admin/member) go through the members API; custom project
+      // roles are listed separately and assigned as role bindings.
       if (rolesRes.ok) {
         const rolesData = (await rolesRes.json()) as { items?: ProjectRole[] };
-        this.projectRoles = (rolesData.items || []).filter(
-          (r) => r.scopeType === 'project' && BUILT_IN_PROJECT_MEMBERSHIP_ROLES.includes(r.name)
-        );
+        const scoped = (rolesData.items || []).filter((r) => r.scopeType === 'project');
+        this.projectRoles = scoped.filter((r) => !isCustomProjectRole(r.name));
+        this.customRoles = scoped.filter((r) => isCustomProjectRole(r.name));
       }
     } catch (err) {
       console.error('Failed to load project members:', err);
@@ -536,6 +541,9 @@ export class ScionProjectMembersEditor extends LitElement {
    *  the member's role tier and the user's capabilities. */
   private canManageMember(member: ProjectMemberBinding): boolean {
     if (!this.capabilities) return false;
+    // Only owners may manage custom-role bindings; the server's governance
+    // matrix limits admins to project-member.
+    if (isCustomProjectRole(member.roleName)) return this.capabilities.canManageOwners;
     const tier = getRoleTier(member.roleName);
     switch (tier) {
       case 'owner':
@@ -587,6 +595,19 @@ export class ScionProjectMembersEditor extends LitElement {
     return roles;
   }
 
+  /** Custom roles the current user may offer in the add dialog: owners only,
+   *  and never for agents, since a custom binding on an agent is a
+   *  delegation grant, which the server refuses on this path. */
+  private get addCustomRoles(): ProjectRole[] {
+    if (!this.capabilities?.canManageOwners) return [];
+    if (this.addPrincipalType === 'agent') return [];
+    return this.customRoles;
+  }
+
+  private get addSelectedIsCustom(): boolean {
+    return this.customRoles.some((r) => r.id === this.addRoleId);
+  }
+
   // ---------------------------------------------------------------------------
   // Actions
   // ---------------------------------------------------------------------------
@@ -612,26 +633,41 @@ export class ScionProjectMembersEditor extends LitElement {
     this.addLoading = true;
     this.addError = null;
 
+    const isCustom = this.addSelectedIsCustom;
+
     try {
-      // PM1: Use project-scoped members endpoint.
+      // PM1: Built-in roles use the project-scoped members endpoint; custom
+      // roles are plain project-scoped role bindings.
       // suppressAccessDeniedToast: the dialog renders errors inline (RC-C fix).
-      const res = await apiFetch(`/api/v1/projects/${encodeURIComponent(this.projectId)}/members`, {
+      const url = isCustom
+        ? '/api/v1/admin/role-bindings'
+        : `/api/v1/projects/${encodeURIComponent(this.projectId)}/members`;
+      const body: Record<string, string> = {
+        roleDefinitionId: this.addRoleId,
+        principalType: this.addPrincipalType,
+        principalId: this.addPrincipalId.trim(),
+      };
+      if (isCustom) {
+        body.scopeType = 'project';
+        body.scopeId = this.projectId;
+      }
+      const res = await apiFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          roleDefinitionId: this.addRoleId,
-          principalType: this.addPrincipalType,
-          principalId: this.addPrincipalId.trim(),
-        }),
+        body: JSON.stringify(body),
         suppressAccessDeniedToast: true,
       });
 
       if (!res.ok) {
-        throw new Error(await extractApiError(res, `HTTP ${res.status}`));
+        const msg = await extractApiError(res, `HTTP ${res.status}`);
+        throw new Error(isCustom ? describeCustomRoleError(msg) : msg);
       }
 
       this.addDialogOpen = false;
-      this.actionFeedback = { message: 'Member added', variant: 'success' };
+      this.actionFeedback = {
+        message: isCustom ? 'Role assigned' : 'Member added',
+        variant: 'success',
+      };
       void this.loadData();
     } catch (err) {
       console.error('Failed to add member:', err);
@@ -969,6 +1005,7 @@ export class ScionProjectMembersEditor extends LitElement {
     const displayName = member.principalDisplayName || member.principalId;
     const isGroupDerived = member.source !== 'direct';
     const lastOwner = this.isLastDirectOwner(member);
+    const isCustom = isCustomProjectRole(member.roleName);
 
     return html`
       <tr>
@@ -1001,7 +1038,7 @@ export class ScionProjectMembersEditor extends LitElement {
                   ? html`<span class="meta-text">Inherited</span>`
                   : this.canManageMember(member)
                     ? html`
-                        ${this.projectRoles.length > 0
+                        ${this.projectRoles.length > 0 && !isCustom
                           ? html`
                               <sl-icon-button
                                 name="pencil"
@@ -1058,6 +1095,9 @@ export class ScionProjectMembersEditor extends LitElement {
             @sl-change=${(e: Event) => {
               this.addPrincipalType = (e.target as HTMLSelectElement).value;
               this.addPrincipalId = '';
+              if (this.addSelectedIsCustom && this.addCustomRoles.length === 0) {
+                this.addRoleId = this.addFilteredRoles[0]?.id ?? '';
+              }
             }}
           >
             <sl-option value="user">
@@ -1094,11 +1134,32 @@ export class ScionProjectMembersEditor extends LitElement {
                     this.addRoleId = (e.target as HTMLSelectElement).value;
                   }}
                 >
+                  ${this.addCustomRoles.length > 0
+                    ? html`<small>Membership roles</small>`
+                    : nothing}
                   ${this.addFilteredRoles.map(
                     (role) => html` <sl-option value=${role.id}>${role.name}</sl-option> `
                   )}
+                  ${this.addCustomRoles.length > 0
+                    ? html`
+                        <sl-divider></sl-divider>
+                        <small>Custom roles</small>
+                        ${this.addCustomRoles.map(
+                          (role) => html` <sl-option value=${role.id}>${role.name}</sl-option> `
+                        )}
+                      `
+                    : nothing}
                 </sl-select>
               </div>
+              ${this.addSelectedIsCustom
+                ? html`
+                    <div class="validation-warning">
+                      <sl-icon name="info-circle"></sl-icon>
+                      A custom role adds permissions on top of a membership role; on its own it does
+                      not make someone a member. You can only grant permissions you hold yourself.
+                    </div>
+                  `
+                : ''}
               ${this.addPrincipalType === 'group'
                 ? html`
                     <div class="validation-warning">
@@ -1247,6 +1308,19 @@ export class ScionProjectMembersEditor extends LitElement {
       </sl-dialog>
     `;
   }
+}
+
+/** True for project roles other than the built-in membership roles. */
+export function isCustomProjectRole(roleName: string): boolean {
+  return !BUILT_IN_PROJECT_MEMBERSHIP_ROLES.includes(roleName);
+}
+
+/** Turns the server's delegation-ceiling refusal into guidance; other errors
+ *  pass through unchanged. */
+export function describeCustomRoleError(message: string): string {
+  const m = /lacks permission for delegation: ([\w.:-]+)/.exec(message);
+  if (!m) return message;
+  return `You can't assign this role: it includes the permission "${m[1]}", which you don't hold yourself. Ask a hub admin to assign it.`;
 }
 
 declare global {
