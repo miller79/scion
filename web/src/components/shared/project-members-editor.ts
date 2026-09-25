@@ -50,7 +50,7 @@ import {
 // Types
 // ---------------------------------------------------------------------------
 
-interface ProjectMemberBinding {
+export interface ProjectMemberBinding {
   id: string;
   roleDefinitionId: string;
   roleName: string;
@@ -71,6 +71,20 @@ interface ProjectRole {
   id: string;
   name: string;
   scopeType: string;
+}
+
+/** One table row: a principal's membership binding plus any custom-role
+ *  bindings it holds in this project, from the same source. */
+export interface MemberRow {
+  key: string;
+  /** The built-in membership binding, or null for custom-role-only rows. */
+  primary: ProjectMemberBinding | null;
+  custom: ProjectMemberBinding[];
+  principalType: string;
+  principalId: string;
+  displayName: string;
+  source: string;
+  sourceGroupName?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +112,7 @@ export class ScionProjectMembersEditor extends LitElement {
   @state() private members: ProjectMemberBinding[] = [];
   @state() private projectRoles: ProjectRole[] = [];
   /** Custom project-scoped roles. These add to a principal's membership role
-   *  rather than replacing it, so they are not offered in "Change role". */
+   *  rather than replacing it, so they are edited as checkboxes beside it. */
   @state() private customRoles: ProjectRole[] = [];
   @state() private error: string | null = null;
 
@@ -110,11 +124,14 @@ export class ScionProjectMembersEditor extends LitElement {
   @state() private addLoading = false;
   @state() private addError: string | null = null;
 
-  // Change role dialog state
+  // Edit member dialog state
   @state() private changeDialogOpen = false;
-  @state() private changeMember: ProjectMemberBinding | null = null;
+  @state() private changeRow: MemberRow | null = null;
   @state() private changeRoleId = '';
+  /** Custom role definition IDs checked in the edit dialog. */
+  @state() private changeCustomIds: string[] = [];
   @state() private changeLoading = false;
+  @state() private changeError: string | null = null;
 
   // Remove state
   @state() private removingMemberId: string | null = null;
@@ -291,6 +308,44 @@ export class ScionProjectMembersEditor extends LitElement {
       font-weight: 500;
       background: var(--scion-bg-subtle, #f1f5f9);
       color: var(--scion-text-muted, #64748b);
+    }
+
+    .role-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+    }
+
+    .role-badge.custom {
+      background: var(--sl-color-primary-100, #dbeafe);
+      color: var(--sl-color-primary-700, #1d4ed8);
+    }
+
+    /* Edit dialog */
+    .dialog-member {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .form-help {
+      font-size: 0.8125rem;
+      color: var(--scion-text-muted, #64748b);
+      margin: 0.375rem 0 0 0;
+    }
+
+    .custom-role-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      margin-top: 0.5rem;
+    }
+
+    .form-label {
+      display: block;
+      font-size: var(--sl-input-label-font-size-medium, 0.875rem);
+      margin-bottom: 0.25rem;
     }
 
     /* Provenance badge */
@@ -572,6 +627,29 @@ export class ScionProjectMembersEditor extends LitElement {
     return this.directOwnerCount <= 1;
   }
 
+  /** Members grouped one row per principal and source, so a custom role
+   *  shows beside the membership role instead of as a separate row. */
+  private get memberRows(): MemberRow[] {
+    return groupMemberRows(this.members);
+  }
+
+  /** Edit is available when the user may change the membership role or,
+   *  as an owner, the custom roles. */
+  private canEditRow(row: MemberRow): boolean {
+    if (!this.capabilities) return false;
+    if (row.primary && this.canManageMember(row.primary)) return true;
+    return this.capabilities.canManageOwners && row.principalType !== 'agent';
+  }
+
+  /** Removal deletes every direct binding in the row, so an admin may not
+   *  remove a member who also holds custom roles (only owners can remove
+   *  those, and leaving them behind would keep the extra permissions). */
+  private canRemoveRow(row: MemberRow): boolean {
+    if (!this.capabilities) return false;
+    if (row.primary && !this.canManageMember(row.primary)) return false;
+    return row.custom.length === 0 || this.capabilities.canManageOwners;
+  }
+
   private get addFilteredRoles(): ProjectRole[] {
     let roles = this.projectRoles;
     if (this.addPrincipalType === 'group') {
@@ -677,10 +755,18 @@ export class ScionProjectMembersEditor extends LitElement {
     }
   }
 
-  private openChangeRoleDialog(member: ProjectMemberBinding): void {
-    this.changeMember = member;
-    this.changeRoleId = member.roleDefinitionId;
+  private openChangeRoleDialog(row: MemberRow): void {
+    this.changeRow = row;
+    this.changeRoleId = row.primary?.roleDefinitionId ?? '';
+    this.changeCustomIds = row.custom.map((b) => b.roleDefinitionId);
+    this.changeError = null;
     this.changeDialogOpen = true;
+  }
+
+  private closeChangeDialog(): void {
+    this.changeDialogOpen = false;
+    this.changeRow = null;
+    this.changeError = null;
   }
 
   /** Look up a role name from its definition ID. */
@@ -689,60 +775,89 @@ export class ScionProjectMembersEditor extends LitElement {
     return role?.name ?? '';
   }
 
+  /** Custom roles the edit dialog may offer for this row. */
+  private editCustomRoles(row: MemberRow): ProjectRole[] {
+    if (!this.capabilities?.canManageOwners || row.principalType === 'agent') return [];
+    return this.customRoles;
+  }
+
+  private get changeHasChanges(): boolean {
+    const row = this.changeRow;
+    if (!row) return false;
+    const plan = planMemberEdit(row, this.changeRoleId, this.changeCustomIds);
+    return plan.membershipRoleId !== null || plan.add.length > 0 || plan.remove.length > 0;
+  }
+
   private async handleChangeRole(): Promise<void> {
-    if (!this.changeMember || !this.changeRoleId) return;
+    const row = this.changeRow;
+    if (!row) return;
+    const plan = planMemberEdit(row, this.changeRoleId, this.changeCustomIds);
 
     // R1: Prevent demoting the last direct owner to a non-owner role.
-    const newRoleName = this.getRoleNameById(this.changeRoleId);
-    if (this.isLastDirectOwner(this.changeMember) && !this.isOwnerRole(newRoleName)) {
-      this.actionFeedback = {
-        message:
-          'Cannot change the last direct project owner to a non-owner role. Transfer ownership first.',
-        variant: 'danger',
-      };
-      this.changeDialogOpen = false;
-      this.changeMember = null;
+    if (
+      plan.membershipRoleId !== null &&
+      row.primary &&
+      this.isLastDirectOwner(row.primary) &&
+      !this.isOwnerRole(this.getRoleNameById(plan.membershipRoleId))
+    ) {
+      this.changeError =
+        'Cannot change the last direct project owner to a non-owner role. Transfer ownership first.';
       return;
     }
 
     this.changeLoading = true;
+    this.changeError = null;
+    const base = `/api/v1/projects/${encodeURIComponent(this.projectId)}/members`;
+    const failures: string[] = [];
 
-    try {
-      // PM1: Atomic role change via PATCH endpoint.
-      // suppressAccessDeniedToast: inline alert handles errors (RC-C fix).
-      const res = await apiFetch(
-        `/api/v1/projects/${encodeURIComponent(this.projectId)}/members/${this.changeMember.id}`,
-        {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            roleDefinitionId: this.changeRoleId,
-          }),
-          suppressAccessDeniedToast: true,
-        }
-      );
-
-      if (!res.ok) {
-        throw new Error(await extractApiError(res, `HTTP ${res.status}`));
-      }
-
-      this.changeDialogOpen = false;
-      this.changeMember = null;
-      this.actionFeedback = { message: 'Role updated', variant: 'success' };
-      void this.loadData();
-    } catch (err) {
-      console.error('Failed to change role:', err);
-      this.actionFeedback = {
-        message: err instanceof Error ? err.message : 'Failed to change role',
-        variant: 'danger',
-      };
-    } finally {
-      this.changeLoading = false;
+    // suppressAccessDeniedToast: the dialog renders errors inline (RC-C fix).
+    if (plan.membershipRoleId !== null && row.primary) {
+      const res = await apiFetch(`${base}/${row.primary.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roleDefinitionId: plan.membershipRoleId }),
+        suppressAccessDeniedToast: true,
+      });
+      if (!res.ok) failures.push(await extractApiError(res, `HTTP ${res.status}`));
     }
+    for (const roleId of plan.add) {
+      const res = await apiFetch('/api/v1/admin/role-bindings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roleDefinitionId: roleId,
+          principalType: row.principalType,
+          principalId: row.principalId,
+          scopeType: 'project',
+          scopeId: this.projectId,
+        }),
+        suppressAccessDeniedToast: true,
+      });
+      if (!res.ok) {
+        failures.push(describeCustomRoleError(await extractApiError(res, `HTTP ${res.status}`)));
+      }
+    }
+    for (const binding of plan.remove) {
+      const res = await apiFetch(`${base}/${binding.id}`, {
+        method: 'DELETE',
+        suppressAccessDeniedToast: true,
+      });
+      if (!res.ok) failures.push(await extractApiError(res, `HTTP ${res.status}`));
+    }
+
+    this.changeLoading = false;
+    void this.loadData();
+    if (failures.length > 0) {
+      // Keep the dialog open so the user sees what did not apply.
+      this.changeError = failures.join(' ');
+      return;
+    }
+    this.closeChangeDialog();
+    this.actionFeedback = { message: 'Member updated', variant: 'success' };
   }
 
-  private async handleRemoveMember(member: ProjectMemberBinding): Promise<void> {
-    if (this.isLastDirectOwner(member)) {
+  private async handleRemoveMember(row: MemberRow): Promise<void> {
+    if (row.primary && this.isLastDirectOwner(row.primary)) {
       this.actionFeedback = {
         message: 'Cannot remove the last direct project owner. Transfer ownership first.',
         variant: 'danger',
@@ -750,28 +865,31 @@ export class ScionProjectMembersEditor extends LitElement {
       return;
     }
 
-    const displayName = member.principalDisplayName || member.principalId;
     if (
-      !(await showConfirm(`Remove ${member.principalType} "${displayName}" from this project?`))
+      !(await showConfirm(`Remove ${row.principalType} "${row.displayName}" from this project?`))
     ) {
       return;
     }
 
-    this.removingMemberId = member.id;
+    this.removingMemberId = row.key;
 
     try {
-      // PM1: Use project-scoped members endpoint.
+      // PM1: Use project-scoped members endpoint. Custom-role bindings go
+      // first: removing membership does not remove them, and they would
+      // otherwise keep their permissions after the member is gone.
       // suppressAccessDeniedToast: inline alert handles errors (RC-C fix).
-      const res = await apiFetch(
-        `/api/v1/projects/${encodeURIComponent(this.projectId)}/members/${member.id}`,
-        { method: 'DELETE', suppressAccessDeniedToast: true }
-      );
-      if (!res.ok) {
-        throw new Error(await extractApiError(res, `HTTP ${res.status}`));
+      const bindings = [...row.custom, ...(row.primary ? [row.primary] : [])];
+      for (const binding of bindings) {
+        const res = await apiFetch(
+          `/api/v1/projects/${encodeURIComponent(this.projectId)}/members/${binding.id}`,
+          { method: 'DELETE', suppressAccessDeniedToast: true }
+        );
+        if (!res.ok) {
+          throw new Error(await extractApiError(res, `HTTP ${res.status}`));
+        }
       }
 
       this.actionFeedback = { message: 'Member removed', variant: 'success' };
-      void this.loadData();
     } catch (err) {
       console.error('Failed to remove member:', err);
       this.actionFeedback = {
@@ -780,6 +898,7 @@ export class ScionProjectMembersEditor extends LitElement {
       };
     } finally {
       this.removingMemberId = null;
+      void this.loadData();
     }
   }
 
@@ -851,7 +970,7 @@ export class ScionProjectMembersEditor extends LitElement {
         <div class="section-header-info">
           <h2>
             ${this.sectionTitle}
-            <span class="member-count">(${this.members.length})</span>
+            <span class="member-count">(${this.memberRows.length})</span>
           </h2>
           ${this.sectionDescription ? html`<p>${this.sectionDescription}</p>` : nothing}
         </div>
@@ -887,7 +1006,7 @@ export class ScionProjectMembersEditor extends LitElement {
           <div class="section-header-info">
             <h2>
               ${this.sectionTitle}
-              <span class="member-count">(${this.members.length})</span>
+              <span class="member-count">(${this.memberRows.length})</span>
             </h2>
             ${this.sectionDescription ? html`<p>${this.sectionDescription}</p>` : nothing}
           </div>
@@ -993,41 +1112,46 @@ export class ScionProjectMembersEditor extends LitElement {
             </tr>
           </thead>
           <tbody>
-            ${this.members.map((member) => this.renderMemberRow(member))}
+            ${this.memberRows.map((row) => this.renderMemberRow(row))}
           </tbody>
         </table>
       </div>
     `;
   }
 
-  private renderMemberRow(member: ProjectMemberBinding) {
-    const isRemoving = this.removingMemberId === member.id;
-    const displayName = member.principalDisplayName || member.principalId;
-    const isGroupDerived = member.source !== 'direct';
-    const lastOwner = this.isLastDirectOwner(member);
-    const isCustom = isCustomProjectRole(member.roleName);
+  private renderMemberRow(row: MemberRow) {
+    const isRemoving = this.removingMemberId === row.key;
+    const isGroupDerived = row.source !== 'direct';
+    const lastOwner = row.primary ? this.isLastDirectOwner(row.primary) : false;
+    const canEdit = this.canEditRow(row);
+    const canRemove = this.canRemoveRow(row);
 
     return html`
       <tr>
         <td>
           <div class="member-identity">
-            <div class="member-icon ${member.principalType}">
-              <sl-icon name="${getPrincipalIcon(member.principalType)}"></sl-icon>
+            <div class="member-icon ${row.principalType}">
+              <sl-icon name="${getPrincipalIcon(row.principalType)}"></sl-icon>
             </div>
             <div class="member-info">
-              <span class="member-name">${displayName}</span>
-              <span class="member-detail">${member.principalType}</span>
+              <span class="member-name">${row.displayName}</span>
+              <span class="member-detail">${row.principalType}</span>
             </div>
           </div>
         </td>
         <td>
-          <span class="role-badge">${member.roleName}</span>
+          <div class="role-badges">
+            ${row.primary ? html`<span class="role-badge">${row.primary.roleName}</span>` : nothing}
+            ${row.custom.map(
+              (b) => html`<span class="role-badge custom" title="Custom role">${b.roleName}</span>`
+            )}
+          </div>
         </td>
         <td class="hide-mobile">
           <span class="provenance-badge ${isGroupDerived ? 'group-derived' : 'direct'}">
             ${isGroupDerived
               ? html`<sl-icon name="diagram-3"></sl-icon> Via group:
-                  ${member.sourceGroupName || member.source}`
+                  ${row.sourceGroupName || row.source}`
               : html`<sl-icon name="person-check"></sl-icon> Direct`}
           </span>
         </td>
@@ -1036,36 +1160,38 @@ export class ScionProjectMembersEditor extends LitElement {
               <td class="actions-cell">
                 ${isGroupDerived
                   ? html`<span class="meta-text">Inherited</span>`
-                  : this.canManageMember(member)
-                    ? html`
-                        ${this.projectRoles.length > 0 && !isCustom
-                          ? html`
-                              <sl-icon-button
-                                name="pencil"
-                                label="Change role"
-                                ?disabled=${isRemoving || lastOwner}
-                                @click=${() => this.openChangeRoleDialog(member)}
-                              ></sl-icon-button>
-                            `
-                          : ''}
-                        <sl-icon-button
-                          name="trash"
-                          label="Remove member"
-                          ?disabled=${isRemoving || lastOwner}
-                          @click=${() => this.handleRemoveMember(member)}
-                        ></sl-icon-button>
-                        ${lastOwner
-                          ? html`<sl-tooltip
-                              content="Last direct owner — cannot change role or remove"
-                            >
-                              <sl-icon
-                                name="shield-lock"
-                                style="color: var(--sl-color-warning-500)"
-                              ></sl-icon>
-                            </sl-tooltip>`
-                          : ''}
-                      `
-                    : nothing}
+                  : html`
+                      ${canEdit
+                        ? html`
+                            <sl-icon-button
+                              name="pencil"
+                              label="Edit member roles"
+                              ?disabled=${isRemoving}
+                              @click=${() => this.openChangeRoleDialog(row)}
+                            ></sl-icon-button>
+                          `
+                        : ''}
+                      ${canRemove
+                        ? html`
+                            <sl-icon-button
+                              name="trash"
+                              label="Remove member"
+                              ?disabled=${isRemoving || lastOwner}
+                              @click=${() => this.handleRemoveMember(row)}
+                            ></sl-icon-button>
+                          `
+                        : ''}
+                      ${lastOwner
+                        ? html`<sl-tooltip
+                            content="Last direct owner — cannot change membership role or remove"
+                          >
+                            <sl-icon
+                              name="shield-lock"
+                              style="color: var(--sl-color-warning-500)"
+                            ></sl-icon>
+                          </sl-tooltip>`
+                        : ''}
+                    `}
               </td>
             `
           : nothing}
@@ -1091,6 +1217,7 @@ export class ScionProjectMembersEditor extends LitElement {
         <div class="form-group">
           <sl-select
             label="Member Type"
+            hoist
             .value=${this.addPrincipalType}
             @sl-change=${(e: Event) => {
               this.addPrincipalType = (e.target as HTMLSelectElement).value;
@@ -1129,6 +1256,7 @@ export class ScionProjectMembersEditor extends LitElement {
               <div class="form-group">
                 <sl-select
                   label="Project Role"
+                  hoist
                   .value=${this.addRoleId}
                   @sl-change=${(e: Event) => {
                     this.addRoleId = (e.target as HTMLSelectElement).value;
@@ -1195,64 +1323,110 @@ export class ScionProjectMembersEditor extends LitElement {
   }
 
   private renderChangeRoleDialog() {
-    if (!this.changeDialogOpen || !this.changeMember) return nothing;
+    const row = this.changeRow;
+    if (!this.changeDialogOpen || !row) return nothing;
+
+    const lastOwner = row.primary ? this.isLastDirectOwner(row.primary) : false;
+    const canChangeMembership = !!row.primary && this.canManageMember(row.primary) && !lastOwner;
+    const membershipRoles = this.projectRoles.filter(
+      (r) => row.principalType !== 'group' || !PROJECT_DIRECT_USER_ONLY_ROLES.includes(r.name)
+    );
+    const customRoles = this.editCustomRoles(row);
 
     return html`
       <sl-dialog
-        label="Change Role"
+        label="Edit Member"
         open
         @sl-request-close=${() => {
-          if (!this.changeLoading) {
-            this.changeDialogOpen = false;
-            this.changeMember = null;
-          }
+          if (!this.changeLoading) this.closeChangeDialog();
         }}
       >
-        <p>
-          Change role for
-          <strong>${this.changeMember.principalDisplayName || this.changeMember.principalId}</strong
-          >:
-        </p>
-        <div class="form-group">
-          <sl-select
-            label="New Role"
-            .value=${this.changeRoleId}
-            @sl-change=${(e: Event) => {
-              this.changeRoleId = (e.target as HTMLSelectElement).value;
-            }}
-          >
-            ${this.projectRoles
-              .filter(
-                (r) =>
-                  this.changeMember?.principalType !== 'group' ||
-                  !PROJECT_DIRECT_USER_ONLY_ROLES.includes(r.name)
-              )
-              .map((role) => html` <sl-option value=${role.id}>${role.name}</sl-option> `)}
-          </sl-select>
+        <div class="dialog-member">
+          <div class="member-icon ${row.principalType}">
+            <sl-icon name="${getPrincipalIcon(row.principalType)}"></sl-icon>
+          </div>
+          <div class="member-info">
+            <span class="member-name">${row.displayName}</span>
+            <span class="member-detail">${row.principalType}</span>
+          </div>
         </div>
+
+        ${row.primary
+          ? html`
+              <div class="form-group">
+                <sl-select
+                  label="Project Role"
+                  hoist
+                  .value=${this.changeRoleId}
+                  ?disabled=${!canChangeMembership || this.changeLoading}
+                  @sl-change=${(e: Event) => {
+                    this.changeRoleId = (e.target as HTMLSelectElement).value;
+                  }}
+                >
+                  ${membershipRoles.map(
+                    (role) => html` <sl-option value=${role.id}>${role.name}</sl-option> `
+                  )}
+                </sl-select>
+                ${lastOwner
+                  ? html`<p class="form-help">
+                      This is the last direct owner. Transfer ownership to change this role.
+                    </p>`
+                  : nothing}
+              </div>
+            `
+          : html`<p class="form-help">
+              This ${row.principalType} holds only custom roles here, so it is not a project member.
+              Add it as a member to give it a project role.
+            </p>`}
+        ${customRoles.length > 0
+          ? html`
+              <div class="form-group">
+                <span class="form-label">Custom Roles</span>
+                <div class="custom-role-list">
+                  ${customRoles.map(
+                    (role) => html`
+                      <sl-checkbox
+                        ?checked=${this.changeCustomIds.includes(role.id)}
+                        ?disabled=${this.changeLoading}
+                        @sl-change=${(e: Event) => {
+                          const on = (e.target as HTMLInputElement).checked;
+                          this.changeCustomIds = on
+                            ? [...this.changeCustomIds, role.id]
+                            : this.changeCustomIds.filter((id) => id !== role.id);
+                        }}
+                        >${role.name}</sl-checkbox
+                      >
+                    `
+                  )}
+                </div>
+                <p class="form-help">
+                  Custom roles add permissions on top of the project role. You can only grant
+                  permissions you hold yourself.
+                </p>
+              </div>
+            `
+          : nothing}
+        ${this.changeError ? html`<div class="dialog-error">${this.changeError}</div>` : nothing}
 
         <sl-button
           slot="footer"
           variant="default"
           ?disabled=${this.changeLoading}
-          @click=${() => {
-            this.changeDialogOpen = false;
-            this.changeMember = null;
-          }}
+          @click=${() => this.closeChangeDialog()}
           >Cancel</sl-button
         >
         <sl-button
           slot="footer"
           variant="primary"
           ?loading=${this.changeLoading}
-          ?disabled=${!this.changeRoleId ||
-          this.changeRoleId === this.changeMember.roleDefinitionId}
+          ?disabled=${!this.changeHasChanges}
           @click=${() => this.handleChangeRole()}
-          >Update Role</sl-button
+          >Save</sl-button
         >
       </sl-dialog>
     `;
   }
+
   private renderTransferDialog() {
     if (!this.transferDialogOpen) return nothing;
 
@@ -1308,6 +1482,68 @@ export class ScionProjectMembersEditor extends LitElement {
       </sl-dialog>
     `;
   }
+}
+
+/** Group bindings into one row per principal and source. The membership
+ *  binding (a built-in role) becomes the row's primary; custom-role bindings
+ *  are listed beside it. Order follows the first binding seen. */
+export function groupMemberRows(members: ProjectMemberBinding[]): MemberRow[] {
+  const rows = new Map<string, MemberRow>();
+  for (const m of members) {
+    const key = `${m.source}|${m.principalType}|${m.principalId}`;
+    let row = rows.get(key);
+    if (!row) {
+      row = {
+        key,
+        primary: null,
+        custom: [],
+        principalType: m.principalType,
+        principalId: m.principalId,
+        displayName: m.principalDisplayName || m.principalId,
+        source: m.source,
+        sourceGroupName: m.sourceGroupName,
+      };
+      rows.set(key, row);
+    }
+    if (isCustomProjectRole(m.roleName)) {
+      row.custom.push(m);
+    } else if (!row.primary) {
+      row.primary = m;
+    } else {
+      // Two membership bindings for one principal should not happen; keep
+      // the extra visible rather than hiding it.
+      row.custom.push(m);
+    }
+    if (m.principalDisplayName) row.displayName = m.principalDisplayName;
+  }
+  return [...rows.values()];
+}
+
+export interface MemberEditPlan {
+  /** New membership role ID, or null when unchanged. */
+  membershipRoleId: string | null;
+  /** Custom role definition IDs to bind. */
+  add: string[];
+  /** Custom-role bindings to delete. */
+  remove: ProjectMemberBinding[];
+}
+
+/** Work out the requests needed to move a row to the chosen roles. */
+export function planMemberEdit(
+  row: MemberRow,
+  membershipRoleId: string,
+  customRoleIds: string[]
+): MemberEditPlan {
+  const held = new Set(row.custom.map((b) => b.roleDefinitionId));
+  const wanted = new Set(customRoleIds);
+  return {
+    membershipRoleId:
+      row.primary && membershipRoleId && membershipRoleId !== row.primary.roleDefinitionId
+        ? membershipRoleId
+        : null,
+    add: customRoleIds.filter((id) => !held.has(id)),
+    remove: row.custom.filter((b) => !wanted.has(b.roleDefinitionId)),
+  };
 }
 
 /** True for project roles other than the built-in membership roles. */
