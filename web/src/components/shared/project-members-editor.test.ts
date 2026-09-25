@@ -77,7 +77,11 @@ interface EditorInternals {
   addPrincipalType: string;
   addPrincipalId: string;
   addRoleId: string;
+  addCustomIds: string[];
   addError: string | null;
+  addDialogOpen: boolean;
+  actionFeedback: { message: string; variant: string } | null;
+  openAddDialog(): void;
   addCustomRoles: typeof CUSTOM;
   loadData(): Promise<void>;
   handleAddMember(): Promise<void>;
@@ -192,44 +196,94 @@ describe('handleAddMember routing', () => {
     });
   });
 
-  it('posts custom roles as project-scoped role bindings', async () => {
+  it('adds the member, then binds each checked custom role', async () => {
     const el = makeEditor(OWNER_CAPS);
+    el.customRoles = [...CUSTOM, { id: 'r-port', name: 'port-viewer', scopeType: 'project' }];
     el.addPrincipalId = 'u-1';
-    el.addRoleId = 'r-msg';
+    el.addRoleId = 'r-member';
+    el.addCustomIds = ['r-msg', 'r-port'];
     vi.mocked(apiFetch).mockResolvedValue(jsonResponse(201, {}));
 
     await el.handleAddMember();
 
-    const [url, init] = vi.mocked(apiFetch).mock.calls[0];
-    expect(url).toBe('/api/v1/admin/role-bindings');
-    expect(JSON.parse(init!.body as string)).toEqual({
+    const calls = vi.mocked(apiFetch).mock.calls;
+    expect(calls.map(([url]) => url)).toEqual([
+      '/api/v1/projects/p-1/members',
+      '/api/v1/admin/role-bindings',
+      '/api/v1/admin/role-bindings',
+    ]);
+    expect(JSON.parse(calls[1][1]!.body as string)).toEqual({
       roleDefinitionId: 'r-msg',
       principalType: 'user',
       principalId: 'u-1',
       scopeType: 'project',
       scopeId: 'p-1',
     });
-    expect(init!.suppressAccessDeniedToast).toBe(true);
-    expect(el.addError).toBeNull();
+    expect(JSON.parse(calls[2][1]!.body as string).roleDefinitionId).toBe('r-port');
+    expect(calls.every(([, init]) => init?.suppressAccessDeniedToast === true)).toBe(true);
+    expect(el.addDialogOpen).toBe(false);
+    expect(el.actionFeedback?.variant).toBe('success');
   });
 
-  it('shows a delegation-ceiling refusal inline as guidance', async () => {
+  it('does not bind custom roles when adding the member fails', async () => {
     const el = makeEditor(OWNER_CAPS);
     el.addPrincipalId = 'u-1';
-    el.addRoleId = 'r-msg';
+    el.addRoleId = 'r-member';
+    el.addCustomIds = ['r-msg'];
     vi.mocked(apiFetch).mockResolvedValue(
-      jsonResponse(403, {
-        error: {
-          code: 'forbidden',
-          message: 'cannot create binding: actor lacks permission for delegation: agent.attach',
-        },
-      })
+      jsonResponse(409, { error: { message: 'already a member' } })
     );
 
     await el.handleAddMember();
 
-    expect(el.addError).toContain('"agent.attach"');
-    expect(el.addError).toContain("which you don't hold yourself");
+    expect(vi.mocked(apiFetch).mock.calls).toHaveLength(1);
+    expect(el.addError).toBe('already a member');
+  });
+
+  it('reports a delegation-ceiling refusal after the member is added', async () => {
+    const el = makeEditor(OWNER_CAPS);
+    el.addPrincipalId = 'u-1';
+    el.addRoleId = 'r-member';
+    el.addCustomIds = ['r-msg'];
+    vi.mocked(apiFetch)
+      .mockResolvedValueOnce(jsonResponse(201, {}))
+      .mockResolvedValueOnce(
+        jsonResponse(403, {
+          error: {
+            code: 'forbidden',
+            message: 'cannot create binding: actor lacks permission for delegation: agent.attach',
+          },
+        })
+      );
+
+    await el.handleAddMember();
+
+    expect(el.addDialogOpen).toBe(false);
+    expect(el.actionFeedback?.variant).toBe('danger');
+    expect(el.actionFeedback?.message).toContain('Member added');
+    expect(el.actionFeedback?.message).toContain('"agent.attach"');
+  });
+
+  it('ignores checked custom roles for agents', async () => {
+    const el = makeEditor(OWNER_CAPS);
+    el.addPrincipalType = 'agent';
+    el.addPrincipalId = 'a-1';
+    el.addRoleId = 'r-member';
+    el.addCustomIds = ['r-msg'];
+    vi.mocked(apiFetch).mockResolvedValue(jsonResponse(201, {}));
+
+    await el.handleAddMember();
+
+    expect(vi.mocked(apiFetch).mock.calls.map(([url]) => url)).toEqual([
+      '/api/v1/projects/p-1/members',
+    ]);
+  });
+
+  it('defaults the project role to project-member', () => {
+    const el = makeEditor(OWNER_CAPS);
+    el.openAddDialog();
+    expect(el.addRoleId).toBe('r-member');
+    expect(el.addCustomIds).toEqual([]);
   });
 });
 

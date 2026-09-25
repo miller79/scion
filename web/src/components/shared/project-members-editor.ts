@@ -121,6 +121,8 @@ export class ScionProjectMembersEditor extends LitElement {
   @state() private addPrincipalType = 'user';
   @state() private addPrincipalId = '';
   @state() private addRoleId = '';
+  /** Custom role definition IDs checked in the add dialog. */
+  @state() private addCustomIds: string[] = [];
   @state() private addLoading = false;
   @state() private addError: string | null = null;
 
@@ -682,10 +684,6 @@ export class ScionProjectMembersEditor extends LitElement {
     return this.customRoles;
   }
 
-  private get addSelectedIsCustom(): boolean {
-    return this.customRoles.some((r) => r.id === this.addRoleId);
-  }
-
   // ---------------------------------------------------------------------------
   // Actions
   // ---------------------------------------------------------------------------
@@ -693,7 +691,11 @@ export class ScionProjectMembersEditor extends LitElement {
   private openAddDialog(): void {
     this.addPrincipalType = 'user';
     this.addPrincipalId = '';
-    this.addRoleId = this.projectRoles.length > 0 ? this.projectRoles[0].id : '';
+    // Default to the least-privileged membership role the user may assign.
+    const roles = this.addFilteredRoles;
+    const member = roles.find((r) => r.name === 'project-member');
+    this.addRoleId = member?.id ?? roles[0]?.id ?? '';
+    this.addCustomIds = [];
     this.addError = null;
     this.addDialogOpen = true;
   }
@@ -710,49 +712,66 @@ export class ScionProjectMembersEditor extends LitElement {
 
     this.addLoading = true;
     this.addError = null;
-
-    const isCustom = this.addSelectedIsCustom;
+    const principalId = this.addPrincipalId.trim();
+    // Custom roles are never offered for agents; drop any left checked from
+    // before the member type changed.
+    const customIds = this.addCustomRoles.length > 0 ? this.addCustomIds : [];
 
     try {
-      // PM1: Built-in roles use the project-scoped members endpoint; custom
-      // roles are plain project-scoped role bindings.
+      // PM1: Membership goes through the project-scoped members endpoint.
       // suppressAccessDeniedToast: the dialog renders errors inline (RC-C fix).
-      const url = isCustom
-        ? '/api/v1/admin/role-bindings'
-        : `/api/v1/projects/${encodeURIComponent(this.projectId)}/members`;
-      const body: Record<string, string> = {
-        roleDefinitionId: this.addRoleId,
-        principalType: this.addPrincipalType,
-        principalId: this.addPrincipalId.trim(),
-      };
-      if (isCustom) {
-        body.scopeType = 'project';
-        body.scopeId = this.projectId;
-      }
-      const res = await apiFetch(url, {
+      const res = await apiFetch(`/api/v1/projects/${encodeURIComponent(this.projectId)}/members`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          roleDefinitionId: this.addRoleId,
+          principalType: this.addPrincipalType,
+          principalId,
+        }),
         suppressAccessDeniedToast: true,
       });
-
       if (!res.ok) {
-        const msg = await extractApiError(res, `HTTP ${res.status}`);
-        throw new Error(isCustom ? describeCustomRoleError(msg) : msg);
+        throw new Error(await extractApiError(res, `HTTP ${res.status}`));
       }
-
-      this.addDialogOpen = false;
-      this.actionFeedback = {
-        message: isCustom ? 'Role assigned' : 'Member added',
-        variant: 'success',
-      };
-      void this.loadData();
     } catch (err) {
       console.error('Failed to add member:', err);
       this.addError = err instanceof Error ? err.message : 'Failed to add member';
-    } finally {
       this.addLoading = false;
+      return;
     }
+
+    // The member exists now; custom roles are plain project-scoped role
+    // bindings. A refusal here must not look like the add failed, so report
+    // it after closing rather than inviting a retry that re-adds the member.
+    const failures: string[] = [];
+    for (const roleId of customIds) {
+      const res = await apiFetch('/api/v1/admin/role-bindings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roleDefinitionId: roleId,
+          principalType: this.addPrincipalType,
+          principalId,
+          scopeType: 'project',
+          scopeId: this.projectId,
+        }),
+        suppressAccessDeniedToast: true,
+      });
+      if (!res.ok) {
+        failures.push(describeCustomRoleError(await extractApiError(res, `HTTP ${res.status}`)));
+      }
+    }
+
+    this.addLoading = false;
+    this.addDialogOpen = false;
+    this.actionFeedback =
+      failures.length > 0
+        ? {
+            message: `Member added, but not every custom role was assigned. ${failures.join(' ')}`,
+            variant: 'danger',
+          }
+        : { message: 'Member added', variant: 'success' };
+    void this.loadData();
   }
 
   private openChangeRoleDialog(row: MemberRow): void {
@@ -1222,7 +1241,7 @@ export class ScionProjectMembersEditor extends LitElement {
             @sl-change=${(e: Event) => {
               this.addPrincipalType = (e.target as HTMLSelectElement).value;
               this.addPrincipalId = '';
-              if (this.addSelectedIsCustom && this.addCustomRoles.length === 0) {
+              if (!this.addFilteredRoles.some((r) => r.id === this.addRoleId)) {
                 this.addRoleId = this.addFilteredRoles[0]?.id ?? '';
               }
             }}
@@ -1262,32 +1281,19 @@ export class ScionProjectMembersEditor extends LitElement {
                     this.addRoleId = (e.target as HTMLSelectElement).value;
                   }}
                 >
-                  ${this.addCustomRoles.length > 0
-                    ? html`<small>Membership roles</small>`
-                    : nothing}
                   ${this.addFilteredRoles.map(
                     (role) => html` <sl-option value=${role.id}>${role.name}</sl-option> `
                   )}
-                  ${this.addCustomRoles.length > 0
-                    ? html`
-                        <sl-divider></sl-divider>
-                        <small>Custom roles</small>
-                        ${this.addCustomRoles.map(
-                          (role) => html` <sl-option value=${role.id}>${role.name}</sl-option> `
-                        )}
-                      `
-                    : nothing}
                 </sl-select>
               </div>
-              ${this.addSelectedIsCustom
-                ? html`
-                    <div class="validation-warning">
-                      <sl-icon name="info-circle"></sl-icon>
-                      A custom role adds permissions on top of a membership role; on its own it does
-                      not make someone a member. You can only grant permissions you hold yourself.
-                    </div>
-                  `
-                : ''}
+              ${this.renderCustomRoleChoices(
+                this.addCustomRoles,
+                this.addCustomIds,
+                (ids) => {
+                  this.addCustomIds = ids;
+                },
+                this.addLoading
+              )}
               ${this.addPrincipalType === 'group'
                 ? html`
                     <div class="validation-warning">
@@ -1319,6 +1325,41 @@ export class ScionProjectMembersEditor extends LitElement {
           >Add Member</sl-button
         >
       </sl-dialog>
+    `;
+  }
+
+  /** Checkbox list of custom project roles, shared by the add and edit
+   *  dialogs. Renders nothing when no custom roles may be offered. */
+  private renderCustomRoleChoices(
+    roles: ProjectRole[],
+    selected: string[],
+    onChange: (ids: string[]) => void,
+    disabled: boolean
+  ) {
+    if (roles.length === 0) return nothing;
+    return html`
+      <div class="form-group">
+        <span class="form-label">Custom Roles (optional)</span>
+        <div class="custom-role-list">
+          ${roles.map(
+            (role) => html`
+              <sl-checkbox
+                ?checked=${selected.includes(role.id)}
+                ?disabled=${disabled}
+                @sl-change=${(e: Event) => {
+                  const on = (e.target as HTMLInputElement).checked;
+                  onChange(on ? [...selected, role.id] : selected.filter((id) => id !== role.id));
+                }}
+                >${role.name}</sl-checkbox
+              >
+            `
+          )}
+        </div>
+        <p class="form-help">
+          Custom roles add permissions on top of the project role; pick as many as needed. You can
+          only grant permissions you hold yourself.
+        </p>
+      </div>
     `;
   }
 
@@ -1378,34 +1419,14 @@ export class ScionProjectMembersEditor extends LitElement {
               This ${row.principalType} holds only custom roles here, so it is not a project member.
               Add it as a member to give it a project role.
             </p>`}
-        ${customRoles.length > 0
-          ? html`
-              <div class="form-group">
-                <span class="form-label">Custom Roles</span>
-                <div class="custom-role-list">
-                  ${customRoles.map(
-                    (role) => html`
-                      <sl-checkbox
-                        ?checked=${this.changeCustomIds.includes(role.id)}
-                        ?disabled=${this.changeLoading}
-                        @sl-change=${(e: Event) => {
-                          const on = (e.target as HTMLInputElement).checked;
-                          this.changeCustomIds = on
-                            ? [...this.changeCustomIds, role.id]
-                            : this.changeCustomIds.filter((id) => id !== role.id);
-                        }}
-                        >${role.name}</sl-checkbox
-                      >
-                    `
-                  )}
-                </div>
-                <p class="form-help">
-                  Custom roles add permissions on top of the project role. You can only grant
-                  permissions you hold yourself.
-                </p>
-              </div>
-            `
-          : nothing}
+        ${this.renderCustomRoleChoices(
+          customRoles,
+          this.changeCustomIds,
+          (ids) => {
+            this.changeCustomIds = ids;
+          },
+          this.changeLoading
+        )}
         ${this.changeError ? html`<div class="dialog-error">${this.changeError}</div>` : nothing}
 
         <sl-button
