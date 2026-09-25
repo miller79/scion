@@ -32,6 +32,8 @@ import {
   describeCustomRoleError,
   groupMemberRows,
   isCustomProjectRole,
+  NO_PROJECT_ROLE,
+  planLeavesNoRoles,
   planMemberEdit,
   type MemberRow,
   type ProjectMemberBinding,
@@ -369,6 +371,8 @@ describe('planMemberEdit', () => {
   it('is empty when nothing changed', () => {
     expect(planMemberEdit(row, 'r-member', ['r-msg'])).toEqual({
       membershipRoleId: null,
+      addMembershipRoleId: null,
+      removeMembership: null,
       add: [],
       remove: [],
     });
@@ -418,12 +422,13 @@ describe('edit dialog save', () => {
     await el.handleChangeRole();
 
     const calls = vi.mocked(apiFetch).mock.calls.map(([url, init]) => [url, init?.method]);
+    // Grants first, then the membership change, removals last.
     expect(calls).toEqual([
-      ['/api/v1/projects/p-1/members/b1', 'PATCH'],
       ['/api/v1/admin/role-bindings', 'POST'],
+      ['/api/v1/projects/p-1/members/b1', 'PATCH'],
       ['/api/v1/projects/p-1/members/b3', 'DELETE'],
     ]);
-    expect(JSON.parse(vi.mocked(apiFetch).mock.calls[1][1]!.body as string)).toEqual({
+    expect(JSON.parse(vi.mocked(apiFetch).mock.calls[0][1]!.body as string)).toEqual({
       roleDefinitionId: 'r-port',
       principalType: 'user',
       principalId: 'u-a',
@@ -468,5 +473,132 @@ describe('removing a member', () => {
       '/api/v1/projects/p-1/members/b3',
       '/api/v1/projects/p-1/members/b1',
     ]);
+  });
+});
+
+describe('optional project role', () => {
+  const both = groupMemberRows([
+    binding('b1', 'u-a', 'r-member', 'project-member'),
+    binding('b3', 'u-a', 'r-msg', 'project-member-messaging'),
+  ])[0];
+  const customOnly = groupMemberRows([
+    binding('b3', 'u-a', 'r-msg', 'project-member-messaging'),
+  ])[0];
+
+  it('plans dropping the membership when the project role is set to none', () => {
+    const plan = planMemberEdit(both, NO_PROJECT_ROLE, ['r-msg']);
+    expect(plan.removeMembership?.id).toBe('b1');
+    expect(plan.membershipRoleId).toBeNull();
+    expect(planLeavesNoRoles(plan, both)).toBe(false);
+  });
+
+  it('plans adding a membership for a custom-role-only row', () => {
+    const plan = planMemberEdit(customOnly, 'r-member', ['r-msg']);
+    expect(plan.addMembershipRoleId).toBe('r-member');
+    expect(plan.removeMembership).toBeNull();
+  });
+
+  it('flags a plan that would leave no role at all', () => {
+    expect(planLeavesNoRoles(planMemberEdit(both, NO_PROJECT_ROLE, []), both)).toBe(true);
+    expect(planLeavesNoRoles(planMemberEdit(customOnly, NO_PROJECT_ROLE, []), customOnly)).toBe(
+      true
+    );
+  });
+
+  it('refuses to save a change that leaves no role', async () => {
+    const el = makeEditor(OWNER_CAPS);
+    el.openChangeRoleDialog(both);
+    el.changeRoleId = NO_PROJECT_ROLE;
+    el.changeCustomIds = [];
+
+    await el.handleChangeRole();
+
+    expect(vi.mocked(apiFetch)).not.toHaveBeenCalled();
+    expect(el.changeError).toContain('remove the member instead');
+  });
+
+  it('grants the custom role before removing the membership', async () => {
+    const el = makeEditor(OWNER_CAPS);
+    const memberOnly = groupMemberRows([binding('b1', 'u-a', 'r-member', 'project-member')])[0];
+    el.openChangeRoleDialog(memberOnly);
+    el.changeRoleId = NO_PROJECT_ROLE;
+    el.changeCustomIds = ['r-msg'];
+    vi.mocked(apiFetch).mockResolvedValue(jsonResponse(200, {}));
+
+    await el.handleChangeRole();
+
+    expect(vi.mocked(apiFetch).mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
+      ['/api/v1/admin/role-bindings', 'POST'],
+      ['/api/v1/projects/p-1/members/b1', 'DELETE'],
+    ]);
+    expect(el.changeDialogOpen).toBe(false);
+  });
+
+  it('removes nothing when a grant fails', async () => {
+    const el = makeEditor(OWNER_CAPS);
+    const memberOnly = groupMemberRows([binding('b1', 'u-a', 'r-member', 'project-member')])[0];
+    el.openChangeRoleDialog(memberOnly);
+    el.changeRoleId = NO_PROJECT_ROLE;
+    el.changeCustomIds = ['r-msg'];
+    vi.mocked(apiFetch).mockResolvedValue(
+      jsonResponse(403, {
+        error: {
+          message: 'cannot create binding: actor lacks permission for delegation: agent.attach',
+        },
+      })
+    );
+
+    await el.handleChangeRole();
+
+    expect(vi.mocked(apiFetch).mock.calls.map(([, init]) => init?.method)).toEqual(['POST']);
+    expect(el.changeDialogOpen).toBe(true);
+    expect(el.changeError).toContain('no access was lost');
+  });
+
+  it('adds a principal with custom roles only', async () => {
+    const el = makeEditor(OWNER_CAPS);
+    el.addPrincipalId = 'u-1';
+    el.addRoleId = NO_PROJECT_ROLE;
+    el.addCustomIds = ['r-msg'];
+    vi.mocked(apiFetch).mockResolvedValue(jsonResponse(201, {}));
+
+    await el.handleAddMember();
+
+    expect(vi.mocked(apiFetch).mock.calls.map(([url]) => url)).toEqual([
+      '/api/v1/admin/role-bindings',
+    ]);
+    expect(el.addDialogOpen).toBe(false);
+  });
+
+  it('requires a project role or a custom role when adding', async () => {
+    const el = makeEditor(OWNER_CAPS);
+    el.addPrincipalId = 'u-1';
+    el.addRoleId = NO_PROJECT_ROLE;
+    el.addCustomIds = [];
+
+    await el.handleAddMember();
+
+    expect(vi.mocked(apiFetch)).not.toHaveBeenCalled();
+    expect(el.addError).toContain('at least one custom role');
+  });
+
+  it('keeps the add dialog open when every custom role is refused and no member was created', async () => {
+    const el = makeEditor(OWNER_CAPS);
+    el.addDialogOpen = true;
+    el.addPrincipalId = 'u-1';
+    el.addRoleId = NO_PROJECT_ROLE;
+    el.addCustomIds = ['r-msg'];
+    vi.mocked(apiFetch).mockResolvedValue(
+      jsonResponse(403, {
+        error: {
+          message: 'cannot create binding: actor lacks permission for delegation: agent.attach',
+        },
+      })
+    );
+
+    await el.handleAddMember();
+
+    expect(el.addDialogOpen).toBe(true);
+    expect(el.addError).toContain('"agent.attach"');
   });
 });
