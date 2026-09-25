@@ -46,7 +46,7 @@ type ownerCustomRoleFixture struct {
 	otherProjectID string
 	member         *store.User
 	withinCeiling  *store.RoleDefinition // project-member perms + agent.message
-	beyondCeiling  *store.RoleDefinition // carries agent.port_access, which owners do not hold
+	beyondCeiling  *store.RoleDefinition // carries agent.attach, which owners do not hold
 }
 
 func setupOwnerCustomRoleFixture(t *testing.T) *ownerCustomRoleFixture {
@@ -85,9 +85,9 @@ func setupOwnerCustomRoleFixture(t *testing.T) *ownerCustomRoleFixture {
 	})
 	require.NoError(t, err)
 	beyond, err := s.CreateRoleDefinition(ctx, &store.RoleDefinition{
-		Name:        "ocr-port-viewer",
+		Name:        "ocr-terminal",
 		ScopeType:   store.RoleScopeProject,
-		Permissions: []string{"project.read", "agent.list", "agent.read", "agent.port_access"},
+		Permissions: []string{"project.read", "agent.list", "agent.read", "agent.attach"},
 	})
 	require.NoError(t, err)
 
