@@ -30,12 +30,20 @@ import type { MembershipCapabilities } from '../../shared/types.js';
 import {
   ScionProjectMembersEditor,
   describeCustomRoleError,
+  groupMemberRows,
   isCustomProjectRole,
+  planMemberEdit,
+  type MemberRow,
+  type ProjectMemberBinding,
 } from './project-members-editor.js';
 
 vi.mock('../../client/api.js', async (orig) => ({
   ...(await orig<typeof import('../../client/api.js')>()),
   apiFetch: vi.fn(),
+}));
+
+vi.mock('./confirm-dialog.js', () => ({
+  showConfirm: vi.fn(() => Promise.resolve(true)),
 }));
 
 const OWNER_CAPS: MembershipCapabilities = {
@@ -74,6 +82,16 @@ interface EditorInternals {
   loadData(): Promise<void>;
   handleAddMember(): Promise<void>;
   canManageMember(m: { roleName: string }): boolean;
+  canRemoveRow(row: MemberRow): boolean;
+  canEditRow(row: MemberRow): boolean;
+  openChangeRoleDialog(row: MemberRow): void;
+  changeRoleId: string;
+  changeCustomIds: string[];
+  changeError: string | null;
+  changeDialogOpen: boolean;
+  handleChangeRole(): Promise<void>;
+  handleRemoveMember(row: MemberRow): Promise<void>;
+  members: ProjectMemberBinding[];
 }
 
 function makeEditor(caps: MembershipCapabilities | null): EditorInternals {
@@ -203,8 +221,7 @@ describe('handleAddMember routing', () => {
       jsonResponse(403, {
         error: {
           code: 'forbidden',
-          message:
-            'cannot create binding: actor lacks permission for delegation: agent.attach',
+          message: 'cannot create binding: actor lacks permission for delegation: agent.attach',
         },
       })
     );
@@ -235,5 +252,167 @@ describe('managing custom-role rows', () => {
     const el = makeEditor(ADMIN_CAPS);
     expect(el.canManageMember({ roleName: 'project-member-messaging' })).toBe(false);
     expect(el.canManageMember({ roleName: 'project-member' })).toBe(true);
+  });
+});
+
+function binding(
+  id: string,
+  principalId: string,
+  roleDefinitionId: string,
+  roleName: string,
+  source = 'direct'
+): ProjectMemberBinding {
+  return {
+    id,
+    roleDefinitionId,
+    roleName,
+    principalType: 'user',
+    principalId,
+    principalDisplayName: principalId.toUpperCase(),
+    scopeType: 'project',
+    scopeId: 'p-1',
+    createdAt: '2026-09-25T00:00:00Z',
+    source,
+  };
+}
+
+describe('groupMemberRows', () => {
+  it('puts a principal and its custom roles on one row', () => {
+    const rows = groupMemberRows([
+      binding('b1', 'u-a', 'r-member', 'project-member'),
+      binding('b2', 'u-b', 'r-owner', 'project-owner'),
+      binding('b3', 'u-a', 'r-msg', 'project-member-messaging'),
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0].primary?.id).toBe('b1');
+    expect(rows[0].custom.map((b) => b.id)).toEqual(['b3']);
+    expect(rows[1].primary?.id).toBe('b2');
+    expect(rows[1].custom).toEqual([]);
+  });
+
+  it('keeps custom-role-only principals as rows without a membership role', () => {
+    const rows = groupMemberRows([binding('b1', 'u-a', 'r-msg', 'project-member-messaging')]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].primary).toBeNull();
+    expect(rows[0].custom).toHaveLength(1);
+  });
+
+  it('does not merge direct and group-derived bindings', () => {
+    const rows = groupMemberRows([
+      binding('b1', 'u-a', 'r-member', 'project-member'),
+      binding('b2', 'u-a', 'r-admin', 'project-admin', 'g-team'),
+    ]);
+    expect(rows).toHaveLength(2);
+  });
+});
+
+describe('planMemberEdit', () => {
+  const row = groupMemberRows([
+    binding('b1', 'u-a', 'r-member', 'project-member'),
+    binding('b3', 'u-a', 'r-msg', 'project-member-messaging'),
+  ])[0];
+
+  it('is empty when nothing changed', () => {
+    expect(planMemberEdit(row, 'r-member', ['r-msg'])).toEqual({
+      membershipRoleId: null,
+      add: [],
+      remove: [],
+    });
+  });
+
+  it('reports a membership change and custom adds/removes', () => {
+    const plan = planMemberEdit(row, 'r-admin', ['r-port']);
+    expect(plan.membershipRoleId).toBe('r-admin');
+    expect(plan.add).toEqual(['r-port']);
+    expect(plan.remove.map((b) => b.id)).toEqual(['b3']);
+  });
+});
+
+describe('member row permissions', () => {
+  const withCustom = groupMemberRows([
+    binding('b1', 'u-a', 'r-member', 'project-member'),
+    binding('b3', 'u-a', 'r-msg', 'project-member-messaging'),
+  ])[0];
+  const plain = groupMemberRows([binding('b1', 'u-a', 'r-member', 'project-member')])[0];
+
+  it('lets an admin remove a plain member but not one with custom roles', () => {
+    const el = makeEditor(ADMIN_CAPS);
+    expect(el.canRemoveRow(plain)).toBe(true);
+    expect(el.canRemoveRow(withCustom)).toBe(false);
+  });
+
+  it('lets an owner remove and edit a member with custom roles', () => {
+    const el = makeEditor(OWNER_CAPS);
+    expect(el.canRemoveRow(withCustom)).toBe(true);
+    expect(el.canEditRow(withCustom)).toBe(true);
+  });
+});
+
+describe('edit dialog save', () => {
+  it('patches membership, binds added custom roles and deletes removed ones', async () => {
+    const el = makeEditor(OWNER_CAPS);
+    const row = groupMemberRows([
+      binding('b1', 'u-a', 'r-member', 'project-member'),
+      binding('b3', 'u-a', 'r-msg', 'project-member-messaging'),
+    ])[0];
+    el.customRoles = [...CUSTOM, { id: 'r-port', name: 'port-viewer', scopeType: 'project' }];
+    el.openChangeRoleDialog(row);
+    el.changeRoleId = 'r-admin';
+    el.changeCustomIds = ['r-port'];
+    vi.mocked(apiFetch).mockResolvedValue(jsonResponse(200, {}));
+
+    await el.handleChangeRole();
+
+    const calls = vi.mocked(apiFetch).mock.calls.map(([url, init]) => [url, init?.method]);
+    expect(calls).toEqual([
+      ['/api/v1/projects/p-1/members/b1', 'PATCH'],
+      ['/api/v1/admin/role-bindings', 'POST'],
+      ['/api/v1/projects/p-1/members/b3', 'DELETE'],
+    ]);
+    expect(JSON.parse(vi.mocked(apiFetch).mock.calls[1][1]!.body as string)).toEqual({
+      roleDefinitionId: 'r-port',
+      principalType: 'user',
+      principalId: 'u-a',
+      scopeType: 'project',
+      scopeId: 'p-1',
+    });
+    expect(el.changeDialogOpen).toBe(false);
+  });
+
+  it('keeps the dialog open with guidance when the ceiling refuses a role', async () => {
+    const el = makeEditor(OWNER_CAPS);
+    const row = groupMemberRows([binding('b1', 'u-a', 'r-member', 'project-member')])[0];
+    el.openChangeRoleDialog(row);
+    el.changeCustomIds = ['r-msg'];
+    vi.mocked(apiFetch).mockResolvedValue(
+      jsonResponse(403, {
+        error: {
+          message: 'cannot create binding: actor lacks permission for delegation: agent.attach',
+        },
+      })
+    );
+
+    await el.handleChangeRole();
+
+    expect(el.changeDialogOpen).toBe(true);
+    expect(el.changeError).toContain('"agent.attach"');
+  });
+});
+
+describe('removing a member', () => {
+  it('deletes custom-role bindings before the membership binding', async () => {
+    const el = makeEditor(OWNER_CAPS);
+    const row = groupMemberRows([
+      binding('b1', 'u-a', 'r-member', 'project-member'),
+      binding('b3', 'u-a', 'r-msg', 'project-member-messaging'),
+    ])[0];
+    vi.mocked(apiFetch).mockResolvedValue(new Response(null, { status: 204 }));
+
+    await el.handleRemoveMember(row);
+
+    expect(vi.mocked(apiFetch).mock.calls.map(([url]) => url)).toEqual([
+      '/api/v1/projects/p-1/members/b3',
+      '/api/v1/projects/p-1/members/b1',
+    ]);
   });
 });
