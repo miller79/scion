@@ -744,7 +744,7 @@ func TestProjectRoleExactPermissionSets(t *testing.T) {
 			perms: projectOwnerPermissionIDs(),
 			want: []string{
 				"agent.create", "agent.delete", "agent.lifecycle", "agent.list",
-				"agent.message", "agent.read",
+				"agent.message", "agent.port_access", "agent.read",
 				"agent.set_message_mode", "agent.stop_all", "agent.update",
 				"harness_config.create", "harness_config.delete",
 				"harness_config.list", "harness_config.read", "harness_config.update",
@@ -763,7 +763,7 @@ func TestProjectRoleExactPermissionSets(t *testing.T) {
 			perms: projectAdminPermissionIDs(),
 			want: []string{
 				"agent.create", "agent.lifecycle", "agent.list",
-				"agent.message", "agent.read",
+				"agent.message", "agent.port_access", "agent.read",
 				"agent.stop_all", "agent.update",
 				"harness_config.create",
 				"harness_config.list", "harness_config.read", "harness_config.update",
@@ -801,8 +801,8 @@ func TestProjectRoleExactPermissionSets(t *testing.T) {
 // TestProjectRoleRevisions verifies the current revision of each project role.
 func TestProjectRoleRevisions(t *testing.T) {
 	wantRevisions := map[string]int{
-		store.ProjectRoleOwner:  3,
-		store.ProjectRoleAdmin:  3,
+		store.ProjectRoleOwner:  4,
+		store.ProjectRoleAdmin:  4,
 		store.ProjectRoleMember: 3,
 	}
 	for _, role := range BuiltInRoles() {
@@ -826,8 +826,8 @@ func TestProjectRoleReconciliationConverges(t *testing.T) {
 		revision    int
 		permissions func() []string
 	}{
-		{store.ProjectRoleOwner, 3, projectOwnerPermissionIDs},
-		{store.ProjectRoleAdmin, 3, projectAdminPermissionIDs},
+		{store.ProjectRoleOwner, 4, projectOwnerPermissionIDs},
+		{store.ProjectRoleAdmin, 4, projectAdminPermissionIDs},
 		{store.ProjectRoleMember, 3, projectMemberCuratedPermissionIDs},
 	}
 
