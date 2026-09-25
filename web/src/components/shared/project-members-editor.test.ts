@@ -204,14 +204,14 @@ describe('handleAddMember routing', () => {
         error: {
           code: 'forbidden',
           message:
-            'cannot create binding: actor lacks permission for delegation: agent.port_access',
+            'cannot create binding: actor lacks permission for delegation: agent.attach',
         },
       })
     );
 
     await el.handleAddMember();
 
-    expect(el.addError).toContain('"agent.port_access"');
+    expect(el.addError).toContain('"agent.attach"');
     expect(el.addError).toContain("which you don't hold yourself");
   });
 });
