@@ -330,13 +330,13 @@ func (a *AuthzService) computeCapabilitiesWithContext(ctx context.Context, ident
 // allActions returns a Capabilities with all provided actions.
 // ownerAdminExcludedActions are actions the project owner/admin capability
 // short-circuit must not grant blindly. Agents run with their creator's
-// user-scoped secrets, so attach and port access to another member's agent
-// would expose that member's credentials (miller79/scion#88). The seeded
-// project-owner/project-admin roles do not carry these permissions; access is
-// resolved per resource from the resource-owner/ancestor relationship grants.
+// user-scoped secrets, so attach to another member's agent would expose that
+// member's credentials (miller79/scion#88). The seeded project-owner/
+// project-admin roles do not carry attach; access is resolved per resource
+// from the resource-owner/ancestor relationship grants. Port access is not
+// listed: both roles carry agent.port_access (miller79/scion#121).
 var ownerAdminExcludedActions = map[Action]bool{
-	ActionAttach:     true,
-	ActionPortAccess: true,
+	ActionAttach: true,
 }
 
 // projectOwnerAdminCapabilities returns the capability set for a project
