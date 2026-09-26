@@ -410,6 +410,12 @@ def provision(ctx: scion_harness.ProvisionContext) -> None:
         "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": f"http://127.0.0.1:{port}",
         "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": f"http://127.0.0.1:{port}",
         "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+        # Claude Code defaults to delta temporality. sciontool releases that
+        # predate native harness telemetry merge buffered metrics by keeping
+        # only the newest point per series, which is right for running totals
+        # but discards every earlier delta (most token usage was lost). The
+        # hub's dashboard reads cumulative series.
+        "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "cumulative",
     })
     if enabled:
         resource_attrs = _resource_attributes(source_env if isinstance(source_env, dict) else None)
