@@ -800,6 +800,86 @@ func TestRetentionCleanup(t *testing.T) {
 }
 
 // =============================================================================
+// Capability computation is not audited (miller79/scion#134)
+// =============================================================================
+
+func TestDecisionAudit_CapabilitiesNotAudited(t *testing.T) {
+	srv, s := testServer(t)
+	ctx := context.Background()
+
+	memberID := tid("caps-member")
+	require.NoError(t, s.CreateUser(ctx, &store.User{
+		ID: memberID, Email: "caps-member@example.com", DisplayName: "Caps Member", Role: "member", Status: "active",
+	}))
+	member := NewAuthenticatedUser(memberID, "caps-member@example.com", "Caps Member", "member", "api")
+
+	var resources []Resource
+	for _, slug := range []string{"caps-a", "caps-b"} {
+		p := &store.Project{ID: tid(slug), Name: slug, Slug: slug, CreatedBy: DevUserID, OwnerID: DevUserID}
+		require.NoError(t, s.CreateProject(ctx, p))
+		resources = append(resources, projectResource(p))
+	}
+
+	emitter := &recordingDecisionAuditEmitter{}
+	srv.authzService.SetDecisionAuditEmitter(emitter)
+
+	srv.authzService.ComputeCapabilitiesBatch(ctx, member, resources, "project")
+	srv.authzService.ComputeCapabilities(ctx, member, resources[0])
+	srv.authzService.ComputeScopeCapabilities(ctx, member, "", "", "project")
+	assert.Empty(t, emitter.records, "capability computation must not write decision audits")
+
+	// Enforcement checks are still audited, including denials.
+	srv.authzService.CheckAccess(ctx, member, resources[0], ActionDelete)
+	require.Len(t, emitter.records, 1)
+	assert.Equal(t, "deny", emitter.records[0].Result)
+	assert.Equal(t, "delete", emitter.records[0].Permission)
+
+	// A capability used to enforce access keeps its decisions audited.
+	emitter.records = nil
+	srv.authzService.ComputeScopeCapabilities(contextWithAuditedCapabilities(ctx), member, "", "", "project")
+	assert.NotEmpty(t, emitter.records, "audited capability computation must write decision audits")
+
+	// List enforcement (AuthorizeReadBatch) is audited: one read per resource.
+	emitter.records = nil
+	_, err := srv.authzService.AuthorizeReadBatch(ctx, member, resources)
+	require.NoError(t, err)
+	require.Len(t, emitter.records, len(resources))
+	for _, rec := range emitter.records {
+		assert.Equal(t, "read", rec.Permission)
+	}
+}
+
+func TestAuditRetentionHandler_DeletesOldRecords(t *testing.T) {
+	srv, s := testServer(t)
+	ctx := context.Background()
+
+	principal := tid("retention-user")
+	add := func(ts time.Time) {
+		require.NoError(t, s.CreateDecisionAudit(ctx, &store.DecisionAuditRecord{
+			PrincipalKind: "user", PrincipalID: principal, ResourceType: "project",
+			Permission: "read", Result: "deny", Reason: "test", Timestamp: ts,
+		}))
+		require.NoError(t, s.CreateMutationAudit(ctx, &store.MutationAuditRecord{
+			MutationType: "policy_create", ActorPrincipalKind: "user", ActorPrincipalID: principal,
+			TargetType: "policy", TargetID: tid("retention-policy"), Timestamp: ts,
+		}))
+	}
+	add(time.Now().AddDate(0, 0, -(defaultAuditRetentionDays + 5)))
+	add(time.Now().AddDate(0, 0, -(defaultAuditRetentionDays - 5)))
+
+	// AuditRetentionDays is unset, so the default window applies.
+	srv.auditRetentionHandler()(ctx)
+
+	_, decisions, err := s.ListDecisionAudits(ctx, store.DecisionAuditFilter{PrincipalID: principal, Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, 1, decisions, "only the record inside the retention window remains")
+
+	_, mutations, err := s.ListMutationAudits(ctx, store.MutationAuditFilter{ActorPrincipalID: principal, Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, 1, mutations)
+}
+
+// =============================================================================
 // Test Helpers for non-dev auth requests
 // =============================================================================
 

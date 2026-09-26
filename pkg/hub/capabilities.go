@@ -172,6 +172,7 @@ func gcpServiceAccountResource(sa *store.GCPServiceAccount) Resource {
 
 // ComputeCapabilities evaluates which actions the identity can perform on a single resource.
 func (a *AuthzService) ComputeCapabilities(ctx context.Context, identity Identity, resource Resource) *Capabilities {
+	ctx = contextWithAdvisoryDecisions(ctx)
 	actions, ok := ResourceActions[resource.Type]
 	if !ok {
 		return &Capabilities{Actions: []string{}}
@@ -209,6 +210,7 @@ func (a *AuthzService) ComputeCapabilities(ctx context.Context, identity Identit
 
 // ComputeScopeCapabilities evaluates scope-level actions (e.g., create, list) for a resource type.
 func (a *AuthzService) ComputeScopeCapabilities(ctx context.Context, identity Identity, scopeType, scopeID, resourceType string) *Capabilities {
+	ctx = contextWithAdvisoryDecisions(ctx)
 	actions, ok := ScopeActions[resourceType]
 	if !ok {
 		return &Capabilities{Actions: []string{}}
@@ -250,6 +252,7 @@ func (a *AuthzService) ComputeScopeCapabilities(ctx context.Context, identity Id
 // ComputeCapabilitiesBatch evaluates capabilities for a list of resources, optimized
 // for batch operation by expanding groups and fetching policies once.
 func (a *AuthzService) ComputeCapabilitiesBatch(ctx context.Context, identity Identity, resources []Resource, resourceType string) []*Capabilities {
+	ctx = contextWithAdvisoryDecisions(ctx)
 	actions, ok := ResourceActions[resourceType]
 	if !ok {
 		caps := make([]*Capabilities, len(resources))

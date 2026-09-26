@@ -155,13 +155,31 @@ func (s *MutationAuditStore) ListMutationAudits(ctx context.Context, filter stor
 	return records, total, nil
 }
 
-// DeleteMutationAuditsBefore removes mutation audit records older than the given time.
+// DeleteMutationAuditsBefore removes mutation audit records older than the
+// given time, in batches of auditDeleteBatchSize (see
+// DeleteDecisionAuditsBefore).
 func (s *MutationAuditStore) DeleteMutationAuditsBefore(ctx context.Context, before time.Time) (int, error) {
-	n, err := s.client.MutationAudit.Delete().
-		Where(mutationaudit.TimestampLT(before)).
-		Exec(ctx)
-	if err != nil {
-		return 0, mapError(err)
+	total := 0
+	for {
+		ids, err := s.client.MutationAudit.Query().
+			Where(mutationaudit.TimestampLT(before)).
+			Limit(auditDeleteBatchSize).
+			IDs(ctx)
+		if err != nil {
+			return total, mapError(err)
+		}
+		if len(ids) == 0 {
+			return total, nil
+		}
+		n, err := s.client.MutationAudit.Delete().
+			Where(mutationaudit.IDIn(ids...)).
+			Exec(ctx)
+		if err != nil {
+			return total, mapError(err)
+		}
+		total += n
+		if len(ids) < auditDeleteBatchSize {
+			return total, nil
+		}
 	}
-	return n, nil
 }

@@ -103,7 +103,7 @@ func (s *Server) handleChatSpaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// List all projects and filter by ActionRead using batch capability check.
+	// List all projects and filter by ActionRead.
 	allProjects, err := s.store.ListProjects(ctx, store.ProjectFilter{}, store.ListOptions{Limit: 1000})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "INTERNAL", "failed to list projects", nil)
@@ -115,14 +115,20 @@ func (s *Server) handleChatSpaces(w http.ResponseWriter, r *http.Request) {
 	for i := range allProjects.Items {
 		resources[i] = projectResource(&allProjects.Items[i])
 	}
-	caps := s.authzService.ComputeCapabilitiesBatch(ctx, identity, resources, "project")
+	// Visibility is enforcement: evaluate read alone as an audited check that
+	// fails closed, rather than projecting every project action.
+	readable, err := s.authzService.AuthorizeReadBatch(ctx, identity, resources)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL", "failed to authorize projects", nil)
+		return
+	}
 
 	// Get user prefs.
 	prefs, _ := wcs.GetUserPrefs(ctx, user.ID())
 
 	var spaces []chatSpaceEntry
 	for i, p := range allProjects.Items {
-		if !capabilityAllows(caps[i], ActionRead) {
+		if !readable[i] {
 			continue
 		}
 
@@ -3838,11 +3844,15 @@ func (s *Server) handleChatSearch(w http.ResponseWriter, r *http.Request) {
 		for i := range allProjects.Items {
 			resources[i] = projectResource(&allProjects.Items[i])
 		}
-		caps := s.authzService.ComputeCapabilitiesBatch(ctx, identity, resources, "project")
+		readable, err := s.authzService.AuthorizeReadBatch(ctx, identity, resources)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "INTERNAL", "failed to authorize projects", nil)
+			return
+		}
 
 		var visibleIDs []string
 		for i, p := range allProjects.Items {
-			if capabilityAllows(caps[i], ActionRead) {
+			if readable[i] {
 				visibleIDs = append(visibleIDs, p.ID)
 			}
 		}
