@@ -86,6 +86,52 @@ def make_ctx(home: str):
     return scion_harness.ProvisionContext("claude", manifest)
 
 
+_IDENTITY_ENV_CLEAR = {
+    "SCION_AGENT_ID": None,
+    "SCION_PROJECT_ID": None,
+    "SCION_GROVE_ID": None,
+    "SCION_HARNESS": None,
+    "OTEL_RESOURCE_ATTRIBUTES": None,
+}
+
+
+class ResourceAttributesTest(unittest.TestCase):
+    """Agent identity on Claude Code's OTel resource."""
+
+    def test_identity_from_agent_env(self) -> None:
+        with env_vars(**{**_IDENTITY_ENV_CLEAR, "SCION_AGENT_ID": "agent-1",
+                         "SCION_PROJECT_ID": "project-1", "SCION_HARNESS": "claude"}):
+            self.assertEqual(
+                provision._resource_attributes(None),
+                "scion.agent.id=agent-1,scion.project.id=project-1,scion.harness=claude",
+            )
+
+    def test_staged_env_beats_process_env(self) -> None:
+        with env_vars(**{**_IDENTITY_ENV_CLEAR, "SCION_AGENT_ID": "from-process"}):
+            self.assertEqual(provision._resource_attributes({"SCION_AGENT_ID": "staged"}),
+                             "scion.agent.id=staged")
+
+    def test_project_id_preferred_over_grove_id(self) -> None:
+        with env_vars(**{**_IDENTITY_ENV_CLEAR, "SCION_PROJECT_ID": "project-1", "SCION_GROVE_ID": "grove-1"}):
+            self.assertEqual(provision._resource_attributes(None), "scion.project.id=project-1")
+
+    def test_grove_id_fallback(self) -> None:
+        with env_vars(**{**_IDENTITY_ENV_CLEAR, "SCION_GROVE_ID": "grove-1"}):
+            self.assertEqual(provision._resource_attributes(None), "scion.project.id=grove-1")
+
+    def test_existing_attributes_kept_before_identity(self) -> None:
+        with env_vars(**{**_IDENTITY_ENV_CLEAR, "OTEL_RESOURCE_ATTRIBUTES": "team=a", "SCION_AGENT_ID": "agent-1"}):
+            self.assertEqual(provision._resource_attributes(None), "team=a,scion.agent.id=agent-1")
+
+    def test_values_are_percent_encoded(self) -> None:
+        with env_vars(**{**_IDENTITY_ENV_CLEAR, "SCION_AGENT_ID": "a,b=c"}):
+            self.assertEqual(provision._resource_attributes(None), "scion.agent.id=a%2Cb%3Dc")
+
+    def test_empty_without_identity(self) -> None:
+        with env_vars(**_IDENTITY_ENV_CLEAR):
+            self.assertEqual(provision._resource_attributes(None), "")
+
+
 class ModelResolutionTest(unittest.TestCase):
     def test_size_alias_resolves_through_config_model_aliases(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, temporary_home(tmp):

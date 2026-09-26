@@ -158,7 +158,7 @@ func TestSourcesFor_TokenFiguresCoverEveryEmitter(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{"scion.hook.tokens.input", "gen_ai.tokens.input", "claude_code.token.usage", "gen_ai.client.token.usage"}, names(logicalTokensInput))
 	assert.ElementsMatch(t, []string{"scion.hook.tokens.output", "gen_ai.tokens.output", "claude_code.token.usage", "gen_ai.client.token.usage"}, names(logicalTokensOutput))
-	assert.ElementsMatch(t, []string{"gen_ai.api.calls", "gen_ai.client.token.usage"}, names(logicalAPICalls))
+	assert.ElementsMatch(t, []string{"gen_ai.api.calls", "claude_code.api_request.count", "gen_ai.client.token.usage"}, names(logicalAPICalls))
 	assert.Equal(t, []metricSource{{name: "agent.session.count"}}, sourcesFor("agent.session.count"))
 }
 

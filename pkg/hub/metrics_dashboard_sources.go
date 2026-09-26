@@ -34,7 +34,9 @@ import (
 //   - Claude Code's native claude_code.token.usage, split by "type";
 //   - Copilot CLI's native OpenTelemetry GenAI histogram
 //     gen_ai.client.token.usage, split by gen_ai.token.type. Its sum is the
-//     token total and its count is one per model call (input observations).
+//     token total and its count is one per model call (input observations);
+//   - claude_code.api_request.count, which a collector derives from Claude
+//     Code's api_request log events (it has no model-call metric).
 //
 // A logical name below maps to its sources; any other name is one metric.
 const (
@@ -79,6 +81,9 @@ var dashboardSources = map[string][]metricSource{
 	},
 	logicalAPICalls: {
 		{name: "gen_ai.api.calls"},
+		// Claude Code reports model requests only as api_request log events;
+		// a collector count connector turns them into this counter.
+		{name: "claude_code.api_request.count"},
 		// One input-token observation per model call.
 		{name: "gen_ai.client.token.usage", filter: `metric.labels.gen_ai_token_type = "input"`, measure: measureCount, labelAliases: copilotModelAliases},
 	},
