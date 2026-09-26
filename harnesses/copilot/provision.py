@@ -183,6 +183,35 @@ def _resolve_endpoint(telemetry: dict[str, Any] | None, env: dict[str, str] | No
     return f"http://{_LOCAL_OTEL_HOST}:{port}"
 
 
+# Agent identity for Copilot's resource. sciontool releases that predate
+# native harness telemetry relay metrics without stamping the agent's
+# identity, which leaves Copilot's series without agent_id/project_id; newer
+# releases drop these keys and substitute the same trusted values, so setting
+# them is harmless there.
+_IDENTITY_RESOURCE_ATTRS = (
+    ("scion.agent.id", ("SCION_AGENT_ID",)),
+    ("scion.project.id", ("SCION_PROJECT_ID", "SCION_GROVE_ID")),
+    ("scion.harness", ("SCION_HARNESS",)),
+)
+
+
+def _resource_attributes(env: dict[str, str] | None) -> str:
+    """Return OTEL_RESOURCE_ATTRIBUTES carrying the agent's identity.
+
+    Any existing OTEL_RESOURCE_ATTRIBUTES is kept, with the identity keys
+    appended so they take precedence.
+    """
+    parts = []
+    existing = _lookup(env, "OTEL_RESOURCE_ATTRIBUTES")
+    if existing:
+        parts.append(existing)
+    for attr, keys in _IDENTITY_RESOURCE_ATTRS:
+        value = next((v for v in (_lookup(env, k) for k in keys) if v), "")
+        if value:
+            parts.append(f"{attr}={quote(value, safe='')}")
+    return ",".join(parts)
+
+
 def _build_telemetry_env(telemetry: dict[str, Any], env: dict[str, str] | None) -> dict[str, str]:
     """Build env vars that turn on Copilot CLI's native OTel export.
 
@@ -209,6 +238,10 @@ def _build_telemetry_env(telemetry: dict[str, Any], env: dict[str, str] | None) 
         # The hub's dashboard reads cumulative series (latest value per process).
         "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "cumulative",
     }
+
+    resource_attrs = _resource_attributes(env)
+    if resource_attrs:
+        otel_env["OTEL_RESOURCE_ATTRIBUTES"] = resource_attrs
 
     # Headers and CA only make sense for an explicit external collector; the
     # local receiver needs neither, and the cloud backend's own credentials

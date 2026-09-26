@@ -62,7 +62,10 @@ python3 /home/scion/.scion/harness/capture_auth.py
   CLI's OTLP exporter at sciontool's local receiver (OTLP/HTTP on
   `127.0.0.1:4318` by default; `SCION_COPILOT_OTEL_PROTOCOL=grpc` switches to
   gRPC). Copilot then reports model calls and tokens as
-  `gen_ai.client.token.usage` (by `gen_ai.token.type`). `SCION_COPILOT_OTEL_ENDPOINT`
+  `gen_ai.client.token.usage` (by `gen_ai.token.type`). The agent's identity
+  (`scion.agent.id`, `scion.project.id`, `scion.harness`) is set in
+  `OTEL_RESOURCE_ATTRIBUTES` so the series stay per agent even with sciontool
+  releases that do not stamp relayed metrics. `SCION_COPILOT_OTEL_ENDPOINT`
   (with `SCION_COPILOT_OTEL_HEADERS` / `SCION_COPILOT_OTEL_CA_FILE`) targets an
   explicit collector instead.
 - **System prompt is approximate** — system prompt content is prepended to
