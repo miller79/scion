@@ -57,8 +57,17 @@ python3 /home/scion/.scion/harness/capture_auth.py
 - **No turn/model-call limits** — Copilot CLI has no hook dialect for individual
   turn or model call events. Only `max_duration` (via Scion's external timeout)
   is supported.
-- **No telemetry integration** — Copilot's OpenTelemetry configuration surface
-  is undocumented.
+- **Usage comes from native OpenTelemetry, not hooks** — with telemetry
+  enabled, the provisioner sets `COPILOT_OTEL_ENABLED=true` and points Copilot
+  CLI's OTLP exporter at sciontool's local receiver (OTLP/HTTP on
+  `127.0.0.1:4318` by default; `SCION_COPILOT_OTEL_PROTOCOL=grpc` switches to
+  gRPC). Copilot then reports model calls and tokens as
+  `gen_ai.client.token.usage` (by `gen_ai.token.type`). The agent's identity
+  (`scion.agent.id`, `scion.project.id`, `scion.harness`) is set in
+  `OTEL_RESOURCE_ATTRIBUTES` so the series stay per agent even with sciontool
+  releases that do not stamp relayed metrics. `SCION_COPILOT_OTEL_ENDPOINT`
+  (with `SCION_COPILOT_OTEL_HEADERS` / `SCION_COPILOT_OTEL_CA_FILE`) targets an
+  explicit collector instead.
 - **System prompt is approximate** — system prompt content is prepended to
   `~/.copilot/copilot-instructions.md`; there is no native `--system-prompt` flag.
 - **No project-scoped MCP** — project-scoped MCP server entries are demoted to
