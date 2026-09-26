@@ -126,9 +126,15 @@ def _write_mcp_config(ctx: scion_harness.ProvisionContext, servers: dict[str, An
 # Telemetry – native OTel export
 # ---------------------------------------------------------------------------
 
-# Default OTLP endpoint for sciontool's gRPC receiver.
-_DEFAULT_OTEL_ENDPOINT = "http://localhost:4317"
-_DEFAULT_OTEL_PROTOCOL = "grpc"
+# Copilot CLI exports to sciontool's local OTLP receiver, never straight to the
+# cloud backend: sciontool stamps agent/project identity, applies redaction and
+# forwards to whatever telemetry.cloud points at. The cloud endpoint, protocol,
+# headers and CA describe sciontool's own hop and do not apply here.
+# OTLP/HTTP is Copilot CLI's documented transport, so it is the default.
+_LOCAL_OTEL_HOST = "127.0.0.1"
+_DEFAULT_OTEL_PROTOCOL = "http"
+_DEFAULT_OTEL_HTTP_PORT = "4318"
+_DEFAULT_OTEL_GRPC_PORT = "4317"
 
 
 def _telemetry_enabled(telemetry: dict[str, Any] | None) -> bool:
@@ -141,91 +147,85 @@ def _telemetry_enabled(telemetry: dict[str, Any] | None) -> bool:
     return bool(enabled)
 
 
-def _resolve_endpoint(telemetry: dict[str, Any] | None, env: dict[str, str] | None) -> str:
-    """Resolve the OTLP endpoint from env overrides or telemetry config."""
-    env = env or {}
-    for key in ("SCION_COPILOT_OTEL_ENDPOINT", "SCION_OTEL_ENDPOINT"):
-        v = (env.get(key) or os.environ.get(key) or "").strip()
-        if v:
-            return v
-    if telemetry and isinstance(telemetry.get("cloud"), dict):
-        ep = (telemetry["cloud"].get("endpoint") or "").strip()
-        if ep:
-            return ep
-    return _DEFAULT_OTEL_ENDPOINT
+def _lookup(env: dict[str, str] | None, key: str) -> str:
+    """Return a value from the env overlay, falling back to os.environ."""
+    return ((env or {}).get(key) or os.environ.get(key) or "").strip()
 
 
 def _resolve_protocol(telemetry: dict[str, Any] | None, env: dict[str, str] | None) -> str:
-    """Resolve the OTLP protocol from env overrides or telemetry config."""
-    env = env or {}
-    for key in ("SCION_COPILOT_OTEL_PROTOCOL", "SCION_OTEL_PROTOCOL"):
-        v = (env.get(key) or os.environ.get(key) or "").strip()
-        if v:
-            return v
-    if telemetry and isinstance(telemetry.get("cloud"), dict):
-        proto = (telemetry["cloud"].get("protocol") or "").strip()
-        if proto:
-            return proto
+    """Resolve Copilot's OTLP transport: "http" (default) or "grpc".
+
+    Only the Copilot-specific override applies. SCION_OTEL_PROTOCOL and
+    telemetry.cloud.protocol describe sciontool's hop to the cloud backend.
+    """
+    proto = _lookup(env, "SCION_COPILOT_OTEL_PROTOCOL").lower()
+    if proto in ("grpc", "otlp-grpc"):
+        return "grpc"
     return _DEFAULT_OTEL_PROTOCOL
 
 
-def _build_telemetry_env(telemetry: dict[str, Any], env: dict[str, str] | None) -> dict[str, str]:
-    """Build env vars that direct Copilot CLI's native OTel emitter to sciontool.
+def _resolve_endpoint(telemetry: dict[str, Any] | None, env: dict[str, str] | None) -> str:
+    """Resolve the endpoint Copilot CLI exports to.
 
-    Copilot CLI's enterprise-managed OTel export honours standard OpenTelemetry
-    SDK environment variables (OTEL_*) and the Copilot-specific
-    COPILOT_TELEMETRY_ENABLED flag.  The env vars produced here point the
-    emitter at sciontool's local OTLP receiver and follow the same convention
-    used by the Claude Code harness (§3.4.2 in the metrics design doc).
+    SCION_COPILOT_OTEL_ENDPOINT points Copilot at an explicit collector.
+    Otherwise it is sciontool's local receiver on the port for the resolved
+    transport (SCION_OTEL_HTTP_PORT / SCION_OTEL_GRPC_PORT).
+    """
+    explicit = _lookup(env, "SCION_COPILOT_OTEL_ENDPOINT")
+    if explicit:
+        return explicit
+    if _resolve_protocol(telemetry, env) == "grpc":
+        port = _lookup(env, "SCION_OTEL_GRPC_PORT") or _DEFAULT_OTEL_GRPC_PORT
+    else:
+        port = _lookup(env, "SCION_OTEL_HTTP_PORT") or _DEFAULT_OTEL_HTTP_PORT
+    if not port.isdecimal() or not 1 <= int(port) <= 65535:
+        raise scion_harness.ProvisionError("invalid local telemetry port")
+    return f"http://{_LOCAL_OTEL_HOST}:{port}"
+
+
+def _build_telemetry_env(telemetry: dict[str, Any], env: dict[str, str] | None) -> dict[str, str]:
+    """Build env vars that turn on Copilot CLI's native OTel export.
+
+    Copilot CLI exports OpenTelemetry only when COPILOT_OTEL_ENABLED=true;
+    COPILOT_OTEL_EXPORTER_TYPE selects otlp-http or otlp-grpc, and the
+    standard OTEL_* variables configure the exporter. It then emits GenAI
+    metrics (gen_ai.client.token.usage, by gen_ai.token.type) and spans for
+    model calls. The emitter is pointed at sciontool's local receiver, the
+    same convention as the Claude Code harness (§3.4.2 in the metrics design
+    doc).
     """
     env = env or {}
-    endpoint = _resolve_endpoint(telemetry, env)
     protocol = _resolve_protocol(telemetry, env)
+    endpoint = _resolve_endpoint(telemetry, env)
 
     otel_env: dict[str, str] = {
-        "COPILOT_TELEMETRY_ENABLED": "true",
+        "COPILOT_OTEL_ENABLED": "true",
+        "COPILOT_OTEL_EXPORTER_TYPE": "otlp-grpc" if protocol == "grpc" else "otlp-http",
         "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
-        "OTEL_EXPORTER_OTLP_PROTOCOL": protocol,
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc" if protocol == "grpc" else "http/protobuf",
         "OTEL_METRICS_EXPORTER": "otlp",
         "OTEL_LOGS_EXPORTER": "otlp",
         "OTEL_METRIC_EXPORT_INTERVAL": "30000",
+        # The hub's dashboard reads cumulative series (latest value per process).
+        "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "cumulative",
     }
 
-    # Propagate custom headers when present (e.g. for authenticated collectors).
-    # Check env overlay / os.environ first, then fall back to telemetry config.
-    headers: dict[str, str] = {}
-    for key in ("SCION_COPILOT_OTEL_HEADERS", "SCION_OTEL_HEADERS"):
-        v = (env.get(key) or os.environ.get(key) or "").strip()
-        if v:
+    # Headers and CA only make sense for an explicit external collector; the
+    # local receiver needs neither, and the cloud backend's own credentials
+    # must not be copied into the Copilot process.
+    if _lookup(env, "SCION_COPILOT_OTEL_ENDPOINT"):
+        raw_headers = _lookup(env, "SCION_COPILOT_OTEL_HEADERS")
+        if raw_headers:
             try:
-                parsed = json.loads(v)
-                if isinstance(parsed, dict):
-                    headers = parsed
-                    break
+                parsed = json.loads(raw_headers)
             except json.JSONDecodeError:
-                pass
-    if not headers:
-        cloud = telemetry.get("cloud") or {}
-        if isinstance(cloud, dict) and isinstance(cloud.get("headers"), dict):
-            headers = cloud["headers"]
-    if headers:
-        parts = [f"{k}={quote(str(v), safe='')}" for k, v in headers.items()]
-        otel_env["OTEL_EXPORTER_OTLP_HEADERS"] = ",".join(sorted(parts))
-
-    # TLS CA file for non-localhost collectors.
-    # Check env overlay / os.environ first, then fall back to telemetry config.
-    ca_file = ""
-    for key in ("SCION_COPILOT_OTEL_CA_FILE", "SCION_OTEL_CA_FILE"):
-        v = (env.get(key) or os.environ.get(key) or "").strip()
-        if v:
-            ca_file = v
-            break
-    if not ca_file:
-        cloud = telemetry.get("cloud") or {}
-        if isinstance(cloud, dict) and isinstance(cloud.get("tls"), dict):
-            ca_file = str(cloud["tls"].get("ca_file") or "").strip()
-    if ca_file:
-        otel_env["OTEL_EXPORTER_OTLP_CERTIFICATE"] = ca_file
+                parsed = None
+            if isinstance(parsed, dict) and parsed:
+                parts = [f"{k}={quote(str(v), safe='')}" for k, v in parsed.items()]
+                otel_env["OTEL_EXPORTER_OTLP_HEADERS"] = ",".join(sorted(parts))
+        ca_file = _lookup(env, "SCION_COPILOT_OTEL_CA_FILE")
+        if ca_file:
+            otel_env["OTEL_EXPORTER_OTLP_CERTIFICATE"] = ca_file
 
     return otel_env
 

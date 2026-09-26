@@ -260,18 +260,18 @@ func (s *MetricsDashboardService) QuerySummary(ctx context.Context, periodDays i
 		summary.TotalSessions = sessions
 	}
 
-	apiCalls, err := s.querySum(ctx, "gen_ai.api.calls", window.start, window.end, window.extraFilter)
+	apiCalls, err := s.querySum(ctx, logicalAPICalls, window.start, window.end, window.extraFilter)
 	if err != nil {
 		queryErrors = append(queryErrors, fmt.Sprintf("API calls: %v", err))
 	} else {
 		summary.TotalAPICalls = apiCalls
 	}
 
-	inputTokens, err := s.querySum(ctx, "gen_ai.tokens.input", window.start, window.end, window.extraFilter)
+	inputTokens, err := s.querySum(ctx, logicalTokensInput, window.start, window.end, window.extraFilter)
 	if err != nil {
 		queryErrors = append(queryErrors, fmt.Sprintf("input tokens: %v", err))
 	}
-	outputTokens, err := s.querySum(ctx, "gen_ai.tokens.output", window.start, window.end, window.extraFilter)
+	outputTokens, err := s.querySum(ctx, logicalTokensOutput, window.start, window.end, window.extraFilter)
 	if err != nil {
 		queryErrors = append(queryErrors, fmt.Sprintf("output tokens: %v", err))
 	}
@@ -330,8 +330,8 @@ func (s *MetricsDashboardService) QuerySessions(ctx context.Context, periodDays 
 // QueryModelCalls returns API call data grouped by model and harness.
 func (s *MetricsDashboardService) QueryModelCalls(ctx context.Context, periodDays int, opts ...QueryOption) (*ModelCallsView, error) {
 	return queryGroupedMetricsView(s, ctx, "model-calls", periodDays, opts, []groupedTimeSeriesQuery{
-		{metricName: "gen_ai.api.calls", groupBy: "metric.labels.model", errorLabel: "by model"},
-		{metricName: "gen_ai.api.calls", groupBy: "metric.labels.harness", errorLabel: "by harness"},
+		{metricName: logicalAPICalls, groupBy: "metric.labels.model", errorLabel: "by model"},
+		{metricName: logicalAPICalls, groupBy: "metric.labels.harness", errorLabel: "by harness"},
 	}, func(series [][]LabeledTimeSeries) *ModelCallsView {
 		return &ModelCallsView{PeriodDays: periodDays, ByModel: series[0], ByHarness: series[1]}
 	})
@@ -340,94 +340,71 @@ func (s *MetricsDashboardService) QueryModelCalls(ctx context.Context, periodDay
 // QueryTokens returns token usage data grouped by model.
 func (s *MetricsDashboardService) QueryTokens(ctx context.Context, periodDays int, opts ...QueryOption) (*TokensView, error) {
 	return queryGroupedMetricsView(s, ctx, "tokens", periodDays, opts, []groupedTimeSeriesQuery{
-		{metricName: "gen_ai.tokens.input", groupBy: "metric.labels.model", errorLabel: "input tokens"},
-		{metricName: "gen_ai.tokens.output", groupBy: "metric.labels.model", errorLabel: "output tokens"},
+		{metricName: logicalTokensInput, groupBy: "metric.labels.model", errorLabel: "input tokens"},
+		{metricName: logicalTokensOutput, groupBy: "metric.labels.model", errorLabel: "output tokens"},
 	}, func(series [][]LabeledTimeSeries) *TokensView {
 		return &TokensView{PeriodDays: periodDays, Input: series[0], Output: series[1]}
 	})
 }
 
-// querySum queries a metric and returns the total sum across all time series and points.
-//
-// Raw data is fetched without Cloud Monitoring aggregation to avoid aligner
-// compatibility issues with CUMULATIVE metrics (ALIGN_SUM is invalid for
-// CUMULATIVE; ALIGN_DELTA yields 0 for sparse single-point data). Each raw
-// data point from a short-lived sciontool process represents an independent
-// increment (counter starts at 0 per process), so summing all point values
-// gives the correct total.
-func (s *MetricsDashboardService) querySum(ctx context.Context, metricName string, start, end time.Time, extraFilter []string) (int64, error) {
-	filter := fmt.Sprintf(`metric.type = "%s%s"`, metricPrefix, metricName)
-	for _, f := range extraFilter {
-		filter += " AND " + f
-	}
-
-	req := &monitoringpb.ListTimeSeriesRequest{
-		Name:   fmt.Sprintf("projects/%s", s.projectID),
-		Filter: filter,
-		Interval: &monitoringpb.TimeInterval{
-			StartTime: timestamppb.New(start),
-			EndTime:   timestamppb.New(end),
-		},
-	}
-
-	var total int64
-	it := s.client.ListTimeSeries(ctx, req)
-	for {
-		ts, err := it.Next()
-		if err == iterator.Done {
-			break
+// forEachSourceSeries lists every time series behind a dashboard figure (see
+// sourcesFor) and calls fn for each. Raw points are fetched without Cloud
+// Monitoring aggregation to avoid aligner issues with CUMULATIVE metrics
+// (ALIGN_SUM is invalid for CUMULATIVE; ALIGN_DELTA yields 0 for sparse
+// single-point data); seriesIncrements turns them into totals in Go. A source
+// whose metric or filtered label does not exist contributes nothing.
+func (s *MetricsDashboardService) forEachSourceSeries(ctx context.Context, metricName string, start, end time.Time, extraFilter []string, fn func(src metricSource, ts *monitoringpb.TimeSeries)) error {
+	for _, src := range sourcesFor(metricName) {
+		req := &monitoringpb.ListTimeSeriesRequest{
+			Name:   fmt.Sprintf("projects/%s", s.projectID),
+			Filter: sourceFilter(src, extraFilter),
+			Interval: &monitoringpb.TimeInterval{
+				StartTime: timestamppb.New(start),
+				EndTime:   timestamppb.New(end),
+			},
 		}
-		if err != nil {
-			return 0, fmt.Errorf("listing time series for %s: %w", metricName, err)
-		}
-		for _, p := range ts.GetPoints() {
-			total += p.GetValue().GetInt64Value()
+		it := s.client.ListTimeSeries(ctx, req)
+		for {
+			ts, err := it.Next()
+			if err == iterator.Done {
+				break
+			}
+			if err != nil {
+				if isAbsentMetricErr(err) {
+					break
+				}
+				return fmt.Errorf("listing time series for %s: %w", src.name, err)
+			}
+			fn(src, ts)
 		}
 	}
-	return total, nil
+	return nil
 }
 
-// queryDailyTimeSeries returns daily aggregated data points for a metric.
-// Raw data is fetched and bucketed by day in Go to avoid CUMULATIVE aligner issues.
-func (s *MetricsDashboardService) queryDailyTimeSeries(ctx context.Context, metricName string, start, end time.Time, extraFilter []string) ([]TimeSeriesPoint, error) {
-	filter := fmt.Sprintf(`metric.type = "%s%s"`, metricPrefix, metricName)
-	for _, f := range extraFilter {
-		filter += " AND " + f
-	}
-
-	req := &monitoringpb.ListTimeSeriesRequest{
-		Name:   fmt.Sprintf("projects/%s", s.projectID),
-		Filter: filter,
-		Interval: &monitoringpb.TimeInterval{
-			StartTime: timestamppb.New(start),
-			EndTime:   timestamppb.New(end),
-		},
-	}
-
-	dayTotals := make(map[string]int64)
-	it := s.client.ListTimeSeries(ctx, req)
-	for {
-		ts, err := it.Next()
-		if err == iterator.Done {
-			break
+// querySum returns the total a figure reached across all its sources.
+func (s *MetricsDashboardService) querySum(ctx context.Context, metricName string, start, end time.Time, extraFilter []string) (int64, error) {
+	var total float64
+	err := s.forEachSourceSeries(ctx, metricName, start, end, extraFilter, func(src metricSource, ts *monitoringpb.TimeSeries) {
+		for _, inc := range seriesIncrements(ts, src.measure) {
+			total += inc.amount
 		}
-		if err != nil {
-			return nil, fmt.Errorf("listing daily time series for %s: %w", metricName, err)
-		}
-		for _, p := range ts.GetPoints() {
-			day := p.GetInterval().GetEndTime().AsTime().Format("2006-01-02")
-			dayTotals[day] += p.GetValue().GetInt64Value()
-		}
-	}
-
-	points := make([]TimeSeriesPoint, 0, len(dayTotals))
-	for day, total := range dayTotals {
-		points = append(points, TimeSeriesPoint{Timestamp: day, Value: total})
-	}
-	sort.Slice(points, func(i, j int) bool {
-		return points[i].Timestamp < points[j].Timestamp
 	})
-	return points, nil
+	if err != nil {
+		return 0, err
+	}
+	return roundAmount(total), nil
+}
+
+// queryDailyTimeSeries returns a figure's daily totals across its sources.
+func (s *MetricsDashboardService) queryDailyTimeSeries(ctx context.Context, metricName string, start, end time.Time, extraFilter []string) ([]TimeSeriesPoint, error) {
+	days := make(map[string]float64)
+	err := s.forEachSourceSeries(ctx, metricName, start, end, extraFilter, func(src metricSource, ts *monitoringpb.TimeSeries) {
+		addToDays(days, seriesIncrements(ts, src.measure))
+	})
+	if err != nil {
+		return nil, fmt.Errorf("daily series for %s: %w", metricName, err)
+	}
+	return sortedDayPoints(days), nil
 }
 
 // labelKeyFromGroupBy extracts the short label key from a Cloud Monitoring
@@ -437,62 +414,25 @@ func labelKeyFromGroupBy(groupByLabel string) string {
 	return parts[len(parts)-1]
 }
 
-// queryGroupedTimeSeries returns daily data grouped by a label.
-// Raw data is fetched and grouped/bucketed in Go to avoid CUMULATIVE aligner issues.
+// queryGroupedTimeSeries returns a figure's daily totals grouped by a label,
+// across all its sources.
 func (s *MetricsDashboardService) queryGroupedTimeSeries(ctx context.Context, metricName, groupByLabel string, start, end time.Time, extraFilter []string) ([]LabeledTimeSeries, error) {
-	filter := fmt.Sprintf(`metric.type = "%s%s"`, metricPrefix, metricName)
-	for _, f := range extraFilter {
-		filter += " AND " + f
-	}
 	labelKey := labelKeyFromGroupBy(groupByLabel)
-
-	req := &monitoringpb.ListTimeSeriesRequest{
-		Name:   fmt.Sprintf("projects/%s", s.projectID),
-		Filter: filter,
-		Interval: &monitoringpb.TimeInterval{
-			StartTime: timestamppb.New(start),
-			EndTime:   timestamppb.New(end),
-		},
+	byLabel := make(map[string]map[string]float64)
+	err := s.forEachSourceSeries(ctx, metricName, start, end, extraFilter, func(src metricSource, ts *monitoringpb.TimeSeries) {
+		label := seriesLabel(ts, src, labelKey)
+		if byLabel[label] == nil {
+			byLabel[label] = make(map[string]float64)
+		}
+		addToDays(byLabel[label], seriesIncrements(ts, src.measure))
+	})
+	if err != nil {
+		return nil, fmt.Errorf("grouped series for %s: %w", metricName, err)
 	}
 
-	// label -> day -> total
-	seriesDayTotals := make(map[string]map[string]int64)
-	it := s.client.ListTimeSeries(ctx, req)
-	for {
-		ts, err := it.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("listing grouped time series for %s: %w", metricName, err)
-		}
-
-		label := "(unknown)"
-		if labels := ts.GetMetric().GetLabels(); labels != nil {
-			if v, ok := labels[labelKey]; ok && v != "" {
-				label = v
-			}
-		}
-
-		if seriesDayTotals[label] == nil {
-			seriesDayTotals[label] = make(map[string]int64)
-		}
-		for _, p := range ts.GetPoints() {
-			day := p.GetInterval().GetEndTime().AsTime().Format("2006-01-02")
-			seriesDayTotals[label][day] += p.GetValue().GetInt64Value()
-		}
-	}
-
-	var result []LabeledTimeSeries
-	for label, dayTotals := range seriesDayTotals {
-		points := make([]TimeSeriesPoint, 0, len(dayTotals))
-		for day, total := range dayTotals {
-			points = append(points, TimeSeriesPoint{Timestamp: day, Value: total})
-		}
-		sort.Slice(points, func(i, j int) bool {
-			return points[i].Timestamp < points[j].Timestamp
-		})
-		result = append(result, LabeledTimeSeries{Label: label, Points: points})
+	result := make([]LabeledTimeSeries, 0, len(byLabel))
+	for label, days := range byLabel {
+		result = append(result, LabeledTimeSeries{Label: label, Points: sortedDayPoints(days)})
 	}
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Label < result[j].Label
@@ -628,18 +568,18 @@ func (s *MetricsDashboardService) QueryProjectSummary(ctx context.Context, proje
 		summary.SessionsCount24h = sessions
 	}
 
-	apiCalls, err := s.querySum(ctx, "gen_ai.api.calls", start, now, filter)
+	apiCalls, err := s.querySum(ctx, logicalAPICalls, start, now, filter)
 	if err != nil {
 		queryErrors = append(queryErrors, fmt.Sprintf("API calls: %v", err))
 	} else {
 		summary.APICalls24h = apiCalls
 	}
 
-	inputTokens, err := s.querySum(ctx, "gen_ai.tokens.input", start, now, filter)
+	inputTokens, err := s.querySum(ctx, logicalTokensInput, start, now, filter)
 	if err != nil {
 		queryErrors = append(queryErrors, fmt.Sprintf("input tokens: %v", err))
 	}
-	outputTokens, err := s.querySum(ctx, "gen_ai.tokens.output", start, now, filter)
+	outputTokens, err := s.querySum(ctx, logicalTokensOutput, start, now, filter)
 	if err != nil {
 		queryErrors = append(queryErrors, fmt.Sprintf("output tokens: %v", err))
 	}
