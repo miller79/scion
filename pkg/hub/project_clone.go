@@ -392,7 +392,7 @@ func (s *Server) authorizeProjectClone(ctx context.Context, w http.ResponseWrite
 	}
 
 	// 2. Caller must be able to create projects at hub scope.
-	caps := s.authzService.ComputeScopeCapabilities(ctx, userIdent, "", "", "project")
+	caps := s.authzService.ComputeScopeCapabilities(contextWithAuditedCapabilities(ctx), userIdent, "", "", "project")
 	if !slices.Contains(caps.Actions, string(ActionCreate)) {
 		writeError(w, http.StatusForbidden, ErrCodeForbidden,
 			"Insufficient permission to create projects", nil)

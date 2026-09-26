@@ -65,8 +65,44 @@ func (e *StoreDecisionAuditEmitter) EmitDecisionAudit(ctx context.Context, recor
 	}()
 }
 
+// advisoryDecisionKey marks a context whose decisions only decide which
+// actions to advertise in a response's _capabilities. They neither allow nor
+// refuse a request, so they are not audited.
+type advisoryDecisionKey struct{}
+
+// auditedCapabilitiesKey marks a context whose capability computation is used
+// to enforce access, so its decisions stay audited.
+type auditedCapabilitiesKey struct{}
+
+// contextWithAdvisoryDecisions marks ctx for capability computation. Listing N
+// resources evaluates every action on each of them, and auditing those
+// evaluations made them the bulk of decision_audits, almost all of them
+// denials of actions nobody requested (miller79/scion#134).
+func contextWithAdvisoryDecisions(ctx context.Context) context.Context {
+	if audited, _ := ctx.Value(auditedCapabilitiesKey{}).(bool); audited {
+		return ctx
+	}
+	return context.WithValue(ctx, advisoryDecisionKey{}, true)
+}
+
+// contextWithAuditedCapabilities is for callers that enforce access with a
+// computed capability (refusing a request unless an action is advertised):
+// those decisions are audited like any other enforcement check.
+func contextWithAuditedCapabilities(ctx context.Context) context.Context {
+	return context.WithValue(ctx, auditedCapabilitiesKey{}, true)
+}
+
+func isAdvisoryDecision(ctx context.Context) bool {
+	advisory, _ := ctx.Value(advisoryDecisionKey{}).(bool)
+	return advisory
+}
+
 // emitDecisionAudit builds and emits a decision audit record from a Decide call.
 func (a *AuthzService) emitDecisionAudit(ctx context.Context, request AuthzRequest, decision Decision) {
+	if isAdvisoryDecision(ctx) {
+		return
+	}
+
 	// Sampling: always audit deny decisions; sample allow decisions.
 	if decision.Allowed && a.DecisionAuditSampleRate < 1.0 {
 		if rand.Float64() >= a.DecisionAuditSampleRate {
@@ -787,12 +823,12 @@ func (s *Server) CleanupAuditRecords(ctx context.Context, retentionDays int) err
 
 	decisionCount, err := s.store.DeleteDecisionAuditsBefore(ctx, cutoff)
 	if err != nil {
-		return fmt.Errorf("failed to cleanup decision audit records: %w", err)
+		return fmt.Errorf("failed to cleanup decision audit records after deleting %d: %w", decisionCount, err)
 	}
 
 	mutationCount, err := s.store.DeleteMutationAuditsBefore(ctx, cutoff)
 	if err != nil {
-		return fmt.Errorf("failed to cleanup mutation audit records: %w", err)
+		return fmt.Errorf("failed to cleanup mutation audit records after deleting %d: %w", mutationCount, err)
 	}
 
 	slog.Info("audit records cleaned up",

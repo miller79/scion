@@ -16,6 +16,7 @@ package hub
 
 import (
 	"context"
+	"log/slog"
 	"time"
 )
 
@@ -27,6 +28,15 @@ const stuckMessageExpireTTL = 24 * time.Hour
 // for dispatch_state="failed" messages when
 // Server.Config.FailedMessageRetentionDays is unset or non-positive.
 const defaultFailedMessageRetentionDays = 7
+
+// defaultAuditRetentionDays is the fallback retention window (in days) for
+// decision and mutation audit records, used when
+// Server.Config.AuditRetentionDays is unset or non-positive.
+const defaultAuditRetentionDays = 30
+
+// auditRetentionRunTimeout bounds one audit-retention run. A backlog that
+// does not finish is deleted in batches, so the next run resumes it.
+const auditRetentionRunTimeout = 5 * time.Minute
 
 // missingRecipientFailureReason is recorded on messages that are failed early
 // by brokerMessageSweepHandler because their recipient agent no longer exists.
@@ -83,6 +93,26 @@ func (s *Server) brokerMessageSweepHandler() func(ctx context.Context) {
 		if orphaned > 0 {
 			s.agentLifecycleLog.Info("sweep: failed pending messages with missing recipient",
 				"count", orphaned)
+		}
+	}
+}
+
+// auditRetentionHandler returns a recurring handler that deletes decision and
+// mutation audit records older than the configured retention window
+// (Server.Config.AuditRetentionDays, default defaultAuditRetentionDays).
+// Registered as a RecurringSingleton guarded by LockAuditRetention. Without
+// it nothing pruned the audit tables (miller79/scion#134).
+func (s *Server) auditRetentionHandler() func(ctx context.Context) {
+	return func(ctx context.Context) {
+		ctx, cancel := context.WithTimeout(ctx, auditRetentionRunTimeout)
+		defer cancel()
+
+		retentionDays := s.config.AuditRetentionDays
+		if retentionDays <= 0 {
+			retentionDays = defaultAuditRetentionDays
+		}
+		if err := s.CleanupAuditRecords(ctx, retentionDays); err != nil {
+			slog.Warn("audit-retention: cleanup incomplete; the next run continues", "error", err, "retentionDays", retentionDays)
 		}
 	}
 }

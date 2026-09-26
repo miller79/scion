@@ -180,6 +180,11 @@ const (
 	// — rows left with released_at IS NULL for agents that are no longer in a
 	// counted phase (stopped/suspended/error) or no longer exist.
 	LockBrokerQuotaReconcile AdvisoryLockKey = 0x5C100021
+
+	// LockAuditRetention guards the periodic deletion of decision and mutation
+	// audit records older than the configured retention window
+	// (Server.Config.AuditRetentionDays).
+	LockAuditRetention AdvisoryLockKey = 0x5C100022
 )
 
 // AdvisoryLocker is implemented by backends that can take a cluster-wide

@@ -173,13 +173,36 @@ func (s *DecisionAuditStore) ListDecisionAudits(ctx context.Context, filter stor
 	return records, total, nil
 }
 
-// DeleteDecisionAuditsBefore removes decision audit records older than the given time.
+// auditDeleteBatchSize bounds each audit DELETE. A retention backlog can be
+// millions of rows; deleting them in one statement would hold SQLite's write
+// lock for the whole run and stall every other writer.
+var auditDeleteBatchSize = 5000 // var so tests can exercise the batch loop
+
+// DeleteDecisionAuditsBefore removes decision audit records older than the
+// given time, in batches of auditDeleteBatchSize. It returns the number
+// deleted so far if ctx ends or a batch fails, so a later run can continue.
 func (s *DecisionAuditStore) DeleteDecisionAuditsBefore(ctx context.Context, before time.Time) (int, error) {
-	n, err := s.client.DecisionAudit.Delete().
-		Where(decisionaudit.TimestampLT(before)).
-		Exec(ctx)
-	if err != nil {
-		return 0, mapError(err)
+	total := 0
+	for {
+		ids, err := s.client.DecisionAudit.Query().
+			Where(decisionaudit.TimestampLT(before)).
+			Limit(auditDeleteBatchSize).
+			IDs(ctx)
+		if err != nil {
+			return total, mapError(err)
+		}
+		if len(ids) == 0 {
+			return total, nil
+		}
+		n, err := s.client.DecisionAudit.Delete().
+			Where(decisionaudit.IDIn(ids...)).
+			Exec(ctx)
+		if err != nil {
+			return total, mapError(err)
+		}
+		total += n
+		if len(ids) < auditDeleteBatchSize {
+			return total, nil
+		}
 	}
-	return n, nil
 }

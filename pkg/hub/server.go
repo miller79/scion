@@ -296,8 +296,10 @@ type ServerConfig struct {
 	// Read through Server.nativeChatEnabled(), never directly.
 	NativeChatEnabled *bool
 
-	// AuditRetentionDays is the number of days to retain authorization audit records.
-	// Default: 90. Used by CleanupAuditRecords for periodic retention cleanup.
+	// AuditRetentionDays is the number of days to retain decision and mutation
+	// audit records before the audit-retention sweep deletes them. Default: 30
+	// (see defaultAuditRetentionDays). Zero or negative falls back to the
+	// default rather than disabling the sweep.
 	AuditRetentionDays int
 
 	// FailedMessageRetentionDays is the number of days to retain messages in
@@ -4113,6 +4115,7 @@ func (s *Server) StartBackgroundServices(ctx context.Context) {
 	s.scheduler.RegisterRecurringSingleton("broker-affinity-reap", 5, store.LockBrokerAffinityReap, s.brokerAffinityReapHandler())
 	s.scheduler.RegisterRecurringSingleton("broker-message-sweep", 5, store.LockBrokerMessageSweep, s.brokerMessageSweepHandler())
 	s.scheduler.RegisterRecurringSingleton("failed-message-retention", 60, store.LockFailedMessageRetention, s.failedMessageRetentionHandler())
+	s.scheduler.RegisterRecurringSingleton("audit-retention", 60, store.LockAuditRetention, s.auditRetentionHandler())
 	s.scheduler.RegisterRecurringSingleton("exposed-ports-sweep", 5, store.LockExposedPortsSweep, s.exposedPortsSweepHandler())
 	s.scheduler.RegisterRecurringSingleton("notification-dispatch-sweep", 5, store.LockNotificationDispatchSweep, s.notificationDispatchSweepHandler())
 	// Reconcile stale max_agents_per_broker reservations (ptone/scion#1963):
