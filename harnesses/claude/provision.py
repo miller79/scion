@@ -55,6 +55,7 @@ import os
 import subprocess
 import sys
 from typing import Any
+from urllib.parse import quote
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -327,6 +328,39 @@ def _build_env_overlay(ctx: scion_harness.ProvisionContext, auth: scion_harness.
     return env
 
 
+# Agent identity for Claude Code's OTel resource. sciontool releases that
+# predate native harness telemetry relay claude_code.* metrics without
+# stamping the agent's identity, which leaves them without agent_id and
+# project_id; newer releases drop these keys and substitute the same trusted
+# values, so setting them is harmless there.
+_IDENTITY_RESOURCE_ATTRS = (
+    ("scion.agent.id", ("SCION_AGENT_ID",)),
+    ("scion.project.id", ("SCION_PROJECT_ID", "SCION_GROVE_ID")),
+    ("scion.harness", ("SCION_HARNESS",)),
+)
+
+
+def _resource_attributes(source_env: dict[str, Any] | None) -> str:
+    """Return OTEL_RESOURCE_ATTRIBUTES carrying the agent's identity.
+
+    Any existing OTEL_RESOURCE_ATTRIBUTES is kept, with the identity keys
+    appended so they take precedence.
+    """
+
+    def lookup(key: str) -> str:
+        return str((source_env or {}).get(key) or os.environ.get(key) or "").strip()
+
+    parts = []
+    existing = lookup("OTEL_RESOURCE_ATTRIBUTES")
+    if existing:
+        parts.append(existing)
+    for attr, keys in _IDENTITY_RESOURCE_ATTRS:
+        value = next((v for v in (lookup(k) for k in keys) if v), "")
+        if value:
+            parts.append(f"{attr}={quote(value, safe='')}")
+    return ",".join(parts)
+
+
 def provision(ctx: scion_harness.ProvisionContext) -> None:
     auth = ctx.select_auth(AUTH)
 
@@ -377,6 +411,10 @@ def provision(ctx: scion_harness.ProvisionContext) -> None:
         "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": f"http://127.0.0.1:{port}",
         "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
     })
+    if enabled:
+        resource_attrs = _resource_attributes(source_env if isinstance(source_env, dict) else None)
+        if resource_attrs:
+            env["OTEL_RESOURCE_ATTRIBUTES"] = resource_attrs
     model = _apply_model(ctx, env)
     extra: dict[str, Any] | None = None
     if auth.method == "vertex-ai":
