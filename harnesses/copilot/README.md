@@ -91,6 +91,9 @@ python3 /home/scion/.scion/harness/capture_auth.py
   metric (for example `gen_ai.client.operation.duration`) is unaffected:
   rejected on GCP, forwarded on generic OTLP, exactly as before this rule
   existed.
+  Separately, the agent's identity (`scion.agent.id`, `scion.project.id`,
+  `scion.harness`) is set in `OTEL_RESOURCE_ATTRIBUTES`, so its series stay
+  per agent in sciontool releases that predate native harness telemetry.
 - **System prompt is approximate** — system prompt content is prepended to
   `~/.copilot/copilot-instructions.md`; there is no native `--system-prompt` flag.
 - **No project-scoped MCP** — project-scoped MCP server entries are demoted to

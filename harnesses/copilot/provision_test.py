@@ -212,5 +212,36 @@ class ResolveProtocolOsEnvTest(BaseTelemetryTest):
         self.assertEqual(provision._resolve_protocol(env), "grpc")
 
 
+class ResourceAttributesTest(BaseTelemetryTest):
+    """Agent identity on Copilot's OTel resource."""
+
+    def test_identity_from_agent_env(self) -> None:
+        os.environ["SCION_AGENT_ID"] = "agent-1"
+        os.environ["SCION_PROJECT_ID"] = "project-1"
+        os.environ["SCION_HARNESS"] = "copilot"
+        env = provision._build_telemetry_env(None)
+        self.assertEqual(
+            env["OTEL_RESOURCE_ATTRIBUTES"],
+            "scion.agent.id=agent-1,scion.project.id=project-1,scion.harness=copilot",
+        )
+
+    def test_overlay_beats_os_environ(self) -> None:
+        os.environ["SCION_AGENT_ID"] = "from-process"
+        self.assertEqual(provision._resource_attributes({"SCION_AGENT_ID": "staged"}), "scion.agent.id=staged")
+
+    def test_existing_attributes_kept_before_identity(self) -> None:
+        os.environ["OTEL_RESOURCE_ATTRIBUTES"] = "team=a"
+        os.environ["SCION_AGENT_ID"] = "agent-1"
+        self.assertEqual(provision._resource_attributes(None), "team=a,scion.agent.id=agent-1")
+
+    def test_values_are_percent_encoded(self) -> None:
+        os.environ["SCION_AGENT_ID"] = "a,b=c"
+        self.assertEqual(provision._resource_attributes(None), "scion.agent.id=a%2Cb%3Dc")
+
+    def test_omitted_without_identity(self) -> None:
+        env = provision._build_telemetry_env(None)
+        self.assertNotIn("OTEL_RESOURCE_ATTRIBUTES", env)
+
+
 if __name__ == "__main__":
     unittest.main()
