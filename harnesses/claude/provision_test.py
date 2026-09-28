@@ -89,7 +89,6 @@ def make_ctx(home: str):
 _IDENTITY_ENV_CLEAR = {
     "SCION_AGENT_ID": None,
     "SCION_PROJECT_ID": None,
-    "SCION_GROVE_ID": None,
     "SCION_HARNESS": None,
     "OTEL_RESOURCE_ATTRIBUTES": None,
 }
@@ -110,14 +109,6 @@ class ResourceAttributesTest(unittest.TestCase):
         with env_vars(**{**_IDENTITY_ENV_CLEAR, "SCION_AGENT_ID": "from-process"}):
             self.assertEqual(provision._resource_attributes({"SCION_AGENT_ID": "staged"}),
                              "scion.agent.id=staged")
-
-    def test_project_id_preferred_over_grove_id(self) -> None:
-        with env_vars(**{**_IDENTITY_ENV_CLEAR, "SCION_PROJECT_ID": "project-1", "SCION_GROVE_ID": "grove-1"}):
-            self.assertEqual(provision._resource_attributes(None), "scion.project.id=project-1")
-
-    def test_grove_id_fallback(self) -> None:
-        with env_vars(**{**_IDENTITY_ENV_CLEAR, "SCION_GROVE_ID": "grove-1"}):
-            self.assertEqual(provision._resource_attributes(None), "scion.project.id=grove-1")
 
     def test_existing_attributes_kept_before_identity(self) -> None:
         with env_vars(**{**_IDENTITY_ENV_CLEAR, "OTEL_RESOURCE_ATTRIBUTES": "team=a", "SCION_AGENT_ID": "agent-1"}):

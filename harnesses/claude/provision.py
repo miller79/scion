@@ -335,7 +335,7 @@ def _build_env_overlay(ctx: scion_harness.ProvisionContext, auth: scion_harness.
 # values, so setting them is harmless there.
 _IDENTITY_RESOURCE_ATTRS = (
     ("scion.agent.id", ("SCION_AGENT_ID",)),
-    ("scion.project.id", ("SCION_PROJECT_ID", "SCION_GROVE_ID")),
+    ("scion.project.id", ("SCION_PROJECT_ID",)),
     ("scion.harness", ("SCION_HARNESS",)),
 )
 
