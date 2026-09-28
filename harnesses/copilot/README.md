@@ -73,7 +73,11 @@ python3 /home/scion/.scion/harness/capture_auth.py
   anything by itself — it only changes the wire format used to reach
   whichever endpoint is in effect, and exists so that a debug endpoint
   pointed at a non-protobuf collector can still be reached (the sciontool
-  receiver itself accepts only `http/protobuf`).
+  receiver itself accepts only `http/protobuf`). Copilot is also asked for
+  cumulative metric temporality, and the agent's identity (`scion.agent.id`,
+  `scion.project.id`, `scion.harness`) is set in `OTEL_RESOURCE_ATTRIBUTES`,
+  so its series stay per agent and survive buffering in sciontool releases
+  that predate native harness telemetry.
 - **System prompt is approximate** — system prompt content is prepended to
   `~/.copilot/copilot-instructions.md`; there is no native `--system-prompt` flag.
 - **No project-scoped MCP** — project-scoped MCP server entries are demoted to

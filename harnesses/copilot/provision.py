@@ -39,6 +39,7 @@ import json
 import os
 import sys
 from typing import Any
+from urllib.parse import quote
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -190,12 +191,46 @@ def _resolve_protocol(env: dict[str, str] | None) -> str:
     return _DEFAULT_OTEL_PROTOCOL
 
 
+# Agent identity for Copilot's resource. sciontool releases that predate
+# native harness telemetry relay metrics without stamping the agent's
+# identity, which leaves Copilot's series without agent_id/project_id; newer
+# releases drop these keys and substitute the same trusted values, so setting
+# them is harmless there.
+_IDENTITY_RESOURCE_ATTRS = (
+    ("scion.agent.id", ("SCION_AGENT_ID",)),
+    ("scion.project.id", ("SCION_PROJECT_ID",)),
+    ("scion.harness", ("SCION_HARNESS",)),
+)
+
+
+def _lookup(env: dict[str, str] | None, key: str) -> str:
+    """Return a value from the env overlay, falling back to os.environ."""
+    return ((env or {}).get(key) or os.environ.get(key) or "").strip()
+
+
+def _resource_attributes(env: dict[str, str] | None) -> str:
+    """Return OTEL_RESOURCE_ATTRIBUTES carrying the agent's identity.
+
+    Any existing OTEL_RESOURCE_ATTRIBUTES is kept, with the identity keys
+    appended so they take precedence.
+    """
+    parts = []
+    existing = _lookup(env, "OTEL_RESOURCE_ATTRIBUTES")
+    if existing:
+        parts.append(existing)
+    for attr, keys in _IDENTITY_RESOURCE_ATTRS:
+        value = next((v for v in (_lookup(env, k) for k in keys) if v), "")
+        if value:
+            parts.append(f"{attr}={quote(value, safe='')}")
+    return ",".join(parts)
+
+
 def _build_telemetry_env(env: dict[str, str] | None) -> dict[str, str]:
     """Build env vars that direct Copilot CLI's native OTel emitter to sciontool.
 
     This always targets the local receiver -- see _resolve_endpoint.
     """
-    return {
+    otel_env = {
         "COPILOT_OTEL_ENABLED": "true",
         "COPILOT_OTEL_EXPORTER_TYPE": "otlp-http",
         "OTEL_EXPORTER_OTLP_ENDPOINT": _resolve_endpoint(env),
@@ -203,7 +238,16 @@ def _build_telemetry_env(env: dict[str, str] | None) -> dict[str, str]:
         "OTEL_METRICS_EXPORTER": "otlp",
         "OTEL_LOGS_EXPORTER": "otlp",
         "OTEL_METRIC_EXPORT_INTERVAL": "30000",
+        # The hub's dashboard reads cumulative series (latest value per
+        # process), and sciontool releases that predate native harness
+        # telemetry keep only the newest point per series when they merge
+        # buffered metrics, which would discard every earlier delta.
+        "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "cumulative",
     }
+    resource_attrs = _resource_attributes(env)
+    if resource_attrs:
+        otel_env["OTEL_RESOURCE_ATTRIBUTES"] = resource_attrs
+    return otel_env
 
 
 # ---------------------------------------------------------------------------
