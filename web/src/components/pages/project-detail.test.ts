@@ -49,9 +49,18 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-function createFetchHandler(opts: { projectCaps: Capabilities; hubCaps?: Capabilities }) {
+interface ComponentOpts {
+  projectCaps: Capabilities;
+  hubCaps?: Capabilities;
+  sessionSummary?: Record<string, unknown>;
+}
+
+function createFetchHandler(opts: ComponentOpts) {
   return (url: string | URL | Request): Promise<Response> => {
     const path = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+    if (opts.sessionSummary && path.endsWith(`/api/v1/projects/${PROJECT_ID}/metrics/summary`)) {
+      return Promise.resolve(jsonResponse(opts.sessionSummary));
+    }
     if (path.includes('/api/v1/projects?limit=1')) {
       return Promise.resolve(
         jsonResponse({ projects: [], ...(opts.hubCaps ? { _capabilities: opts.hubCaps } : {}) })
@@ -75,7 +84,7 @@ function createFetchHandler(opts: { projectCaps: Capabilities; hubCaps?: Capabil
 }
 
 async function createComponent(
-  opts: { projectCaps: Capabilities; hubCaps?: Capabilities },
+  opts: ComponentOpts,
   role: UserRole = 'member'
 ): Promise<HTMLElement> {
   vi.stubGlobal('fetch', vi.fn(createFetchHandler(opts)));
@@ -184,5 +193,81 @@ describe('scion-page-project-detail — Clone / Create Template gating', () => {
     const text = headerActionsText(element);
     expect(text).not.toContain('Create Template');
     expect(hasClone(element)).toBe(false);
+  });
+});
+
+describe('scion-page-project-detail — session summary stats', () => {
+  let element: HTMLElement | null = null;
+
+  beforeAll(async () => {
+    await import('./project-detail.js');
+  }, 60_000);
+
+  beforeEach(() => {
+    vi.stubGlobal('EventSource', FakeEventSource);
+    resetHubProjectCapabilitiesCache();
+  });
+
+  afterEach(() => {
+    element?.remove();
+    element = null;
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  const summary = {
+    projectId: PROJECT_ID,
+    totalSessions: 12,
+    totalTokensInput: 4000,
+    totalTokensOutput: 1000,
+    totalTokensCached: 0,
+    totalTokensReasoning: 0,
+    activeAgents: 4,
+    mostUsedTools: [],
+    mostUsedModels: [],
+  };
+
+  function statLabels(el: HTMLElement): string[] {
+    return Array.from(el.shadowRoot?.querySelectorAll('.stat-label') ?? []).map(
+      (n) => n.textContent?.trim() ?? ''
+    );
+  }
+
+  it('names the window when the figures come from telemetry', async () => {
+    element = await createComponent({
+      projectCaps: { actions: ['read'] },
+      sessionSummary: { ...summary, source: 'telemetry', periodDays: 30 },
+    });
+    const labels = statLabels(element);
+    expect(labels).toEqual(expect.arrayContaining(['Sessions (30d)', 'Tokens (30d)', 'Agents (30d)']));
+    expect(labels).not.toContain('Total Sessions');
+  });
+
+  it('shows the telemetry token total, which has no input/output split', async () => {
+    element = await createComponent({
+      projectCaps: { actions: ['read'] },
+      sessionSummary: {
+        ...summary,
+        totalTokensInput: 0,
+        totalTokensOutput: 0,
+        totalTokens: 2_500_000,
+        source: 'telemetry',
+        periodDays: 30,
+      },
+    });
+    const values = Array.from(element.shadowRoot?.querySelectorAll('.stat') ?? [])
+      .filter((s) => s.querySelector('.stat-label')?.textContent?.trim() === 'Tokens (30d)')
+      .map((s) => s.querySelector('.stat-value')?.textContent?.trim());
+    expect(values).toEqual(['2.5M']);
+  });
+
+  it('keeps the all-time labels for stored session reports', async () => {
+    element = await createComponent({
+      projectCaps: { actions: ['read'] },
+      sessionSummary: { ...summary, source: 'sessions' },
+    });
+    expect(statLabels(element)).toEqual(
+      expect.arrayContaining(['Total Sessions', 'Total Tokens', 'Active Agents'])
+    );
   });
 });

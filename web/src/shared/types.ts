@@ -1259,4 +1259,9 @@ export interface ProjectSessionMetricsSummary {
   activeAgents: number;
   mostUsedTools: ToolUsageSummary[];
   mostUsedModels: ModelUsageSummary[];
+  /** Input plus output tokens; from telemetry, the only token figure. */
+  totalTokens?: number;
+  /** "sessions" (stored session reports) or "telemetry" (Cloud Monitoring over periodDays). */
+  source?: 'sessions' | 'telemetry';
+  periodDays?: number;
 }
