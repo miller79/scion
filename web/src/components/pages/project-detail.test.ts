@@ -239,7 +239,9 @@ describe('scion-page-project-detail — session summary stats', () => {
       sessionSummary: { ...summary, source: 'telemetry', periodDays: 30 },
     });
     const labels = statLabels(element);
-    expect(labels).toEqual(expect.arrayContaining(['Sessions (30d)', 'Tokens (30d)', 'Agents (30d)']));
+    expect(labels).toEqual(
+      expect.arrayContaining(['Sessions (30d)', 'Tokens (30d)', 'Agents (30d)'])
+    );
     expect(labels).not.toContain('Total Sessions');
   });
 
