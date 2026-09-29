@@ -15,6 +15,7 @@
 package hub
 
 import (
+	"context"
 	"net/http"
 	"sort"
 	"time"
@@ -66,6 +67,51 @@ type projectMetricsSummaryResponse struct {
 	ActiveAgents         int                 `json:"activeAgents"`
 	MostUsedTools        []toolUsageSummary  `json:"mostUsedTools"`
 	MostUsedModels       []modelUsageSummary `json:"mostUsedModels"`
+	// TotalTokens is input plus output. From telemetry it is the dashboard's
+	// token total and the input/output split is not reported.
+	TotalTokens int64 `json:"totalTokens"`
+	// Source is "sessions" when the figures come from stored session reports,
+	// or "telemetry" when they come from Cloud Monitoring over PeriodDays.
+	Source     string `json:"source"`
+	PeriodDays int    `json:"periodDays,omitempty"`
+}
+
+const (
+	sessionSummarySourceSessions  = "sessions"
+	sessionSummarySourceTelemetry = "telemetry"
+
+	// sessionSummaryTelemetryDays is the window used when the summary falls
+	// back to Cloud Monitoring.
+	sessionSummaryTelemetryDays = 30
+)
+
+// telemetrySummarizer is the part of MetricsDashboardService the project
+// session summary falls back to.
+type telemetrySummarizer interface {
+	QuerySummary(ctx context.Context, periodDays int, opts ...QueryOption) (*DashboardSummary, error)
+}
+
+// fillSessionSummaryFromTelemetry replaces the totals in resp with the
+// project's Cloud Monitoring figures. Agents that never deliver a session
+// report (it is only sent on a clean shutdown, and needs a session ID the
+// daemon may not have) still export usage metrics, so this keeps the summary
+// meaningful when no reports are stored. A partial query failure still fills
+// resp with what was read; the error is returned either way.
+func fillSessionSummaryFromTelemetry(ctx context.Context, q telemetrySummarizer, projectID string, resp *projectMetricsSummaryResponse) error {
+	summary, err := q.QuerySummary(ctx, sessionSummaryTelemetryDays, WithProjectID(projectID))
+	if summary == nil || (err != nil && summary.TotalSessions == 0 && summary.TotalTokens == 0 && summary.UniqueAgents == 0) {
+		return err
+	}
+	resp.TotalSessions = int(summary.TotalSessions)
+	resp.TotalTokens = summary.TotalTokens
+	resp.TotalTokensInput = 0
+	resp.TotalTokensOutput = 0
+	resp.TotalTokensCached = 0
+	resp.TotalTokensReasoning = 0
+	resp.ActiveAgents = summary.UniqueAgents
+	resp.Source = sessionSummarySourceTelemetry
+	resp.PeriodDays = sessionSummaryTelemetryDays
+	return err
 }
 
 // =============================================================================
@@ -423,6 +469,15 @@ func (s *Server) handleProjectSessionMetricsSummary(w http.ResponseWriter, r *ht
 		ActiveAgents:         activeAgents,
 		MostUsedTools:        tools,
 		MostUsedModels:       models,
+		TotalTokens:          agg.SumTokensInput + agg.SumTokensOutput,
+		Source:               sessionSummarySourceSessions,
+	}
+
+	if agg.Count == 0 && s.metricsDashboard != nil {
+		if err := fillSessionSummaryFromTelemetry(ctx, s.metricsDashboard, projectID, &resp); err != nil {
+			s.agentMetricsLog.Warn("Telemetry fallback for project session summary",
+				"project_id", projectID, "error", err)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
