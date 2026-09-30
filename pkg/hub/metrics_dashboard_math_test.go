@@ -178,7 +178,7 @@ func TestQueryDailyTimeSeriesBucketsByEndDay(t *testing.T) {
 		},
 	}}
 
-	points, err := svc.queryDailyTimeSeries(context.Background(), telemetrycontract.MetricAPICalls, day1.Add(-2*time.Hour), day2.Add(time.Hour), nil)
+	points, err := svc.queryDailyTimeSeries(context.Background(), canonicalUsageQuery(telemetrycontract.MetricAPICalls, nil), day1.Add(-2*time.Hour), day2.Add(time.Hour))
 	require.NoError(t, err)
 	byDay := map[string]int64{}
 	for _, p := range points {
@@ -197,7 +197,7 @@ func TestQuerySumTreatsNotFoundAsZero(t *testing.T) {
 	filter := `metric.type = "` + metricPrefix + telemetrycontract.MetricUsageTokens + `"`
 	client.errByFilter[filter] = status.Error(codes.NotFound, "no descriptor yet")
 
-	total, err := svc.querySum(context.Background(), telemetrycontract.MetricUsageTokens, time.Now().Add(-time.Hour), time.Now(), nil)
+	total, err := svc.querySum(context.Background(), canonicalUsageQuery(telemetrycontract.MetricUsageTokens, nil), time.Now().Add(-time.Hour), time.Now())
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), total)
 }
@@ -210,6 +210,6 @@ func TestQuerySumPropagatesOtherErrors(t *testing.T) {
 	filter := `metric.type = "` + metricPrefix + telemetrycontract.MetricUsageTokens + `"`
 	client.errByFilter[filter] = status.Error(codes.PermissionDenied, "no access")
 
-	_, err := svc.querySum(context.Background(), telemetrycontract.MetricUsageTokens, time.Now().Add(-time.Hour), time.Now(), nil)
+	_, err := svc.querySum(context.Background(), canonicalUsageQuery(telemetrycontract.MetricUsageTokens, nil), time.Now().Add(-time.Hour), time.Now())
 	assert.Error(t, err)
 }

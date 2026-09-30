@@ -177,8 +177,11 @@ func TestDashboardContractQueriesCanonicalMetricNames(t *testing.T) {
 }
 
 // TestDashboardContractProjectViewsFilterOnCanonicalProjectLabel pins design
-// §7.2: project-scoped views filter on metric.labels.scion_project_id
-// (contract.ProjectLabel), never the producer's overloaded "project_id".
+// §7.2: project-scoped views filter canonical metrics on
+// metric.labels.scion_project_id (contract.ProjectLabel). The producer's
+// "project_id" appears only in the pre-contract fallbacks: the legacy-only
+// agent.session.count pass (which skips series carrying the canonical
+// label), and native metrics matched on either label.
 func TestDashboardContractProjectViewsFilterOnCanonicalProjectLabel(t *testing.T) {
 	client := newFakeMetricsClient()
 	svc := newContractTestService(client)
@@ -193,15 +196,32 @@ func TestDashboardContractProjectViewsFilterOnCanonicalProjectLabel(t *testing.T
 
 	filters := client.requestFilters()
 	require.NotEmpty(t, filters)
-	for _, f := range filters {
-		assert.Contains(t, f, `metric.labels.`+telemetrycontract.ProjectLabel+` = "proj-42"`)
-		assert.NotContains(t, f, `metric.labels.project_id`, "must not filter on the non-canonical producer label")
-	}
+	assertProjectFilters(t, filters, "proj-42")
 
 	_, err = svc.QueryProjectSummary(ctx, "proj-99")
 	require.NoError(t, err)
-	for _, f := range client.requestFilters()[len(filters):] {
-		assert.Contains(t, f, `metric.labels.`+telemetrycontract.ProjectLabel+` = "proj-99"`)
+	assertProjectFilters(t, client.requestFilters()[len(filters):], "proj-99")
+}
+
+// assertProjectFilters checks every project-scoped filter: each filters on
+// exactly one project label, never with OR (Cloud Monitoring rejects an OR
+// across labels combined with another label clause). The producer's
+// "project_id" is used only by the legacy agent.session.count pass and by
+// the native fallbacks, never for the canonical usage metrics.
+func assertProjectFilters(t *testing.T, filters []string, projectID string) {
+	t.Helper()
+	canonical := `metric.labels.` + telemetrycontract.ProjectLabel + ` = "` + projectID + `"`
+	legacy := `metric.labels.project_id = "` + projectID + `"`
+	for _, f := range filters {
+		assert.NotContains(t, f, " OR ", "filters must not use OR")
+		if strings.Contains(f, legacy) {
+			assert.NotContains(t, f, canonical)
+			for _, name := range []string{telemetrycontract.MetricAPICalls, telemetrycontract.MetricUsageTokens} {
+				assert.NotContains(t, f, `"`+metricPrefix+name+`"`, "canonical metric %s must not filter on the producer label", name)
+			}
+			continue
+		}
+		assert.Contains(t, f, canonical)
 	}
 }
 

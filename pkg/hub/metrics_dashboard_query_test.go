@@ -31,6 +31,7 @@ func TestMetricsQueryWindowFor(t *testing.T) {
 	assert.Equal(t, now.UTC(), window.end)
 	assert.Equal(t, now.UTC().AddDate(0, 0, -7), window.start)
 	assert.Equal(t, []string{`metric.labels.scion_project_id = "project-1"`}, window.extraFilter)
+	assert.Equal(t, "project-1", window.projectID)
 
 	global := metricsQueryWindowFor(now, 1, &queryConfig{})
 	assert.Nil(t, global.extraFilter)
@@ -44,12 +45,12 @@ func TestQueryGroupedTimeSeriesSetPreservesPartialResults(t *testing.T) {
 	}
 	var calls []string
 
-	results, err := queryGroupedTimeSeriesSet(queries, func(metricName, groupBy string, _ []string) ([]LabeledTimeSeries, error) {
-		calls = append(calls, metricName+":"+groupBy)
-		if metricName == "broken" {
+	results, err := queryGroupedTimeSeriesSet(queries, func(q groupedTimeSeriesQuery) ([]LabeledTimeSeries, error) {
+		calls = append(calls, q.metricName+":"+q.groupBy)
+		if q.metricName == "broken" {
 			return nil, errors.New("query failed")
 		}
-		return []LabeledTimeSeries{{Label: metricName}}, nil
+		return []LabeledTimeSeries{{Label: q.metricName}}, nil
 	})
 
 	require.EqualError(t, err, "partial query failures: broken series: query failed")
@@ -62,8 +63,8 @@ func TestQueryGroupedTimeSeriesSetPreservesPartialResults(t *testing.T) {
 func TestQueryGroupedTimeSeriesSetSuccess(t *testing.T) {
 	results, err := queryGroupedTimeSeriesSet([]groupedTimeSeriesQuery{
 		{metricName: "calls", groupBy: "model", errorLabel: "calls"},
-	}, func(metricName, _ string, _ []string) ([]LabeledTimeSeries, error) {
-		return []LabeledTimeSeries{{Label: metricName}}, nil
+	}, func(q groupedTimeSeriesQuery) ([]LabeledTimeSeries, error) {
+		return []LabeledTimeSeries{{Label: q.metricName}}, nil
 	})
 
 	require.NoError(t, err)

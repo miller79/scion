@@ -208,6 +208,7 @@ type metricsQueryWindow struct {
 	start       time.Time
 	end         time.Time
 	extraFilter []string
+	projectID   string // project scope, "" for global queries
 }
 
 func metricsQueryWindowFor(now time.Time, periodDays int, cfg *queryConfig) metricsQueryWindow {
@@ -218,6 +219,7 @@ func metricsQueryWindowFor(now time.Time, periodDays int, cfg *queryConfig) metr
 	}
 	if cfg.ProjectID != "" {
 		window.extraFilter = []string{projectFilter(cfg.ProjectID)}
+		window.projectID = cfg.ProjectID
 	}
 	return window
 }
@@ -226,19 +228,18 @@ type groupedTimeSeriesQuery struct {
 	metricName string
 	groupBy    string
 	errorLabel string
-	// extraFilter is appended on top of the window's own extraFilter (the
-	// project filter, if any) — used for a fixed token_type value.
-	extraFilter []string
+	// usage builds the figure's query for the view's window.
+	usage func(metricsQueryWindow) usageQuery
 }
 
 func queryGroupedTimeSeriesSet(
 	queries []groupedTimeSeriesQuery,
-	run func(metricName, groupBy string, extraFilter []string) ([]LabeledTimeSeries, error),
+	run func(query groupedTimeSeriesQuery) ([]LabeledTimeSeries, error),
 ) ([][]LabeledTimeSeries, error) {
 	results := make([][]LabeledTimeSeries, len(queries))
 	var queryErrors []string
 	for i, query := range queries {
-		series, err := run(query.metricName, query.groupBy, query.extraFilter)
+		series, err := run(query)
 		if err != nil {
 			queryErrors = append(queryErrors, fmt.Sprintf("%s: %v", query.errorLabel, err))
 			continue
@@ -267,13 +268,8 @@ func queryGroupedMetricsView[T any](
 	}
 
 	window := metricsQueryWindowFor(time.Now(), periodDays, cfg)
-	combined := make([]groupedTimeSeriesQuery, len(queries))
-	for i, q := range queries {
-		combined[i] = q
-		combined[i].extraFilter = append(append([]string{}, window.extraFilter...), q.extraFilter...)
-	}
-	series, err := queryGroupedTimeSeriesSet(combined, func(metricName, groupBy string, extraFilter []string) ([]LabeledTimeSeries, error) {
-		return s.queryGroupedTimeSeries(ctx, metricName, groupBy, window.start, window.end, extraFilter)
+	series, err := queryGroupedTimeSeriesSet(queries, func(q groupedTimeSeriesQuery) ([]LabeledTimeSeries, error) {
+		return s.queryGroupedTimeSeries(ctx, q.usage(window), q.groupBy, window.start, window.end)
 	})
 	view := build(series)
 	if err != nil {
@@ -317,29 +313,28 @@ func (s *MetricsDashboardService) QuerySummary(ctx context.Context, periodDays i
 	summary := &DashboardSummary{PeriodDays: periodDays}
 	var queryErrors []string
 
-	sessions, err := s.querySum(ctx, telemetrycontract.MetricSessionCount, window.start, window.end, window.extraFilter)
+	sessions, err := s.querySum(ctx, sessionQuery(window), window.start, window.end)
 	if err != nil {
 		queryErrors = append(queryErrors, fmt.Sprintf("session count: %v", err))
 	} else {
 		summary.TotalSessions = sessions
 	}
 
-	apiCalls, err := s.querySum(ctx, telemetrycontract.MetricAPICalls, window.start, window.end, window.extraFilter)
+	apiCalls, err := s.querySum(ctx, apiCallsQuery(window), window.start, window.end)
 	if err != nil {
 		queryErrors = append(queryErrors, fmt.Sprintf("API calls: %v", err))
 	} else {
 		summary.TotalAPICalls = apiCalls
 	}
 
-	tokenFilter := append(append([]string{}, window.extraFilter...), notSummableTokenTypeFilter())
-	tokens, err := s.querySum(ctx, telemetrycontract.MetricUsageTokens, window.start, window.end, tokenFilter)
+	tokens, err := s.querySum(ctx, tokensQuery(window, ""), window.start, window.end)
 	if err != nil {
 		queryErrors = append(queryErrors, fmt.Sprintf("tokens: %v", err))
 	} else {
 		summary.TotalTokens = tokens
 	}
 
-	agents, err := s.queryUniqueLabels(ctx, telemetrycontract.MetricSessionCount, "metric.labels."+telemetrycontract.AgentLabel, window.start, window.end, window.extraFilter)
+	agents, err := s.queryUniqueLabels(ctx, sessionQuery(window), "metric.labels."+telemetrycontract.AgentLabel, window.start, window.end)
 	if err != nil {
 		queryErrors = append(queryErrors, fmt.Sprintf("unique agents: %v", err))
 	} else {
@@ -371,14 +366,14 @@ func (s *MetricsDashboardService) QuerySessions(ctx context.Context, periodDays 
 	// queryDailyTimeSeries -> seriesIncreases, the cumulative-math fix
 	// (design §3.6). ActiveAgents below is presence, not a sum, so it stays
 	// on queryDailyUniqueCount instead (see that function's comment).
-	dailyCounts, err := s.queryDailyTimeSeries(ctx, telemetrycontract.MetricSessionCount, window.start, window.end, window.extraFilter)
+	dailyCounts, err := s.queryDailyTimeSeries(ctx, sessionQuery(window), window.start, window.end)
 	if err != nil {
 		queryErrors = append(queryErrors, fmt.Sprintf("daily sessions: %v", err))
 	} else {
 		view.DailyCounts = dailyCounts
 	}
 
-	activeAgents, err := s.queryDailyUniqueCount(ctx, telemetrycontract.MetricSessionCount, "metric.labels."+telemetrycontract.AgentLabel, window.start, window.end, window.extraFilter)
+	activeAgents, err := s.queryDailyUniqueCount(ctx, sessionQuery(window), "metric.labels."+telemetrycontract.AgentLabel, window.start, window.end)
 	if err != nil {
 		queryErrors = append(queryErrors, fmt.Sprintf("active agents: %v", err))
 	} else {
@@ -396,8 +391,8 @@ func (s *MetricsDashboardService) QuerySessions(ctx context.Context, periodDays 
 // QueryModelCalls returns API call data grouped by model and harness.
 func (s *MetricsDashboardService) QueryModelCalls(ctx context.Context, periodDays int, opts ...QueryOption) (*ModelCallsView, error) {
 	return queryGroupedMetricsView(s, ctx, "model-calls", periodDays, opts, []groupedTimeSeriesQuery{
-		{metricName: telemetrycontract.MetricAPICalls, groupBy: "metric.labels.model", errorLabel: "by model"},
-		{metricName: telemetrycontract.MetricAPICalls, groupBy: "metric.labels.harness", errorLabel: "by harness"},
+		{metricName: telemetrycontract.MetricAPICalls, groupBy: "metric.labels.model", errorLabel: "by model", usage: apiCallsQuery},
+		{metricName: telemetrycontract.MetricAPICalls, groupBy: "metric.labels.harness", errorLabel: "by harness", usage: apiCallsQuery},
 	}, func(series [][]LabeledTimeSeries) *ModelCallsView {
 		return &ModelCallsView{PeriodDays: periodDays, ByModel: series[0], ByHarness: series[1]}
 	})
@@ -409,13 +404,18 @@ func (s *MetricsDashboardService) QueryModelCalls(ctx context.Context, periodDay
 // informational subset of TokenTypeOutput, not an additive view.
 func (s *MetricsDashboardService) QueryTokens(ctx context.Context, periodDays int, opts ...QueryOption) (*TokensView, error) {
 	return queryGroupedMetricsView(s, ctx, "tokens", periodDays, opts, []groupedTimeSeriesQuery{
-		{metricName: telemetrycontract.MetricUsageTokens, groupBy: "metric.labels.model", errorLabel: "input tokens", extraFilter: []string{tokenTypeFilter(telemetrycontract.TokenTypeInput)}},
-		{metricName: telemetrycontract.MetricUsageTokens, groupBy: "metric.labels.model", errorLabel: "output tokens", extraFilter: []string{tokenTypeFilter(telemetrycontract.TokenTypeOutput)}},
-		{metricName: telemetrycontract.MetricUsageTokens, groupBy: "metric.labels.model", errorLabel: "cache read tokens", extraFilter: []string{tokenTypeFilter(telemetrycontract.TokenTypeCacheRead)}},
-		{metricName: telemetrycontract.MetricUsageTokens, groupBy: "metric.labels.model", errorLabel: "cache write tokens", extraFilter: []string{tokenTypeFilter(telemetrycontract.TokenTypeCacheWrite)}},
+		{metricName: telemetrycontract.MetricUsageTokens, groupBy: "metric.labels.model", errorLabel: "input tokens", usage: tokensOfType(telemetrycontract.TokenTypeInput)},
+		{metricName: telemetrycontract.MetricUsageTokens, groupBy: "metric.labels.model", errorLabel: "output tokens", usage: tokensOfType(telemetrycontract.TokenTypeOutput)},
+		{metricName: telemetrycontract.MetricUsageTokens, groupBy: "metric.labels.model", errorLabel: "cache read tokens", usage: tokensOfType(telemetrycontract.TokenTypeCacheRead)},
+		{metricName: telemetrycontract.MetricUsageTokens, groupBy: "metric.labels.model", errorLabel: "cache write tokens", usage: tokensOfType(telemetrycontract.TokenTypeCacheWrite)},
 	}, func(series [][]LabeledTimeSeries) *TokensView {
 		return &TokensView{PeriodDays: periodDays, Input: series[0], Output: series[1], CacheRead: series[2], CacheWrite: series[3]}
 	})
+}
+
+// tokensOfType returns a groupedTimeSeriesQuery usage builder for one token type.
+func tokensOfType(tokenType string) func(metricsQueryWindow) usageQuery {
+	return func(w metricsQueryWindow) usageQuery { return tokensQuery(w, tokenType) }
 }
 
 // fetchTimeSeries lists every raw point for metricName within
@@ -485,6 +485,12 @@ type seriesIncrement struct {
 // hidden. Only Int64Value and DoubleValue (rounded) points are read;
 // canonical usage metrics are never distributions.
 func seriesIncreases(points []*monitoringpb.Point, fetchStart time.Time) []seriesIncrement {
+	return seriesIncreasesBy(points, fetchStart, pointValue)
+}
+
+// seriesIncreasesBy is seriesIncreases with a caller-chosen point reader, so
+// a pre-contract distribution source can contribute its sum or count.
+func seriesIncreasesBy(points []*monitoringpb.Point, fetchStart time.Time, valueOf func(*monitoringpb.TypedValue) (int64, bool)) []seriesIncrement {
 	type observedPoint struct {
 		start, end time.Time
 		value      int64
@@ -497,7 +503,7 @@ func seriesIncreases(points []*monitoringpb.Point, fetchStart time.Time) []serie
 		if p == nil || p.GetValue() == nil || p.GetInterval() == nil {
 			continue
 		}
-		value, ok := pointValue(p.GetValue())
+		value, ok := valueOf(p.GetValue())
 		if !ok {
 			continue
 		}
@@ -557,17 +563,17 @@ func pointValue(v *monitoringpb.TypedValue) (int64, bool) {
 	}
 }
 
-// querySum queries a metric and returns the cumulative-corrected total
+// querySum queries a figure and returns the cumulative-corrected total
 // across every time series in the window.
-func (s *MetricsDashboardService) querySum(ctx context.Context, metricName string, start, end time.Time, extraFilter []string) (int64, error) {
+func (s *MetricsDashboardService) querySum(ctx context.Context, q usageQuery, start, end time.Time) (int64, error) {
 	fetchStart := start.Add(-cumulativeLookback)
-	series, err := s.fetchTimeSeries(ctx, metricName, fetchStart, end, extraFilter)
+	series, err := s.fetchUsageSeries(ctx, q, fetchStart, end)
 	if err != nil {
 		return 0, err
 	}
 	var total int64
-	for _, ts := range series {
-		for _, increment := range seriesIncreases(ts.GetPoints(), fetchStart) {
+	for _, ss := range series {
+		for _, increment := range ss.increases(fetchStart) {
 			if increment.End.Before(start) || increment.End.After(end) {
 				continue
 			}
@@ -577,17 +583,17 @@ func (s *MetricsDashboardService) querySum(ctx context.Context, metricName strin
 	return total, nil
 }
 
-// queryDailyTimeSeries returns daily, cumulative-corrected totals for a metric.
-func (s *MetricsDashboardService) queryDailyTimeSeries(ctx context.Context, metricName string, start, end time.Time, extraFilter []string) ([]TimeSeriesPoint, error) {
+// queryDailyTimeSeries returns daily, cumulative-corrected totals for a figure.
+func (s *MetricsDashboardService) queryDailyTimeSeries(ctx context.Context, q usageQuery, start, end time.Time) ([]TimeSeriesPoint, error) {
 	fetchStart := start.Add(-cumulativeLookback)
-	series, err := s.fetchTimeSeries(ctx, metricName, fetchStart, end, extraFilter)
+	series, err := s.fetchUsageSeries(ctx, q, fetchStart, end)
 	if err != nil {
 		return nil, err
 	}
 
 	dayTotals := make(map[string]int64)
-	for _, ts := range series {
-		for _, increment := range seriesIncreases(ts.GetPoints(), fetchStart) {
+	for _, ss := range series {
+		for _, increment := range ss.increases(fetchStart) {
 			if increment.End.Before(start) || increment.End.After(end) {
 				continue
 			}
@@ -612,11 +618,11 @@ func labelKeyFromGroupBy(groupByLabel string) string {
 	return parts[len(parts)-1]
 }
 
-// queryGroupedTimeSeries returns daily, cumulative-corrected totals grouped
-// by a label.
-func (s *MetricsDashboardService) queryGroupedTimeSeries(ctx context.Context, metricName, groupByLabel string, start, end time.Time, extraFilter []string) ([]LabeledTimeSeries, error) {
+// queryGroupedTimeSeries returns daily, cumulative-corrected totals for a
+// figure grouped by a label.
+func (s *MetricsDashboardService) queryGroupedTimeSeries(ctx context.Context, q usageQuery, groupByLabel string, start, end time.Time) ([]LabeledTimeSeries, error) {
 	fetchStart := start.Add(-cumulativeLookback)
-	series, err := s.fetchTimeSeries(ctx, metricName, fetchStart, end, extraFilter)
+	series, err := s.fetchUsageSeries(ctx, q, fetchStart, end)
 	if err != nil {
 		return nil, err
 	}
@@ -624,17 +630,15 @@ func (s *MetricsDashboardService) queryGroupedTimeSeries(ctx context.Context, me
 
 	// label -> day -> total
 	seriesDayTotals := make(map[string]map[string]int64)
-	for _, ts := range series {
+	for _, ss := range series {
 		label := "(unknown)"
-		if labels := ts.GetMetric().GetLabels(); labels != nil {
-			if v, ok := labels[labelKey]; ok && v != "" {
-				label = v
-			}
+		if v := ss.label(labelKey); v != "" {
+			label = v
 		}
 		if seriesDayTotals[label] == nil {
 			seriesDayTotals[label] = make(map[string]int64)
 		}
-		for _, increment := range seriesIncreases(ts.GetPoints(), fetchStart) {
+		for _, increment := range ss.increases(fetchStart) {
 			if increment.End.Before(start) || increment.End.After(end) {
 				continue
 			}
@@ -662,19 +666,17 @@ func (s *MetricsDashboardService) queryGroupedTimeSeries(ctx context.Context, me
 // queryUniqueLabels returns unique values for a label within a metric's time
 // series in the window (presence only — not cumulative-corrected, since
 // membership doesn't need a delta).
-func (s *MetricsDashboardService) queryUniqueLabels(ctx context.Context, metricName, groupByLabel string, start, end time.Time, extraFilter []string) (map[string]bool, error) {
-	series, err := s.fetchTimeSeries(ctx, metricName, start, end, extraFilter)
+func (s *MetricsDashboardService) queryUniqueLabels(ctx context.Context, q usageQuery, groupByLabel string, start, end time.Time) (map[string]bool, error) {
+	series, err := s.fetchUsageSeries(ctx, q, start, end)
 	if err != nil {
 		return nil, err
 	}
 	labelKey := labelKeyFromGroupBy(groupByLabel)
 
 	unique := make(map[string]bool)
-	for _, ts := range series {
-		if labels := ts.GetMetric().GetLabels(); labels != nil {
-			if v, ok := labels[labelKey]; ok && v != "" {
-				unique[v] = true
-			}
+	for _, ss := range series {
+		if v := ss.label(labelKey); v != "" {
+			unique[v] = true
 		}
 	}
 	return unique, nil
@@ -689,8 +691,8 @@ func (s *MetricsDashboardService) queryUniqueLabels(ctx context.Context, metricN
 // (metric_streams.go), so presence already approximates "had activity" as
 // well as a delta would, without needing a baseline point before the
 // window.
-func (s *MetricsDashboardService) queryDailyUniqueCount(ctx context.Context, metricName, groupByLabel string, start, end time.Time, extraFilter []string) ([]TimeSeriesPoint, error) {
-	series, err := s.fetchTimeSeries(ctx, metricName, start, end, extraFilter)
+func (s *MetricsDashboardService) queryDailyUniqueCount(ctx context.Context, q usageQuery, groupByLabel string, start, end time.Time) ([]TimeSeriesPoint, error) {
+	series, err := s.fetchUsageSeries(ctx, q, start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -698,14 +700,12 @@ func (s *MetricsDashboardService) queryDailyUniqueCount(ctx context.Context, met
 
 	// Count unique label values per day
 	dayAgents := make(map[string]map[string]bool) // date -> set of label values
-	for _, ts := range series {
+	for _, ss := range series {
 		label := "(unknown)"
-		if labels := ts.GetMetric().GetLabels(); labels != nil {
-			if v, ok := labels[labelKey]; ok && v != "" {
-				label = v
-			}
+		if v := ss.label(labelKey); v != "" {
+			label = v
 		}
-		for _, p := range ts.GetPoints() {
+		for _, p := range ss.ts.GetPoints() {
 			day := p.GetInterval().GetEndTime().AsTime().Format("2006-01-02")
 			if dayAgents[day] == nil {
 				dayAgents[day] = make(map[string]bool)
@@ -748,34 +748,33 @@ func (s *MetricsDashboardService) QueryProjectSummary(ctx context.Context, proje
 	now := time.Now().UTC()
 	start := now.AddDate(0, 0, -1) // 24 hours
 
-	filter := []string{projectFilter(projectID)}
+	window := metricsQueryWindow{start: start, end: now, extraFilter: []string{projectFilter(projectID)}, projectID: projectID}
 
 	summary := &ProjectMetricsSummary{PeriodLabel: "Last 24 hours"}
 	var queryErrors []string
 
-	sessions, err := s.querySum(ctx, telemetrycontract.MetricSessionCount, start, now, filter)
+	sessions, err := s.querySum(ctx, sessionQuery(window), start, now)
 	if err != nil {
 		queryErrors = append(queryErrors, fmt.Sprintf("sessions: %v", err))
 	} else {
 		summary.SessionsCount24h = sessions
 	}
 
-	apiCalls, err := s.querySum(ctx, telemetrycontract.MetricAPICalls, start, now, filter)
+	apiCalls, err := s.querySum(ctx, apiCallsQuery(window), start, now)
 	if err != nil {
 		queryErrors = append(queryErrors, fmt.Sprintf("API calls: %v", err))
 	} else {
 		summary.APICalls24h = apiCalls
 	}
 
-	tokenFilter := append(append([]string{}, filter...), notSummableTokenTypeFilter())
-	tokens, err := s.querySum(ctx, telemetrycontract.MetricUsageTokens, start, now, tokenFilter)
+	tokens, err := s.querySum(ctx, tokensQuery(window, ""), start, now)
 	if err != nil {
 		queryErrors = append(queryErrors, fmt.Sprintf("tokens: %v", err))
 	} else {
 		summary.TokenUsage24h = tokens
 	}
 
-	agents, err := s.queryUniqueLabels(ctx, telemetrycontract.MetricSessionCount, "metric.labels."+telemetrycontract.AgentLabel, start, now, filter)
+	agents, err := s.queryUniqueLabels(ctx, sessionQuery(window), "metric.labels."+telemetrycontract.AgentLabel, start, now)
 	if err != nil {
 		queryErrors = append(queryErrors, fmt.Sprintf("active agents: %v", err))
 	} else {
