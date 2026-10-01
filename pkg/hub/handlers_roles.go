@@ -386,12 +386,9 @@ func (s *Server) createRoleBindingScopeAware(w http.ResponseWriter, r *http.Requ
 // role_binding.create.
 //
 // Custom project roles are additive to built-in membership, and the
-// membership governance matrix already lets a project owner remove any
-// project-scoped binding — custom ones included — through the members API.
-// Assignment mirrors that: the caller must be an owner of the target project
-// itself. Project admins are not included, because governance only lets them
-// manage the built-in member role, so they could assign a custom role they
-// could not later remove.
+// membership governance matrix lets project owners and admins manage
+// custom-role bindings through the members API. Assignment mirrors that: the
+// caller must be an owner or admin of the target project itself.
 //
 // Agent principals are excluded: a custom binding on an agent is a delegation
 // grant, and that stays a hub-admin decision.
@@ -413,7 +410,8 @@ func (s *Server) ownerMayAssignCustomProjectRole(ctx context.Context, user UserI
 		}
 		projectID = project.ID
 	}
-	return s.membershipService.projectEffectiveRole(ctx, user.ID(), projectID) == store.ProjectRoleOwner
+	role := s.membershipService.projectEffectiveRole(ctx, user.ID(), projectID)
+	return role == store.ProjectRoleOwner || role == store.ProjectRoleAdmin
 }
 
 // handleAdminRoleBindingByID handles DELETE on /api/v1/admin/role-bindings/:id

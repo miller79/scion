@@ -598,9 +598,9 @@ export class ScionProjectMembersEditor extends LitElement {
    *  the member's role tier and the user's capabilities. */
   private canManageMember(member: ProjectMemberBinding): boolean {
     if (!this.capabilities) return false;
-    // Only owners may manage custom-role bindings; the server's governance
-    // matrix limits admins to project-member.
-    if (isCustomProjectRole(member.roleName)) return this.capabilities.canManageOwners;
+    // Owners and admins may manage custom-role bindings; the server's
+    // governance matrix keeps the admin and owner roles to owners.
+    if (isCustomProjectRole(member.roleName)) return this.canManageCustomRoles;
     const tier = getRoleTier(member.roleName);
     switch (tier) {
       case 'owner':
@@ -640,16 +640,21 @@ export class ScionProjectMembersEditor extends LitElement {
   private canEditRow(row: MemberRow): boolean {
     if (!this.capabilities) return false;
     if (row.primary && this.canManageMember(row.primary)) return true;
-    return this.capabilities.canManageOwners && row.principalType !== 'agent';
+    return this.canManageCustomRoles && row.principalType !== 'agent';
   }
 
-  /** Removal deletes every direct binding in the row, so an admin may not
-   *  remove a member who also holds custom roles (only owners can remove
-   *  those, and leaving them behind would keep the extra permissions). */
+  /** Owners and admins may assign and remove custom project roles. */
+  private get canManageCustomRoles(): boolean {
+    return !!(this.capabilities?.canManageOwners || this.capabilities?.canManageMembers);
+  }
+
+  /** Removal deletes every direct binding in the row, so only someone who may
+   *  manage custom roles can remove a member who also holds them (leaving
+   *  them behind would keep the extra permissions). */
   private canRemoveRow(row: MemberRow): boolean {
     if (!this.capabilities) return false;
     if (row.primary && !this.canManageMember(row.primary)) return false;
-    return row.custom.length === 0 || this.capabilities.canManageOwners;
+    return row.custom.length === 0 || this.canManageCustomRoles;
   }
 
   private get addFilteredRoles(): ProjectRole[] {
@@ -675,11 +680,11 @@ export class ScionProjectMembersEditor extends LitElement {
     return roles;
   }
 
-  /** Custom roles the current user may offer in the add dialog: owners only,
-   *  and never for agents, since a custom binding on an agent is a
+  /** Custom roles the current user may offer in the add dialog: owners and
+   *  admins, never for agents, since a custom binding on an agent is a
    *  delegation grant, which the server refuses on this path. */
   private get addCustomRoles(): ProjectRole[] {
-    if (!this.capabilities?.canManageOwners) return [];
+    if (!this.canManageCustomRoles) return [];
     if (this.addPrincipalType === 'agent') return [];
     return this.customRoles;
   }
@@ -808,7 +813,7 @@ export class ScionProjectMembersEditor extends LitElement {
 
   /** Custom roles the edit dialog may offer for this row. */
   private editCustomRoles(row: MemberRow): ProjectRole[] {
-    if (!this.capabilities?.canManageOwners || row.principalType === 'agent') return [];
+    if (!this.canManageCustomRoles || row.principalType === 'agent') return [];
     return this.customRoles;
   }
 

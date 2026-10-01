@@ -656,8 +656,9 @@ func (svc *ProjectMembershipService) isOperationPermitted(actorRole string, op M
 		// Owners can perform any operation on any target role.
 		return true
 	case store.ProjectRoleAdmin:
-		// Admins can only manage ordinary members.
-		return targetRole == store.ProjectRoleMember
+		// Admins manage ordinary members and custom project roles, never
+		// the admin or owner roles.
+		return !isProtectedRole(targetRole)
 	default:
 		// Members cannot manage membership.
 		return false

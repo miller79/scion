@@ -64,6 +64,14 @@ const ADMIN_CAPS: MembershipCapabilities = {
   actions: [],
 };
 
+const MEMBER_CAPS: MembershipCapabilities = {
+  canManageMembers: false,
+  canManageAdmins: false,
+  canManageOwners: false,
+  canTransfer: false,
+  actions: [],
+};
+
 const BUILT_IN = [
   { id: 'r-owner', name: 'project-owner', scopeType: 'project' },
   { id: 'r-admin', name: 'project-admin', scopeType: 'project' },
@@ -173,8 +181,14 @@ describe('custom roles offered in the add dialog', () => {
     expect(el.addCustomRoles).toHaveLength(0);
   });
 
-  it('does not offer custom roles to project admins', () => {
+  it('offers custom roles to project admins', () => {
     const el = makeEditor(ADMIN_CAPS);
+    el.addPrincipalType = 'user';
+    expect(el.addCustomRoles.length).toBeGreaterThan(0);
+  });
+
+  it('does not offer custom roles to plain members', () => {
+    const el = makeEditor(MEMBER_CAPS);
     el.addPrincipalType = 'user';
     expect(el.addCustomRoles).toHaveLength(0);
   });
@@ -304,10 +318,12 @@ describe('managing custom-role rows', () => {
     );
   });
 
-  it('does not let admins manage custom-role bindings', () => {
+  it('lets admins manage custom-role bindings but not admin or owner ones', () => {
     const el = makeEditor(ADMIN_CAPS);
-    expect(el.canManageMember({ roleName: 'project-member-messaging' })).toBe(false);
+    expect(el.canManageMember({ roleName: 'project-member-messaging' })).toBe(true);
     expect(el.canManageMember({ roleName: 'project-member' })).toBe(true);
+    expect(el.canManageMember({ roleName: 'project-admin' })).toBe(false);
+    expect(el.canManageMember({ roleName: 'project-owner' })).toBe(false);
   });
 });
 
@@ -393,10 +409,11 @@ describe('member row permissions', () => {
   ])[0];
   const plain = groupMemberRows([binding('b1', 'u-a', 'r-member', 'project-member')])[0];
 
-  it('lets an admin remove a plain member but not one with custom roles', () => {
+  it('lets an admin remove and edit a member with custom roles', () => {
     const el = makeEditor(ADMIN_CAPS);
     expect(el.canRemoveRow(plain)).toBe(true);
-    expect(el.canRemoveRow(withCustom)).toBe(false);
+    expect(el.canRemoveRow(withCustom)).toBe(true);
+    expect(el.canEditRow(withCustom)).toBe(true);
   });
 
   it('lets an owner remove and edit a member with custom roles', () => {

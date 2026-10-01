@@ -29,7 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Project owners may assign custom project-scoped roles on their own project.
+// Project owners and admins may assign custom project-scoped roles on their own project.
 //
 // Previously every custom project role required hub-level role_binding.create,
 // so an owner could add members with the three built-in roles but could not
@@ -41,6 +41,7 @@ type ownerCustomRoleFixture struct {
 	srv            *Server
 	store          store.Store
 	owner          *store.User
+	admin          *store.User
 	projectID      string
 	projectSlug    string
 	otherProjectID string
@@ -60,13 +61,31 @@ func setupOwnerCustomRoleFixture(t *testing.T) *ownerCustomRoleFixture {
 	_, otherProjectID := seedProjectOwner(t, s, "ocr-other")
 
 	member := &store.User{
-		ID: tid("ocr-member"), Email: "ocr-member@test.com", DisplayName: "ocr-member",
+		ID: tid("ocr-member"), Email: "ocr-member@example.com", DisplayName: "ocr-member",
 		Role: store.UserRoleMember, Status: "active",
 	}
 	require.NoError(t, s.CreateUser(ctx, member))
 	ensureHubMembership(ctx, s, member.ID)
 
 	memberRole, err := s.GetRoleDefinitionByName(ctx, store.ProjectRoleMember, store.RoleScopeProject)
+	require.NoError(t, err)
+
+	admin := &store.User{
+		ID: tid("ocr-padmin"), Email: "ocr-padmin@example.com", DisplayName: "ocr-padmin",
+		Role: store.UserRoleMember, Status: "active",
+	}
+	require.NoError(t, s.CreateUser(ctx, admin))
+	ensureHubMembership(ctx, s, admin.ID)
+	adminRole, err := s.GetRoleDefinitionByName(ctx, store.ProjectRoleAdmin, store.RoleScopeProject)
+	require.NoError(t, err)
+	_, err = s.CreateRoleBinding(ctx, &store.RoleBinding{
+		RoleDefinitionID: adminRole.ID,
+		PrincipalType:    store.RoleBindingPrincipalUser,
+		PrincipalID:      admin.ID,
+		ScopeType:        store.RoleScopeProject,
+		ScopeID:          projectID,
+		CreatedBy:        "test",
+	})
 	require.NoError(t, err)
 	_, err = s.CreateRoleBinding(ctx, &store.RoleBinding{
 		RoleDefinitionID: memberRole.ID,
@@ -92,7 +111,7 @@ func setupOwnerCustomRoleFixture(t *testing.T) *ownerCustomRoleFixture {
 	require.NoError(t, err)
 
 	return &ownerCustomRoleFixture{
-		srv: srv, store: s, owner: owner, projectID: projectID, projectSlug: "ocr-owner",
+		srv: srv, store: s, owner: owner, admin: admin, projectID: projectID, projectSlug: "ocr-owner",
 		otherProjectID: otherProjectID, member: member, withinCeiling: within, beyondCeiling: beyond,
 	}
 }
@@ -182,7 +201,7 @@ func TestHubAdminCustomProjectRole_UnchangedCeilingBehavior(t *testing.T) {
 	ctx := context.Background()
 
 	admin := &store.User{
-		ID: tid("ocr-admin"), Email: "ocr-admin@test.com", DisplayName: "ocr-admin",
+		ID: tid("ocr-admin"), Email: "ocr-admin@example.com", DisplayName: "ocr-admin",
 		Role: store.UserRoleMember, Status: "active",
 	}
 	require.NoError(t, f.store.CreateUser(ctx, admin))
@@ -222,4 +241,41 @@ func TestOwnerRemovesAssignedCustomProjectRole(t *testing.T) {
 	_, err := f.store.GetRoleBinding(context.Background(), created.ID)
 	assert.True(t, err != nil && strings.Contains(strings.ToLower(err.Error()), "not found"),
 		"binding should be gone after removal; got err=%v", err)
+}
+
+// Project admins may assign and remove custom project roles too, within the
+// same delegation ceiling. They still may not manage the admin or owner roles.
+func TestAdminAssignsAndRemovesCustomProjectRole(t *testing.T) {
+	f := setupOwnerCustomRoleFixture(t)
+
+	rec := postRoleBinding(t, f.srv, f.admin, f.withinCeiling.ID, "user", f.member.ID, "project", f.projectID)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var created struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+	require.NotEmpty(t, created.ID)
+
+	rec = doRequestAsUser(t, f.srv, f.admin, http.MethodDelete,
+		"/api/v1/projects/"+f.projectID+"/members/"+created.ID, nil)
+	assert.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	_, err := f.store.GetRoleBinding(context.Background(), created.ID)
+	assert.True(t, err != nil && strings.Contains(strings.ToLower(err.Error()), "not found"),
+		"binding should be gone after removal; got err=%v", err)
+}
+
+func TestAdminCannotAssignCustomProjectRole_BeyondCeiling(t *testing.T) {
+	f := setupOwnerCustomRoleFixture(t)
+
+	rec := postRoleBinding(t, f.srv, f.admin, f.beyondCeiling.ID, "user", f.member.ID, "project", f.projectID)
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "cannot create binding",
+		"the refusal should come from the delegation ceiling, not the entry gate")
+}
+
+func TestAdminCannotAssignCustomProjectRole_OnAnotherProject(t *testing.T) {
+	f := setupOwnerCustomRoleFixture(t)
+
+	rec := postRoleBinding(t, f.srv, f.admin, f.withinCeiling.ID, "user", f.member.ID, "project", f.otherProjectID)
+	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
 }
