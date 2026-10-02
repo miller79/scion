@@ -4582,11 +4582,15 @@ func (s *Server) handleChatSearch(w http.ResponseWriter, r *http.Request) {
 		for i := range allProjects.Items {
 			resources[i] = projectResource(&allProjects.Items[i])
 		}
-		caps := s.authzService.ComputeCapabilitiesBatch(ctx, identity, resources, "project")
+		readable, err := s.authzService.AuthorizeReadBatch(ctx, identity, resources)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "INTERNAL", "failed to authorize projects", nil)
+			return
+		}
 
 		var visibleIDs []string
 		for i, p := range allProjects.Items {
-			if capabilityAllows(caps[i], ActionRead) {
+			if readable[i] {
 				visibleIDs = append(visibleIDs, p.ID)
 			}
 		}
