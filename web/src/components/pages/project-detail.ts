@@ -1889,19 +1889,19 @@ export class ScionPageProjectDetail extends LitElement {
     ></sl-tooltip>`;
   }
 
-  private formatDate(dateString: string): string {
-    try {
-      const date = new Date(dateString);
-      return new Intl.DateTimeFormat('en', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      }).format(date);
-    } catch {
-      return dateString;
+  /** Formats a timestamp for the header stats; "—" when missing or invalid. */
+  private formatDate(dateString: string | undefined): string {
+    const date = dateString ? new Date(dateString) : null;
+    if (!date || Number.isNaN(date.getTime())) {
+      return '—';
     }
+    return new Intl.DateTimeFormat('en', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(date);
   }
 
   private getTabDataSource(tabName: string): FileBrowserDataSource {
@@ -2599,13 +2599,13 @@ export class ScionPageProjectDetail extends LitElement {
         <div class="stat">
           <span class="stat-label">Created</span>
           <span class="stat-value" style="font-size: 1rem; font-weight: 500;">
-            ${this.formatDate(this.project.createdAt)}
+            ${this.formatDate(this.project.created || this.project.createdAt)}
           </span>
         </div>
         <div class="stat">
           <span class="stat-label">Updated</span>
           <span class="stat-value" style="font-size: 1rem; font-weight: 500;">
-            ${this.formatDate(this.project.updatedAt)}
+            ${this.formatDate(this.project.updated || this.project.updatedAt)}
           </span>
         </div>
       </div>
