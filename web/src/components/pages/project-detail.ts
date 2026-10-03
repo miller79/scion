@@ -1505,6 +1505,19 @@ export class ScionPageProjectDetail extends LitElement {
     }
   }
 
+  /**
+   * Label for a session-summary stat. When the hub fills the summary from
+   * telemetry it covers a fixed window, so the label names that window
+   * instead of claiming an all-time total.
+   */
+  private sessionStatLabel(allTime: string, windowed: string): string {
+    const summary = this.sessionMetricsSummary;
+    if (summary?.source === 'telemetry' && summary.periodDays) {
+      return `${windowed} (${summary.periodDays}d)`;
+    }
+    return allTime;
+  }
+
   private formatTokenCount(n: number): string {
     if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -2641,20 +2654,23 @@ export class ScionPageProjectDetail extends LitElement {
         ? html`
             <div class="stats-row" style="margin-top: 0.5rem;">
               <div class="stat">
-                <span class="stat-label">Total Sessions</span>
+                <span class="stat-label"
+                  >${this.sessionStatLabel('Total Sessions', 'Sessions')}</span
+                >
                 <span class="stat-value">${this.sessionMetricsSummary.totalSessions}</span>
               </div>
               <div class="stat">
-                <span class="stat-label">Total Tokens</span>
+                <span class="stat-label">${this.sessionStatLabel('Total Tokens', 'Tokens')}</span>
                 <span class="stat-value"
                   >${this.formatTokenCount(
-                    this.sessionMetricsSummary.totalTokensInput +
-                      this.sessionMetricsSummary.totalTokensOutput
+                    this.sessionMetricsSummary.totalTokens ??
+                      this.sessionMetricsSummary.totalTokensInput +
+                        this.sessionMetricsSummary.totalTokensOutput
                   )}</span
                 >
               </div>
               <div class="stat">
-                <span class="stat-label">Active Agents</span>
+                <span class="stat-label">${this.sessionStatLabel('Active Agents', 'Agents')}</span>
                 <span class="stat-value">${this.sessionMetricsSummary.activeAgents}</span>
               </div>
             </div>

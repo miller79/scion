@@ -19,6 +19,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -285,11 +286,14 @@ func TestHandleProjectSessionMetricsSummary(t *testing.T) {
 		assert.Equal(t, 3, resp.TotalSessions)                 // 2 from agent1 + 1 from agent2
 		assert.Equal(t, int64(6000), resp.TotalTokensInput)    // 1000+2000+3000
 		assert.Equal(t, int64(1200), resp.TotalTokensOutput)   // 200+400+600
+		assert.Equal(t, int64(7200), resp.TotalTokens)
 		assert.Equal(t, int64(600), resp.TotalTokensCached)    // 100+200+300
 		assert.Equal(t, int64(300), resp.TotalTokensReasoning) // 50+100+150
 		assert.Equal(t, 2, resp.ActiveAgents)                  // agent1 and agent2
 		assert.NotEmpty(t, resp.MostUsedTools)
 		assert.NotEmpty(t, resp.MostUsedModels)
+		assert.Equal(t, sessionSummarySourceSessions, resp.Source)
+		assert.Zero(t, resp.PeriodDays)
 	})
 
 	t.Run("unauthenticated returns 401", func(t *testing.T) {
@@ -308,6 +312,67 @@ func TestHandleProjectSessionMetricsSummary(t *testing.T) {
 		rec := doRequest(t, srv, http.MethodPost,
 			"/api/v1/projects/"+project.ID+"/metrics/summary", nil)
 		assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+	})
+}
+
+type fakeTelemetrySummarizer struct {
+	summary    *DashboardSummary
+	err        error
+	periodDays int
+	projectID  string
+}
+
+func (f *fakeTelemetrySummarizer) QuerySummary(_ context.Context, periodDays int, opts ...QueryOption) (*DashboardSummary, error) {
+	f.periodDays = periodDays
+	f.projectID = applyQueryOptions(opts).ProjectID
+	return f.summary, f.err
+}
+
+func TestFillSessionSummaryFromTelemetry(t *testing.T) {
+	ctx := context.Background()
+	empty := func() projectMetricsSummaryResponse {
+		return projectMetricsSummaryResponse{ProjectID: "p1", Source: sessionSummarySourceSessions}
+	}
+
+	t.Run("uses the project's telemetry totals", func(t *testing.T) {
+		q := &fakeTelemetrySummarizer{summary: &DashboardSummary{
+			TotalSessions: 12, TotalTokens: 5000, UniqueAgents: 4,
+		}}
+		resp := empty()
+		require.NoError(t, fillSessionSummaryFromTelemetry(ctx, q, "p1", &resp))
+
+		assert.Equal(t, sessionSummaryTelemetryDays, q.periodDays)
+		assert.Equal(t, "p1", q.projectID)
+		assert.Equal(t, 12, resp.TotalSessions)
+		assert.Equal(t, int64(5000), resp.TotalTokens)
+		assert.Zero(t, resp.TotalTokensInput, "telemetry reports no input/output split")
+		assert.Zero(t, resp.TotalTokensOutput)
+		assert.Equal(t, 4, resp.ActiveAgents)
+		assert.Equal(t, sessionSummarySourceTelemetry, resp.Source)
+		assert.Equal(t, sessionSummaryTelemetryDays, resp.PeriodDays)
+	})
+
+	t.Run("keeps partial figures and returns the error", func(t *testing.T) {
+		q := &fakeTelemetrySummarizer{
+			summary: &DashboardSummary{TotalSessions: 3, UniqueAgents: 2},
+			err:     errors.New("partial query failures: input tokens: boom"),
+		}
+		resp := empty()
+		assert.Error(t, fillSessionSummaryFromTelemetry(ctx, q, "p1", &resp))
+		assert.Equal(t, 3, resp.TotalSessions)
+		assert.Equal(t, 2, resp.ActiveAgents)
+		assert.Equal(t, sessionSummarySourceTelemetry, resp.Source)
+	})
+
+	t.Run("leaves the response alone when the query yields nothing", func(t *testing.T) {
+		for _, q := range []*fakeTelemetrySummarizer{
+			{err: errors.New("unavailable")},
+			{summary: &DashboardSummary{}, err: errors.New("partial query failures: everything")},
+		} {
+			resp := empty()
+			assert.Error(t, fillSessionSummaryFromTelemetry(ctx, q, "p1", &resp))
+			assert.Equal(t, empty(), resp)
+		}
 	})
 }
 
