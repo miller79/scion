@@ -815,3 +815,33 @@ func newRequestWithIdentity(t *testing.T, method, path string, body []byte, iden
 	ctx := contextWithIdentity(req.Context(), identity)
 	return req.WithContext(ctx)
 }
+
+func TestAuditRetentionHandler_DeletesOldRecords(t *testing.T) {
+	srv, s := testServer(t)
+	ctx := context.Background()
+
+	principal := tid("retention-user")
+	add := func(ts time.Time) {
+		require.NoError(t, s.CreateDecisionAudit(ctx, &store.DecisionAuditRecord{
+			PrincipalKind: "user", PrincipalID: principal, ResourceType: "project",
+			Permission: "read", Result: "deny", Reason: "test", Timestamp: ts,
+		}))
+		require.NoError(t, s.CreateMutationAudit(ctx, &store.MutationAuditRecord{
+			MutationType: "policy_create", ActorPrincipalKind: "user", ActorPrincipalID: principal,
+			TargetType: "policy", TargetID: tid("retention-policy"), Timestamp: ts,
+		}))
+	}
+	add(time.Now().AddDate(0, 0, -(defaultAuditRetentionDays + 5)))
+	add(time.Now().AddDate(0, 0, -(defaultAuditRetentionDays - 5)))
+
+	// AuditRetentionDays is unset, so the default window applies.
+	srv.auditRetentionHandler()(ctx)
+
+	_, decisions, err := s.ListDecisionAudits(ctx, store.DecisionAuditFilter{PrincipalID: principal, Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, 1, decisions, "only the record inside the retention window remains")
+
+	_, mutations, err := s.ListMutationAudits(ctx, store.MutationAuditFilter{ActorPrincipalID: principal, Limit: 10})
+	require.NoError(t, err)
+	assert.Equal(t, 1, mutations)
+}
