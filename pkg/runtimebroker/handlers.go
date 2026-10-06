@@ -235,7 +235,8 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 			AsyncLaunch: true,
 			// EmptyPerAgentWorkspace, like Attach, reflects the default
 			// runtime (false for Cloud Run, which rejects the mode).
-			EmptyPerAgentWorkspace: scionrt.HasEmptyPerAgentSupport(s.runtime),
+			EmptyPerAgentWorkspace:   scionrt.HasEmptyPerAgentSupport(s.runtime),
+			ReprovisionEmptyPerAgent: reprovisionEmptyPerAgentSupported(s.runtime),
 			// Cross-broker agent move is not implemented by this broker.
 			AgentMove:      false,
 			StartsInFlight: s.startsInFlight != nil,

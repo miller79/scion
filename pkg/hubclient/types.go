@@ -342,6 +342,11 @@ type BrokerCapabilities struct {
 	// empty-per-agent workspace sharing mode (design #2703;
 	// store.BrokerCapabilities.EmptyPerAgentWorkspace is its counterpart).
 	EmptyPerAgentWorkspace bool `json:"emptyPerAgentWorkspace"`
+	// ReprovisionEmptyPerAgent indicates this broker can reprovision an
+	// empty-per-agent agent in place for `scion reincarnate`, reusing the
+	// agent's existing private workspace. The hub refuses such a
+	// reincarnation (412) unless the agent's broker reports it.
+	ReprovisionEmptyPerAgent bool `json:"reprovisionEmptyPerAgent"`
 	// AgentMove indicates the broker can take part in a cross-broker agent
 	// move (store.BrokerCapabilities.AgentMove is its counterpart).
 	AgentMove bool `json:"agentMove"`

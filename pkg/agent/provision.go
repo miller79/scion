@@ -605,9 +605,16 @@ var ErrReprovisionRefused = errors.New("reprovision refused")
 // exists → keep the persisted config" branch: reincarnation's entire point is
 // to replace that persisted config with a freshly resolved one.
 //
-// Reprovision accepts two workspace modes, gated by api.ReincarnateEligible:
+// Reprovision accepts three workspace modes, gated by api.ReincarnateEligible:
 //   - clone-per-agent: opts.GitClone != nil, with an existing real clone on
 //     disk.
+//   - empty-per-agent (design #2703): opts.EmptyPerAgentWorkspace, on an
+//     agent whose persisted config already records that mode, with its
+//     private <agentDir>/workspace directory already on disk. The directory
+//     is reused as-is, so a same-broker reincarnation keeps the agent's
+//     files; Reprovision never creates or recreates it, and refuses on
+//     Kubernetes, where the workspace lives on the NFS export rather than
+//     on this broker's disk.
 //   - explicit mount (design §3.4 Amendment A23): opts.GitClone == nil and a
 //     non-empty opts.Workspace — shared-workspace and hub-managed projects.
 //     The agent directory and the workspace path must already exist;
@@ -642,8 +649,9 @@ var ErrReprovisionRefused = errors.New("reprovision refused")
 //     agent's own agentDir via checkAgentDirContained/CheckAgentDirContained).
 func (m *AgentManager) Reprovision(ctx context.Context, opts api.StartOptions) (*api.ScionConfig, error) {
 	hasGitClone := opts.GitClone != nil
-	if !api.ReincarnateEligible(hasGitClone, opts.Workspace) {
-		return nil, fmt.Errorf("%w: agent %q is neither clone-per-agent nor has an explicit workspace; reincarnate currently supports those workspace modes only", ErrReprovisionRefused, opts.Name)
+	emptyPerAgent := opts.EmptyPerAgentWorkspace
+	if !api.ReincarnateEligible(hasGitClone, opts.Workspace, emptyPerAgent) {
+		return nil, fmt.Errorf("%w: agent %q is neither clone-per-agent, empty-per-agent nor has an explicit workspace; reincarnate currently supports those workspace modes only", ErrReprovisionRefused, opts.Name)
 	}
 
 	projectDir, pdErr := config.GetResolvedProjectDir(opts.ProjectPath)
@@ -658,7 +666,13 @@ func (m *AgentManager) Reprovision(ctx context.Context, opts api.StartOptions) (
 	// single after-the-fact derivation that works for both modes.
 	var agentDir string
 
-	if hasGitClone {
+	if emptyPerAgent {
+		dir, err := m.checkEmptyPerAgentReprovision(projectDir, opts)
+		if err != nil {
+			return nil, err
+		}
+		agentDir = dir
+	} else if hasGitClone {
 		agentDir = config.GetAgentDir(projectDir, opts.Name, opts.SharedWorkspace)
 		agentWorkspace := filepath.Join(agentDir, "workspace")
 		if info, statErr := os.Stat(filepath.Join(agentWorkspace, ".git")); statErr != nil || !info.IsDir() {
@@ -759,6 +773,46 @@ func (m *AgentManager) Reprovision(ctx context.Context, opts api.StartOptions) (
 	// (the hub-built preamble plus handoff) is delivered by the subsequent
 	// DispatchAgentStart call, not pre-staged as a file.
 	return cfg, nil
+}
+
+// checkEmptyPerAgentReprovision enforces Reprovision's empty-per-agent
+// preconditions and returns the agent directory. Every miss is
+// ErrReprovisionRefused, before ProvisionAgent can run: the request names no
+// other workspace source, the runtime keeps the workspace on this broker's
+// disk, the agent directory exists, its persisted config already records the
+// empty-per-agent mode, and <agentDir>/workspace is an existing directory
+// (not a symlink or a file). A missing workspace means the agent's state is
+// gone; reincarnation must report that, not paper over it with an empty
+// directory the way a plain restart does.
+func (m *AgentManager) checkEmptyPerAgentReprovision(projectDir string, opts api.StartOptions) (string, error) {
+	if opts.GitClone != nil || opts.Workspace != "" || opts.SharedWorkspace {
+		return "", fmt.Errorf("%w: empty-per-agent agent %q cannot also name a git clone, a workspace path or a shared workspace", ErrReprovisionRefused, opts.Name)
+	}
+	if m.Runtime != nil && isKubernetesRuntime(m.Runtime.Name()) {
+		return "", fmt.Errorf("%w: reincarnate does not yet support empty-per-agent agents on Kubernetes, where the workspace is on the NFS export", ErrReprovisionRefused)
+	}
+	dir, err := CheckAgentDirContained(projectDir, opts.Name, false)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrReprovisionRefused, err)
+	}
+	if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
+		return "", fmt.Errorf("%w: agent %q has no existing agent directory at %s; reincarnate does not create it", ErrReprovisionRefused, opts.Name, dir)
+	}
+	persisted, cfgErr := (&config.Template{Path: dir}).LoadConfig()
+	if cfgErr != nil || persisted == nil || !persisted.EmptyPerAgentWorkspace {
+		return "", fmt.Errorf("%w: agent %q was not provisioned with an empty-per-agent workspace", ErrReprovisionRefused, opts.Name)
+	}
+	workspace := filepath.Join(dir, "workspace")
+	info, statErr := os.Lstat(workspace)
+	switch {
+	case statErr != nil:
+		return "", fmt.Errorf("%w: agent %q has no existing workspace at %s; reincarnate does not create or recreate it", ErrReprovisionRefused, opts.Name, workspace)
+	case info.Mode()&os.ModeSymlink != 0:
+		return "", fmt.Errorf("%w: agent %q workspace %s is a symlink", ErrReprovisionRefused, opts.Name, workspace)
+	case !info.IsDir():
+		return "", fmt.Errorf("%w: agent %q workspace path is not a directory: %s", ErrReprovisionRefused, opts.Name, workspace)
+	}
+	return dir, nil
 }
 
 func (m *AgentManager) Provision(ctx context.Context, opts api.StartOptions) (*api.ScionConfig, error) {

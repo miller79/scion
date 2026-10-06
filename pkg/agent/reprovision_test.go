@@ -864,3 +864,154 @@ func TestReprovision_IgnoresProvisionedWorktreeSignalForCloneWorkspace(t *testin
 		t.Fatalf("readProvisionedWorktreeRepoRoot(agentDir) = %q, want \"\" (a ctx signal must not be trusted against a clone-per-agent workspace, even one naming a genuine worktree base elsewhere)", got)
 	}
 }
+
+// provisionEmptyPerAgent provisions name as an empty-per-agent agent and
+// returns its private workspace directory.
+func provisionEmptyPerAgent(t *testing.T, scionDir, name string) string {
+	t.Helper()
+	ctx := api.ContextWithEmptyPerAgentWorkspace(context.Background())
+	if _, _, _, err := ProvisionAgent(ctx, name, "default", "", "", scionDir, "", "created", "", ""); err != nil {
+		t.Fatalf("initial ProvisionAgent: %v", err)
+	}
+	ws := filepath.Join(config.GetAgentDir(scionDir, name, false), "workspace")
+	if info, err := os.Stat(ws); err != nil || !info.IsDir() {
+		t.Fatalf("fixture check: empty-per-agent workspace missing at %s: %v", ws, err)
+	}
+	return ws
+}
+
+func emptyPerAgentReprovisionOpts(scionDir, name string) api.StartOptions {
+	return api.StartOptions{
+		Name: name, Template: "default", ProjectPath: scionDir, BrokerMode: true,
+		EmptyPerAgentWorkspace: true,
+	}
+}
+
+// An in-place reincarnation of an empty-per-agent agent reuses its private
+// workspace: the agent's files and home notes survive the reprovision.
+func TestReprovision_EmptyPerAgent_WorkspaceAndHomeSurvive(t *testing.T) {
+	scionDir, _ := reprovisionSetup(t)
+	agentName := "empty-agent"
+	ws := provisionEmptyPerAgent(t, scionDir, agentName)
+	work := filepath.Join(ws, "notes", "draft.md")
+	_ = os.MkdirAll(filepath.Dir(work), 0755)
+	_ = os.WriteFile(work, []byte("keep me"), 0644)
+	homeFile := filepath.Join(config.GetAgentHomePath(scionDir, agentName), "notes.txt")
+	_ = os.WriteFile(homeFile, []byte("home note"), 0644)
+
+	mgr := NewManager(&runtime.MockRuntime{})
+	cfg, err := mgr.Reprovision(context.Background(), emptyPerAgentReprovisionOpts(scionDir, agentName))
+	if err != nil {
+		t.Fatalf("Reprovision: %v", err)
+	}
+	if data, err := os.ReadFile(work); err != nil || string(data) != "keep me" {
+		t.Fatalf("empty-per-agent workspace file lost or changed: %q, %v", data, err)
+	}
+	if _, err := os.Stat(homeFile); err != nil {
+		t.Fatalf("home file lost: %v", err)
+	}
+	if cfg == nil || !cfg.EmptyPerAgentWorkspace {
+		t.Fatalf("reprovisioned config must still record the empty-per-agent mode, got %+v", cfg)
+	}
+}
+
+// A missing workspace means the agent's state is gone: Reprovision refuses
+// and, unlike a plain restart, does not recreate an empty directory.
+func TestReprovision_EmptyPerAgent_MissingWorkspace_RefusedNotRecreated(t *testing.T) {
+	scionDir, _ := reprovisionSetup(t)
+	agentName := "empty-missing-ws"
+	ws := provisionEmptyPerAgent(t, scionDir, agentName)
+	if err := os.RemoveAll(ws); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager(&runtime.MockRuntime{})
+	_, err := mgr.Reprovision(context.Background(), emptyPerAgentReprovisionOpts(scionDir, agentName))
+	if !errors.Is(err, ErrReprovisionRefused) {
+		t.Fatalf("expected ErrReprovisionRefused, got %v", err)
+	}
+	if _, statErr := os.Lstat(ws); !os.IsNotExist(statErr) {
+		t.Fatalf("DATA INTEGRITY: Reprovision must not recreate a missing empty-per-agent workspace: %v", statErr)
+	}
+}
+
+// A workspace that is a symlink or a regular file is refused.
+func TestReprovision_EmptyPerAgent_WorkspaceNotADirectory_Refused(t *testing.T) {
+	for _, kind := range []string{"symlink", "file"} {
+		t.Run(kind, func(t *testing.T) {
+			scionDir, _ := reprovisionSetup(t)
+			agentName := "empty-bad-ws-" + kind
+			ws := provisionEmptyPerAgent(t, scionDir, agentName)
+			if err := os.RemoveAll(ws); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "symlink" {
+				if err := os.Symlink(t.TempDir(), ws); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			} else if err := os.WriteFile(ws, []byte("x"), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			mgr := NewManager(&runtime.MockRuntime{})
+			_, err := mgr.Reprovision(context.Background(), emptyPerAgentReprovisionOpts(scionDir, agentName))
+			if !errors.Is(err, ErrReprovisionRefused) {
+				t.Fatalf("expected ErrReprovisionRefused for a %s workspace, got %v", kind, err)
+			}
+		})
+	}
+}
+
+// A request cannot turn an agent of another mode into an empty-per-agent
+// one: the persisted config must already record the mode.
+func TestReprovision_EmptyPerAgent_NotPersistedMode_Refused(t *testing.T) {
+	scionDir, _ := reprovisionSetup(t)
+	agentName := "clone-not-empty"
+	gc := &api.GitCloneConfig{URL: "https://example.com/repo.git"}
+	ctx := api.ContextWithGitClone(context.Background(), gc)
+	if _, _, _, err := ProvisionAgent(ctx, agentName, "default", "", "", scionDir, "", "created", "", ""); err != nil {
+		t.Fatalf("initial ProvisionAgent: %v", err)
+	}
+	ws := filepath.Join(scionDir, "agents", agentName, "workspace")
+	_ = os.MkdirAll(ws, 0755)
+
+	mgr := NewManager(&runtime.MockRuntime{})
+	_, err := mgr.Reprovision(context.Background(), emptyPerAgentReprovisionOpts(scionDir, agentName))
+	if !errors.Is(err, ErrReprovisionRefused) {
+		t.Fatalf("expected ErrReprovisionRefused, got %v", err)
+	}
+}
+
+// Empty-per-agent cannot be combined with another workspace source.
+func TestReprovision_EmptyPerAgent_ConflictingSource_Refused(t *testing.T) {
+	scionDir, _ := reprovisionSetup(t)
+	agentName := "empty-conflict"
+	provisionEmptyPerAgent(t, scionDir, agentName)
+
+	mgr := NewManager(&runtime.MockRuntime{})
+	for name, mutate := range map[string]func(*api.StartOptions){
+		"git clone":        func(o *api.StartOptions) { o.GitClone = &api.GitCloneConfig{URL: "https://example.com/repo.git"} },
+		"workspace path":   func(o *api.StartOptions) { o.Workspace = t.TempDir() },
+		"shared workspace": func(o *api.StartOptions) { o.SharedWorkspace = true },
+	} {
+		opts := emptyPerAgentReprovisionOpts(scionDir, agentName)
+		mutate(&opts)
+		if _, err := mgr.Reprovision(context.Background(), opts); !errors.Is(err, ErrReprovisionRefused) {
+			t.Fatalf("%s: expected ErrReprovisionRefused, got %v", name, err)
+		}
+	}
+}
+
+// On Kubernetes the empty-per-agent workspace lives on the NFS export, which
+// Reprovision cannot verify, so it refuses.
+func TestReprovision_EmptyPerAgent_Kubernetes_Refused(t *testing.T) {
+	scionDir, _ := reprovisionSetup(t)
+	agentName := "empty-k8s"
+	provisionEmptyPerAgent(t, scionDir, agentName)
+
+	mgr := NewManager(&runtime.MockRuntime{NameFunc: func() string { return "kubernetes" }})
+	_, err := mgr.Reprovision(context.Background(), emptyPerAgentReprovisionOpts(scionDir, agentName))
+	if !errors.Is(err, ErrReprovisionRefused) {
+		t.Fatalf("expected ErrReprovisionRefused on Kubernetes, got %v", err)
+	}
+}

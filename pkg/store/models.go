@@ -987,6 +987,11 @@ type BrokerCapabilities struct {
 	// agent on non-git projects). The hub refuses to dispatch such agents to
 	// brokers without it, returning 412 (fail closed; design #2703 D3).
 	EmptyPerAgentWorkspace bool `json:"emptyPerAgentWorkspace"`
+	// ReprovisionEmptyPerAgent indicates this broker can reprovision an
+	// empty-per-agent agent in place for `scion reincarnate`, reusing the
+	// agent's existing private workspace. The hub refuses such a
+	// reincarnation (412) unless the agent's broker reports it.
+	ReprovisionEmptyPerAgent bool `json:"reprovisionEmptyPerAgent"`
 	// AgentMove indicates the broker can take part in moving an agent
 	// between brokers that share a workspace export (`scion reincarnate
 	// --broker`). The hub refuses a move unless both the source and the

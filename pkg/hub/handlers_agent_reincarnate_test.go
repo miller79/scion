@@ -666,14 +666,6 @@ func TestReincarnateAgent_WorktreePerAgentOrNeitherWorkspace_Returns400(t *testi
 			workspaceMode: "",
 			wantRejected:  false,
 		},
-		{
-			// Design #2703 D4: explicit refusal, not the generic message.
-			name:          "empty-per-agent (non-git per-agent): unsupported",
-			workspaceMode: store.WorkspaceModePerAgent,
-			nonGit:        true,
-			wantRejected:  true,
-			wantBodyText:  `reincarnate does not yet support \"Empty directory per agent\" (empty-per-agent) workspaces`,
-		},
 	}
 
 	for _, tc := range cases {
@@ -5638,4 +5630,104 @@ func TestReincarnateAgent_AC2b_Matrix_CreateAndReincarnateAgree(t *testing.T) {
 			}
 		})
 	}
+}
+
+// newEmptyPerAgentReincarnateAgent sets project up as an empty-per-agent
+// (non-git, per-agent) project and creates an agent the way the create path
+// would for it.
+func newEmptyPerAgentReincarnateAgent(t *testing.T, srv *Server, s store.Store, project *store.Project, broker *store.RuntimeBroker) *store.Agent {
+	t.Helper()
+	ctx := context.Background()
+	project.GitRemote = ""
+	project.Labels = map[string]string{store.LabelWorkspaceMode: store.WorkspaceModePerAgent}
+	require.NoError(t, s.UpdateProject(ctx, project))
+	require.True(t, project.IsEmptyPerAgent(), "fixture check: project must be empty-per-agent")
+
+	probe := &store.Agent{AppliedConfig: &store.AgentAppliedConfig{}}
+	srv.populateAgentConfig(ctx, probe, project, nil)
+	return newReincarnateTestAgent(t, s, project, broker, func(a *store.Agent) {
+		a.AppliedConfig.GitClone = probe.AppliedConfig.GitClone
+		a.AppliedConfig.Workspace = probe.AppliedConfig.Workspace
+		a.AppliedConfig.CreateInputs.Workspace = probe.AppliedConfig.Workspace
+	})
+}
+
+func setBrokerReprovisionEmptyPerAgent(t *testing.T, s store.Store, broker *store.RuntimeBroker, on bool) {
+	t.Helper()
+	broker.Capabilities = &store.BrokerCapabilities{Reprovision: true, ReprovisionEmptyPerAgent: on}
+	require.NoError(t, s.UpdateRuntimeBroker(context.Background(), broker))
+}
+
+// An empty-per-agent agent on a broker that reprovisions empty-per-agent in
+// place is eligible: the dry run plans it and a real request is accepted.
+func TestReincarnateAgent_EmptyPerAgent_SameBroker_Eligible(t *testing.T) {
+	disp := newReincarnateTestDispatcher()
+	srv, s, project, broker := setupReincarnateTestServer(t, disp)
+	setBrokerReprovisionEmptyPerAgent(t, s, broker, true)
+	agent := newEmptyPerAgentReincarnateAgent(t, srv, s, project, broker)
+	self := agentIdentityFor(agent.ID, project.ID)
+
+	for _, dryRun := range []bool{true, false} {
+		want := http.StatusOK
+		if !dryRun {
+			want = http.StatusAccepted
+		}
+		req := reincarnateRequest(t, agent.ID, self, ReincarnateAgentRequest{Handoff: "h", DryRun: dryRun})
+		rec := httptest.NewRecorder()
+		srv.handleReincarnateAgent(rec, req, agent.ID)
+		assert.Equal(t, want, rec.Code, "dryRun=%v: body: %s", dryRun, rec.Body.String())
+	}
+}
+
+// A broker without the capability is refused up front (412), for a dry run
+// and a real request alike, and the agent is left untouched.
+func TestReincarnateAgent_EmptyPerAgent_BrokerWithoutCapability_Returns412(t *testing.T) {
+	disp := newReincarnateTestDispatcher()
+	srv, s, project, broker := setupReincarnateTestServer(t, disp)
+	setBrokerReprovisionEmptyPerAgent(t, s, broker, false)
+	agent := newEmptyPerAgentReincarnateAgent(t, srv, s, project, broker)
+	beforeVersion := agent.StateVersion
+	self := agentIdentityFor(agent.ID, project.ID)
+
+	for _, dryRun := range []bool{true, false} {
+		req := reincarnateRequest(t, agent.ID, self, ReincarnateAgentRequest{Handoff: "h", DryRun: dryRun})
+		rec := httptest.NewRecorder()
+		srv.handleReincarnateAgent(rec, req, agent.ID)
+		assert.Equal(t, http.StatusPreconditionFailed, rec.Code, "dryRun=%v: body: %s", dryRun, rec.Body.String())
+		assert.Contains(t, rec.Body.String(), "Empty directory per agent", "dryRun=%v", dryRun)
+	}
+
+	after, err := s.GetAgent(context.Background(), agent.ID)
+	require.NoError(t, err)
+	assert.Equal(t, beforeVersion, after.StateVersion, "agent must be untouched")
+	list, err := s.ListAgentReincarnations(context.Background(), agent.ID)
+	require.NoError(t, err)
+	assert.Empty(t, list, "no reincarnation record should be created")
+}
+
+// Moving an empty-per-agent agent to another broker would leave its files
+// behind, so a --broker plan reports the local-workspace refusal.
+func TestReincarnateAgent_EmptyPerAgent_MoveRefused(t *testing.T) {
+	disp := newReincarnateTestDispatcher()
+	srv, s, project, broker := setupReincarnateTestServer(t, disp)
+	setBrokerReprovisionEmptyPerAgent(t, s, broker, true)
+	agent := newEmptyPerAgentReincarnateAgent(t, srv, s, project, broker)
+
+	other := &store.RuntimeBroker{
+		ID:           tid("reincarnate-other-broker-" + t.Name()),
+		Name:         "Other Broker",
+		Slug:         "reincarnate-other-broker-" + tidSlugSafe(t.Name()),
+		Status:       store.BrokerStatusOnline,
+		Capabilities: &store.BrokerCapabilities{Reprovision: true, ReprovisionEmptyPerAgent: true, AgentMove: true},
+	}
+	require.NoError(t, s.CreateRuntimeBroker(context.Background(), other))
+	require.NoError(t, s.AddProjectProvider(context.Background(), &store.ProjectProvider{
+		ProjectID: project.ID, BrokerID: other.ID, BrokerName: other.Name, Status: store.BrokerStatusOnline,
+	}))
+
+	req := reincarnateRequest(t, agent.ID, agentIdentityFor(agent.ID, project.ID),
+		ReincarnateAgentRequest{Handoff: "h", DryRun: true, TargetBroker: other.ID})
+	rec := httptest.NewRecorder()
+	srv.handleReincarnateAgent(rec, req, agent.ID)
+	assert.Contains(t, rec.Body.String(), "workspace is local to the current broker", "body: %s", rec.Body.String())
 }

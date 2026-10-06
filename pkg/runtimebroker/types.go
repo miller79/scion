@@ -98,6 +98,11 @@ type BrokerCapabilities struct {
 	// directory at <projectDir>/agents/<slug>/workspace (design #2703). The
 	// hub refuses to dispatch such agents to a broker without it (412).
 	EmptyPerAgentWorkspace bool `json:"emptyPerAgentWorkspace"`
+	// ReprovisionEmptyPerAgent indicates this broker can reprovision an
+	// empty-per-agent agent in place for `scion reincarnate`, reusing the
+	// agent's existing private workspace. The hub refuses such a
+	// reincarnation (412) unless the agent's broker reports it.
+	ReprovisionEmptyPerAgent bool `json:"reprovisionEmptyPerAgent"`
 	// AgentMove indicates this broker can take part in moving an agent to
 	// or from another broker on the same workspace export (`scion
 	// reincarnate --broker`). The hub refuses a move unless both brokers

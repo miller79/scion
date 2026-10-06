@@ -319,12 +319,13 @@ func (s *HeartbeatService) buildHeartbeat(ctx context.Context) *hubclient.Broker
 		// default runtime's own optional capability
 		// (scionrt.HasAttachSupport), same as handleInfo's Capabilities.Attach.
 		Capabilities: &hubclient.BrokerCapabilities{
-			WebPTY:                 false,
-			Sync:                   true,
-			Attach:                 scionrt.HasAttachSupport(defaultRuntime),
-			Reprovision:            true,
-			AsyncLaunch:            true,
-			EmptyPerAgentWorkspace: scionrt.HasEmptyPerAgentSupport(defaultRuntime),
+			WebPTY:                   false,
+			Sync:                     true,
+			Attach:                   scionrt.HasAttachSupport(defaultRuntime),
+			Reprovision:              true,
+			AsyncLaunch:              true,
+			EmptyPerAgentWorkspace:   scionrt.HasEmptyPerAgentSupport(defaultRuntime),
+			ReprovisionEmptyPerAgent: reprovisionEmptyPerAgentSupported(defaultRuntime),
 			// Cross-broker agent move is not implemented by this broker.
 			AgentMove: false,
 		},

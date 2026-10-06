@@ -340,12 +340,21 @@ func (s *Server) handleReincarnateAgent(w http.ResponseWriter, r *http.Request, 
 	// touch a workspace it did not find already on disk): this is what
 	// makes --dry-run report the restriction too, instead of a dry run
 	// showing a plan that a real request could not safely execute.
-	// Empty-per-agent workspaces are broker-local, unsynced state: the only
-	// possible reincarnation would be a fresh empty directory, silently
-	// discarding work. Refused explicitly in v1 (design #2703 D4).
+	// Empty-per-agent workspaces are broker-local, unsynced state. In place
+	// on the agent's own broker the private workspace is still on disk and
+	// the broker's Reprovision reuses it as-is (refusing if it is missing),
+	// so that is allowed. A move to another broker would leave the files
+	// behind and start the agent empty, so it is refused (design #2703 D4).
 	workspaceModeErr := ""
-	if project.IsEmptyPerAgent() {
-		workspaceModeErr = `reincarnate does not yet support "Empty directory per agent" (empty-per-agent) workspaces`
+	emptyPerAgent := project.IsEmptyPerAgent()
+	if emptyPerAgent {
+		switch {
+		case agent.AppliedConfig == nil ||
+			agent.AppliedConfig.GitClone != nil || agent.AppliedConfig.Workspace != "":
+			workspaceModeErr = `reincarnate cannot reuse this agent's "Empty directory per agent" workspace: the agent's configuration names another workspace source`
+		case moveTarget != nil:
+			workspaceModeErr = `reincarnate --broker does not support "Empty directory per agent" (empty-per-agent) workspaces; the workspace is local to the current broker`
+		}
 	}
 
 	hasGitClone := agent.AppliedConfig != nil && agent.AppliedConfig.GitClone != nil
@@ -357,10 +366,10 @@ func (s *Server) handleReincarnateAgent(w http.ResponseWriter, r *http.Request, 
 	}
 	switchedToCloneOnly := !hasGitClone && project.GitRemote != "" && !project.IsSharedWorkspace() &&
 		linkedProjectPath == "" && effectiveWorkspace != ""
-	if workspaceModeErr == "" && (agent.AppliedConfig == nil || project.IsWorktreePerAgent() ||
+	if workspaceModeErr == "" && !emptyPerAgent && (agent.AppliedConfig == nil || project.IsWorktreePerAgent() ||
 		(hasGitClone && project.IsSharedWorkspace()) ||
 		switchedToCloneOnly ||
-		!api.ReincarnateEligible(hasGitClone, effectiveWorkspace)) {
+		!api.ReincarnateEligible(hasGitClone, effectiveWorkspace, false)) {
 		// FYI-6 (review p1b-r1): the generic message now covers every
 		// eligible mode, not just clone-per-agent.
 		workspaceModeErr = "reincarnate requires a clone-per-agent, shared-workspace or hub-managed workspace"
@@ -407,6 +416,13 @@ func (s *Server) handleReincarnateAgent(w http.ResponseWriter, r *http.Request, 
 		// plan is computed or anything is persisted).
 		writeError(w, http.StatusPreconditionFailed, ErrCodeUnsupportedCapability,
 			"runtime broker does not support agent reincarnation; upgrade the broker", nil)
+		return
+	}
+	if emptyPerAgent && !broker.Capabilities.ReprovisionEmptyPerAgent {
+		// Same AC-9 shape: refused before any plan or write, so the agent
+		// is untouched and a dry run reports it too.
+		writeError(w, http.StatusPreconditionFailed, ErrCodeUnsupportedCapability,
+			`runtime broker does not support reincarnating "Empty directory per agent" agents; upgrade the broker`, nil)
 		return
 	}
 

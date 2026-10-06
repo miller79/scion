@@ -985,8 +985,8 @@ func IsReprovisionFromContext(ctx context.Context) bool {
 // worktree-per-agent agents — see design §3.4 Amendment A4), and the broker
 // additionally requires the workspace to already exist on disk — Reprovision
 // never creates, clones, pulls, resets, or removes a workspace.
-func ReincarnateEligible(hasGitClone bool, workspace string) bool {
-	return hasGitClone || workspace != ""
+func ReincarnateEligible(hasGitClone bool, workspace string, emptyPerAgent bool) bool {
+	return hasGitClone || workspace != "" || emptyPerAgent
 }
 
 type provisionedWorktreeRepoRootContextKey struct{}
