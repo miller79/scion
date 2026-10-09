@@ -1825,8 +1825,26 @@ func (ws *WebServer) expandProjectWildcard(r *http.Request, tokens []string) []s
 		"web",
 	)
 
-	// List all projects and filter by ActionRead.
-	allProjects, err := ws.store.ListProjects(r.Context(), store.ProjectFilter{}, store.ListOptions{Limit: 1000})
+	// Narrow the candidates to the caller's project.read scope first, as
+	// listProjects does for project.list, and decide only ActionRead: the
+	// expansion reads no other capability. A project outside that scope can
+	// never be readable, so this removes no subject; it only avoids deciding,
+	// and auditing, every project action on every project each time a
+	// stream (re)connects. Resolution failures fail closed.
+	scope, err := ws.authzService.ResolveListScopes(r.Context(), identity, "project.read")
+	if err != nil {
+		ws.logger().Warn("expandProjectWildcard: authorization scope resolution failed", "error", err)
+		return nil // fail-closed
+	}
+	filter := store.ProjectFilter{}
+	if !scope.Scopes.IsAll() {
+		// A non-nil empty set means no project is in scope.
+		filter.AuthorizedProjectIDs = append([]string{}, canonicalizeStringSlice(scope.Scopes.ProjectIDs())...)
+	}
+	if len(scope.ExcludedProjectIDs) > 0 {
+		filter.ExcludedProjectIDs = canonicalizeStringSlice(append([]string{}, scope.ExcludedProjectIDs...))
+	}
+	allProjects, err := ws.store.ListProjects(r.Context(), filter, store.ListOptions{Limit: 1000})
 	if err != nil {
 		ws.logger().Warn("expandProjectWildcard: failed to list projects", "error", err)
 		return nil // fail-closed
@@ -1839,7 +1857,7 @@ func (ws *WebServer) expandProjectWildcard(r *http.Request, tokens []string) []s
 	for i := range allProjects.Items {
 		resources[i] = projectResource(&allProjects.Items[i])
 	}
-	caps := ws.authzService.ComputeCapabilitiesBatch(r.Context(), identity, resources, "project")
+	caps := ws.authzService.ComputeCapabilitiesForActions(r.Context(), identity, resources, []Action{ActionRead})
 
 	// Build the suffix to append after the concrete project ID.
 	//
@@ -1978,7 +1996,9 @@ func (ws *WebServer) authorizeSSESubjects(r *http.Request, subjects []string) []
 			ids = append(ids, pid)
 			resources = append(resources, Resource{Type: "project", ID: pid})
 		}
-		caps := ws.authzService.ComputeCapabilitiesBatch(r.Context(), identity, resources, "project")
+		// Only read access is checked here, so decide only ActionRead rather
+		// than every project action.
+		caps := ws.authzService.ComputeCapabilitiesForActions(r.Context(), identity, resources, []Action{ActionRead})
 		for i, c := range caps {
 			if !capabilityAllows(c, ActionRead) {
 				deniedProjects[ids[i]] = true
