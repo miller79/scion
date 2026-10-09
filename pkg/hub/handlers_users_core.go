@@ -99,7 +99,7 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		for i := range result.Items {
 			resources[i] = userResource(&result.Items[i])
 		}
-		caps := s.authzService.ComputeCapabilitiesBatch(ctx, identity, resources, "user")
+		caps := s.userListCapabilities(ctx, identity, result.Items, resources)
 		for i := range result.Items {
 			if !capabilityAllows(caps[i], ActionRead) {
 				continue
@@ -194,6 +194,46 @@ func (s *Server) getUser(w http.ResponseWriter, r *http.Request, id string) {
 	stripPreferencesForViewer(ctx, &resp.User, resp.Cap)
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// userListCapabilities computes each listed user's capabilities, deciding
+// only the actions that can be allowed. User permissions are hub-scoped, so
+// for anyone other than the caller the management actions (update, suspend,
+// promote, delete) depend only on the caller's hub-wide authority. Those are
+// decided only when the caller's scope for them is hub-wide, as resolved
+// without a decision; otherwise they would all be denied and audited, once
+// per action per user on every list. The caller's own row, and any lookup
+// that fails, gets the full action set, so the capabilities returned are the
+// same as deciding every action for every row.
+func (s *Server) userListCapabilities(ctx context.Context, identity Identity, users []store.User, resources []Resource) []*Capabilities {
+	full := ResourceActions["user"]
+	if u, ok := identity.(UserIdentity); ok && u.Role() == store.UserRoleAdmin {
+		// A legacy admin role may carry authority the scope lookup does not
+		// see; decide every action as before.
+		return s.authzService.ComputeCapabilitiesBatch(ctx, identity, resources, "user")
+	}
+	others := []Action{ActionRead}
+	for _, action := range full {
+		if action == ActionRead {
+			continue
+		}
+		scope, err := s.authzService.ResolveListScopes(ctx, identity, "user."+string(action))
+		if err != nil || scope.Scopes.IsAll() {
+			others = append(others, action)
+		}
+	}
+	if len(others) == len(full) {
+		return s.authzService.ComputeCapabilitiesBatch(ctx, identity, resources, "user")
+	}
+	caps := s.authzService.ComputeCapabilitiesForActions(ctx, identity, resources, others)
+	if self, ok := identity.(UserIdentity); ok {
+		for i := range users {
+			if users[i].ID == self.ID() {
+				caps[i] = s.authzService.ComputeCapabilitiesForActions(ctx, identity, resources[i:i+1], full)[0]
+			}
+		}
+	}
+	return caps
 }
 
 // stripPreferencesForViewer clears u.Preferences in place unless the caller
