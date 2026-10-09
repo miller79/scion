@@ -454,7 +454,12 @@ func TestChatSpaces_FewerDecisionsAndStoreCalls(t *testing.T) {
 				f.wcs.listTopics, newTopicsBatch, f.wcs.getReadStates, newReadStates)
 
 			assert.Equal(t, nProjects*k, legacyDecisions, "legacy: every project action")
-			assert.Equal(t, nProjects, newDecisions, "new: one read decision per project")
+			if who == "admin" {
+				assert.Equal(t, nProjects, newDecisions, "admin: one read decision per project")
+			} else {
+				require.Less(t, len(legacy), nProjects, "fixture: the member must not see every project")
+				assert.Equal(t, len(legacy), newDecisions, "member: one read decision per project in scope, none for the rest")
+			}
 
 			assert.Equal(t, 0, newListTopics, "no per-project topic reads")
 			assert.Equal(t, 1, newTopicsBatch, "one batched topic read")
@@ -466,6 +471,58 @@ func TestChatSpaces_FewerDecisionsAndStoreCalls(t *testing.T) {
 			assert.Len(t, resp.Spaces, len(legacy))
 		})
 	}
+}
+
+// A member's spaces list decides, and audits, only the projects in its
+// project.read scope: no denial is recorded for the projects it cannot
+// read, however many there are, and the visible spaces are unchanged.
+func TestChatSpaces_NoDenialsForProjectsOutOfScope(t *testing.T) {
+	f := newSpacesPerfFixture(t)
+	emitter := &parityRecordingAuditEmitter{}
+	f.srv.authzService.SetDecisionAuditEmitter(emitter)
+	f.srv.authzService.DecisionAuditSampleRate = 1.0
+
+	resp := getSpaces(t, f.srv, f.member)
+	require.NotEmpty(t, resp.Spaces)
+	for _, r := range emitter.snapshot() {
+		if r.ResourceType == "project" {
+			assert.Equal(t, "allow", r.Result, "project %s: no denial may be decided for the rail", r.ResourceID)
+		}
+	}
+	want := legacyChatSpaces(t, f.srv, f.wcs, identityOf(f.member))
+	got := make([]string, 0, len(resp.Spaces))
+	for _, sp := range resp.Spaces {
+		got = append(got, sp.ProjectID)
+	}
+	wantIDs := make([]string, 0, len(want))
+	for _, sp := range want {
+		wantIDs = append(wantIDs, sp.ProjectID)
+	}
+	assert.Equal(t, wantIDs, got)
+}
+
+// A user in no project gets an empty rail, with no project decisions and
+// its preferences still returned.
+func TestChatSpaces_NoProjectsInScope(t *testing.T) {
+	f := newSpacesPerfFixture(t)
+	ctx := context.Background()
+	outsider := &store.User{
+		ID: tid("spaces-outsider"), Email: "spaces-outsider@example.com",
+		DisplayName: "Outsider", Role: store.UserRoleMember, Status: "active",
+		Created: time.Now(),
+	}
+	require.NoError(t, f.s.CreateUser(ctx, outsider))
+	require.NoError(t, f.wcs.SetUserPrefs(ctx, outsider.ID, WebChatUserPrefs{UserID: outsider.ID, SpaceSortMode: "alpha"}))
+
+	emitter := &parityRecordingAuditEmitter{}
+	f.srv.authzService.SetDecisionAuditEmitter(emitter)
+	f.srv.authzService.DecisionAuditSampleRate = 1.0
+
+	resp := getSpaces(t, f.srv, outsider)
+	assert.Empty(t, resp.Spaces)
+	assert.Equal(t, 0, countProjectDecisions(emitter.snapshot()))
+	require.NotNil(t, resp.Prefs)
+	assert.Equal(t, "alpha", resp.Prefs.SpaceSortMode)
 }
 
 func countProjectDecisions(records []*store.DecisionAuditRecord) int {

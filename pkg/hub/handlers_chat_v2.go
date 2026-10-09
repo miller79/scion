@@ -102,14 +102,34 @@ func (s *Server) handleChatSpaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// List every project as a summary: the rail needs only identity, naming,
-	// the emoji annotation and the authorization inputs, not the agent,
-	// contributor and broker counts ListProjects computes per project.
+	// Narrow the candidates to the caller's project.read scope first, as
+	// listProjects does for project.list. A project outside that scope can
+	// never be readable, so skipping it changes no result; it only avoids
+	// deciding, and auditing, a denial for every such project on every poll
+	// of the rail. Resolution failures fail closed.
+	identity := GetIdentityFromContext(ctx)
+	scope, err := s.authzService.ResolveListScopes(ctx, identity, "project.read")
+	if err != nil {
+		slog.WarnContext(ctx, "chat spaces: authorization scope resolution failed (fail-closed)", "error", err)
+		writeError(w, http.StatusInternalServerError, ErrCodeInternalError, "unable to resolve authorization", nil)
+		return
+	}
 	// Project templates are blueprints, not chat spaces: exclude them here
 	// so no client lists them in the rail.
-	allProjects, err := s.store.ListProjectSummaries(ctx, store.ProjectFilter{
-		IsTemplate: new(bool), // exclude templates
-	}, store.ListOptions{Limit: 1000})
+	filter := store.ProjectFilter{IsTemplate: new(bool)} // exclude templates
+	if !scope.Scopes.IsAll() {
+		// A non-nil empty set means no project is in scope.
+		filter.AuthorizedProjectIDs = append([]string{}, canonicalizeStringSlice(scope.Scopes.ProjectIDs())...)
+	}
+	if len(scope.ExcludedProjectIDs) > 0 {
+		filter.ExcludedProjectIDs = canonicalizeStringSlice(append([]string{}, scope.ExcludedProjectIDs...))
+	}
+
+	// List the candidate projects as summaries: the rail needs only
+	// identity, naming, the emoji annotation and the authorization inputs,
+	// not the agent, contributor and broker counts ListProjects computes per
+	// project.
+	allProjects, err := s.store.ListProjectSummaries(ctx, filter, store.ListOptions{Limit: 1000})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "INTERNAL", "failed to list projects", nil)
 		return
@@ -117,8 +137,8 @@ func (s *Server) handleChatSpaces(w http.ResponseWriter, r *http.Request) {
 
 	// Decide ActionRead only: it is the one capability this handler reads,
 	// and ComputeCapabilitiesForActions runs the same decision path
-	// ComputeCapabilitiesBatch does for that action.
-	identity := GetIdentityFromContext(ctx)
+	// ComputeCapabilitiesBatch does for that action. Every candidate is
+	// still decided, so the scope above only ever removes projects.
 	resources := make([]Resource, len(allProjects.Items))
 	for i := range allProjects.Items {
 		resources[i] = projectResource(&allProjects.Items[i])
