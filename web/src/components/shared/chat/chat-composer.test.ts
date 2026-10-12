@@ -74,6 +74,31 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
+describe('composer — upload project scope', () => {
+  it('scopes a thread upload to the project', async () => {
+    const el = createComposer();
+    el.conversationMode = 'thread';
+    respondWith(201, { attachments: [STORED], failures: [] });
+
+    await selectFiles(el, ['compose.yaml']);
+
+    const body = apiFetch.mock.calls[0][1].body as FormData;
+    expect(body.get('project_id')).toBe('proj-1');
+  });
+
+  it('uploads a DM attachment without a project, even under a project', async () => {
+    const el = createComposer();
+    el.conversationMode = 'dm';
+    respondWith(201, { attachments: [STORED], failures: [] });
+
+    await selectFiles(el, ['compose.yaml']);
+
+    const body = apiFetch.mock.calls[0][1].body as FormData;
+    expect(body.has('project_id')).toBe(false);
+    expect(el.pendingFiles).toHaveLength(1);
+  });
+});
+
 describe('composer — partial upload results', () => {
   it('keeps the stored files and records the refused ones', async () => {
     const el = createComposer();

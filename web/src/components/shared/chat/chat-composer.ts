@@ -1952,7 +1952,12 @@ export class ScionChatComposer extends LitElement {
     this.uploading = true;
     try {
       const formData = new FormData();
-      formData.append('project_id', this.projectId);
+      // A DM belongs to no project, and the hub accepts an attachment in a DM
+      // only when it was uploaded without one. An agent DM is shown under the
+      // agent's project, so the project must not be sent from a DM.
+      if (this.conversationMode !== 'dm' && this.projectId) {
+        formData.append('project_id', this.projectId);
+      }
       for (const file of files) {
         formData.append('files', file);
       }
