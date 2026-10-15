@@ -73,6 +73,16 @@ const maxPreviewFileSize = 50 * 1024 * 1024
 // subresource such as an <img>, so inline image previews are unaffected.
 const untrustedContentSandboxCSP = "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads"
 
+// agentServedPageSandboxCSP is untrustedContentSandboxCSP plus allow-forms. It
+// is sent on pages an agent serves live through the port-forward and conduit
+// proxies, which are interactive apps (dashboards with search boxes and
+// filters) rather than stored files. allow-forms gives such a page no reach
+// that allow-scripts does not already give it: its origin stays opaque, so a
+// form it submits to the hub is a cross-site request that carries no
+// SameSite=Lax session cookie, and a GET form navigates nowhere a script
+// cannot. allow-same-origin must still never be added.
+const agentServedPageSandboxCSP = untrustedContentSandboxCSP + " allow-forms"
+
 // contentDisposition builds a Content-Disposition header value with
 // mime.FormatMediaType, as the skill and template handlers do, so non-ASCII
 // filenames get the RFC 2231 filename* form. FormatMediaType returns "" for
