@@ -306,17 +306,6 @@ func projectMigrationStateFor(dir string) *projectMigrationDirState {
 	return v.(*projectMigrationDirState)
 }
 
-// fileOwnerUID returns the uid that owns the file described by info. ok is
-// false only if the platform does not expose *syscall.Stat_t; scion is
-// built for linux and darwin, both of which do.
-func fileOwnerUID(info os.FileInfo) (int, bool) {
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return 0, false
-	}
-	return int(st.Uid), true
-}
-
 // manualRenameCommand returns the copy-pasteable command a Skipped report
 // suggests the user run by hand. Both paths are shell-quoted: they can come
 // from a project directory, a HOME, or an entry name containing a space or

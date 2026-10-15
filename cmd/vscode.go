@@ -27,12 +27,12 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/GoogleCloudPlatform/scion/pkg/tunnelclient"
+	"github.com/GoogleCloudPlatform/scion/pkg/util/filelock"
 )
 
 const (
@@ -320,12 +320,12 @@ func lockVSCodeDir(path string) (func(), error) {
 	if err != nil {
 		return nil, fmt.Errorf("open lock %s: %w", path, err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := filelock.Lock(f); err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("lock %s: %w", path, err)
 	}
 	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = filelock.Unlock(f)
 		_ = f.Close()
 	}, nil
 }
@@ -351,6 +351,8 @@ func vscodeBlockHub(block string) string {
 func sshShellUnquote(w string) string {
 	if len(w) >= 2 && strings.HasPrefix(w, "'") && strings.HasSuffix(w, "'") {
 		w = strings.ReplaceAll(w[1:len(w)-1], `'\''`, "'")
+	} else if len(w) >= 2 && strings.HasPrefix(w, `"`) && strings.HasSuffix(w, `"`) {
+		w = w[1 : len(w)-1]
 	}
 	return strings.ReplaceAll(w, "%%", "%")
 }

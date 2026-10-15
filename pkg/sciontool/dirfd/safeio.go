@@ -1,3 +1,5 @@
+//go:build unix
+
 /*
 Copyright 2026 The Scion Authors.
 */
@@ -98,7 +100,7 @@ func ReadAtNoFollow(dirFd int, name string, max int64) ([]byte, error) {
 // file it read, taken on the same open descriptor, so a caller can apply a
 // further check (such as on the file's owner) to exactly the file whose
 // content it got. On error the returned Stat_t is not meaningful.
-func ReadAtNoFollowStat(dirFd int, name string, max int64) ([]byte, syscall.Stat_t, error) {
+func ReadAtNoFollowStat(dirFd int, name string, max int64) ([]byte, Stat, error) {
 	var st syscall.Stat_t
 	f, err := OpenAt(dirFd, name, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
@@ -689,3 +691,6 @@ func readlinkAt(dirFd int, name string) (string, error) {
 	}
 	return string(buf[:n]), nil
 }
+
+// Stat is the stat result ReadAtNoFollowStat returns.
+type Stat = syscall.Stat_t

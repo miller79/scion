@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"unicode"
@@ -455,10 +456,18 @@ func renderSSHIncludeFile(endpoint, label string, blocks map[string]string) stri
 	return b.String()
 }
 
+// sshQuoteForCmd reports whether ProxyCommand words are quoted for Windows
+// OpenSSH, which runs a ProxyCommand through cmd.exe rather than a POSIX
+// shell. It is a variable so tests can exercise both forms.
+var sshQuoteForCmd = runtime.GOOS == "windows"
+
 // sshShellQuote quotes s for the shell ssh runs a ProxyCommand with, and
 // doubles '%' so ssh does not expand it as a token.
 func sshShellQuote(s string) string {
 	s = strings.ReplaceAll(s, "%", "%%")
+	if sshQuoteForCmd {
+		return sshCmdQuote(s)
+	}
 	safe := s != ""
 	for _, r := range s {
 		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && !strings.ContainsRune("@%+=:,./_-", r) {
@@ -470,6 +479,25 @@ func sshShellQuote(s string) string {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// sshCmdQuote quotes s for cmd.exe: a word of path-safe characters,
+// including a Windows path's backslashes and drive colon, is left as is;
+// anything else is wrapped in double quotes. A Windows path cannot contain
+// a double quote, and endpoints and slugs are validated before they get
+// here.
+func sshCmdQuote(s string) string {
+	safe := s != ""
+	for _, r := range s {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && !strings.ContainsRune(`@%+=:,./_-\`, r) {
+			safe = false
+			break
+		}
+	}
+	if safe {
+		return s
+	}
+	return `"` + s + `"`
 }
 
 // renderSSHHostBlock returns the Host block for one agent. exe must be an

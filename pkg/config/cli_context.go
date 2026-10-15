@@ -24,10 +24,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/GoogleCloudPlatform/scion/pkg/util/filelock"
 )
 
 // The CLI's current context: the hub and project that 'scion project use'
@@ -311,12 +312,12 @@ func lockCLIContext(path string) (func(), error) {
 	if err != nil {
 		return nil, fmt.Errorf("open context lock: %w", err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := filelock.Lock(f); err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("lock context file: %w", err)
 	}
 	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = filelock.Unlock(f)
 		_ = f.Close()
 	}, nil
 }

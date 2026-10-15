@@ -17,7 +17,6 @@ package hub
 import (
 	"os"
 	"path/filepath"
-	"syscall"
 
 	"github.com/GoogleCloudPlatform/scion/pkg/config"
 )
@@ -107,16 +106,6 @@ func isMountedVolume(fi os.FileInfo, rootPath string) (mounted, determinable boo
 	}
 
 	return dev != rootDev, true
-}
-
-// deviceID returns the filesystem device ID for fi, and whether it could be
-// determined.
-func deviceID(fi os.FileInfo) (uint64, bool) {
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return 0, false
-	}
-	return uint64(st.Dev), true
 }
 
 // ephemeralPathReasonVolumeEmpty is the fixed reason token logged by

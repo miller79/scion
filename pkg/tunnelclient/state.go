@@ -25,8 +25,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/GoogleCloudPlatform/scion/pkg/util/filelock"
 )
 
 // RecordSchema is the version of the status record format.
@@ -97,18 +98,6 @@ const (
 	lockSuffix   = ".lock"
 )
 
-// checkPrivate refuses a path that is group- or world-accessible or owned
-// by another user.
-func checkPrivate(path string, fi fs.FileInfo) error {
-	if fi.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("refusing tunnel state %s: it is group- or world-accessible (mode %04o)", path, fi.Mode().Perm())
-	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
-		return fmt.Errorf("refusing tunnel state %s: it is owned by another user", path)
-	}
-	return nil
-}
-
 // checkDir verifies the store directory.
 func (f FileStore) checkDir() error {
 	fi, err := os.Lstat(f.Dir)
@@ -143,7 +132,7 @@ func (f FileStore) Open() (RecordWriter, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := filelock.TryLock(lf); err != nil {
 		_ = lf.Close()
 		_ = os.Remove(tmpLock)
 		return nil, err
@@ -208,7 +197,7 @@ func (r *fileRecord) Close() error {
 		err = nil
 	}
 	_ = os.Remove(r.lockPath)
-	_ = syscall.Flock(int(r.lock.Fd()), syscall.LOCK_UN)
+	_ = filelock.Unlock(r.lock)
 	_ = r.lock.Close()
 	return err
 }
@@ -292,13 +281,13 @@ func (f FileStore) read(id string) (*Record, bool, error) {
 		return nil, false, err
 	}
 	defer func() { _ = lf.Close() }()
-	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+	if err := filelock.TryLock(lf); err == nil {
 		// Not held: the process has ended. Prune under the lock.
 		_ = os.Remove(recPath)
 		_ = os.Remove(lockPath)
-		_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+		_ = filelock.Unlock(lf)
 		return nil, false, nil
-	} else if !errors.Is(err, syscall.EWOULDBLOCK) {
+	} else if !errors.Is(err, filelock.ErrWouldBlock) {
 		return nil, false, err
 	}
 	data, err := os.ReadFile(recPath)
