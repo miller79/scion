@@ -96,7 +96,7 @@ func TestConduitProxyThroughSession(t *testing.T) {
 	assert.Equal(t, "hello /hello?x=1", string(body))
 	assert.Equal(t, "ok", resp.Header.Get("X-App"))
 	assert.Empty(t, resp.Header.Get("Set-Cookie"), "the app cannot set hub-origin cookies")
-	assert.Equal(t, untrustedContentSandboxCSP, resp.Header.Get("Content-Security-Policy"))
+	assert.Equal(t, agentServedPageSandboxCSP, resp.Header.Get("Content-Security-Policy"))
 	assert.Equal(t, "nosniff", resp.Header.Get("X-Content-Type-Options"))
 
 	got := <-f.app.got

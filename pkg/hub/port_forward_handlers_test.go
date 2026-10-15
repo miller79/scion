@@ -365,7 +365,7 @@ func TestAgentPortProxyResponseIsSandboxed(t *testing.T) {
 	rec = doAgentTokenRequest(t, srv, http.MethodGet, "/api/v1/agents/"+agent.ID+"/ports/"+portText+"/proxy/", nil, token)
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "<html>agent content</html>", rec.Body.String())
-	assert.Equal(t, untrustedContentSandboxCSP, rec.Header().Get("Content-Security-Policy"),
+	assert.Equal(t, agentServedPageSandboxCSP, rec.Header().Get("Content-Security-Policy"),
 		"the hub's sandbox CSP must be authoritative; the agent's own CSP must not pass through")
 	assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
 	assert.Empty(t, rec.Header().Values("Set-Cookie"), "the agent must not be able to set cookies on the hub origin")
@@ -1057,4 +1057,13 @@ func TestAgentPortProxyBareURLWebSocketUnchanged(t *testing.T) {
 		assert.Equal(t, plainHeader, upHeader)
 		assert.Empty(t, up.Header().Get("Location"))
 	})
+}
+
+// The proxy sandbox adds only allow-forms to the untrusted-content sandbox:
+// forms work in agent-served apps, and the page's origin stays opaque.
+func TestAgentServedPageSandboxCSP(t *testing.T) {
+	assert.Equal(t, untrustedContentSandboxCSP+" allow-forms", agentServedPageSandboxCSP)
+	assert.Contains(t, agentServedPageSandboxCSP, "sandbox ")
+	assert.NotContains(t, agentServedPageSandboxCSP, "allow-same-origin")
+	assert.NotContains(t, untrustedContentSandboxCSP, "allow-forms", "stored files keep the stricter sandbox")
 }
