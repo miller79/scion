@@ -346,12 +346,12 @@ func setSSHQuoteForCmd(t *testing.T, forCmd bool) {
 
 func TestSSHShellQuoteForCmd(t *testing.T) {
 	setSSHQuoteForCmd(t, true)
-	assert.Equal(t, `C:\Users\me\bin\scion.exe`, sshShellQuote(`C:\Users\me\bin\scion.exe`))
-	assert.Equal(t, `"C:\Program Files\Scion\scion.exe"`, sshShellQuote(`C:\Program Files\Scion\scion.exe`))
+	assert.Equal(t, `C:/Users/me/bin/scion.exe`, sshShellQuote(`C:\Users\me\bin\scion.exe`))
+	assert.Equal(t, `"C:/Program Files/Scion/scion.exe"`, sshShellQuote(`C:\Program Files\Scion\scion.exe`))
 	assert.Equal(t, "https://hub.example.com:8443", sshShellQuote("https://hub.example.com:8443"))
-	assert.Equal(t, `"C:\a&b\scion.exe"`, sshShellQuote(`C:\a&b\scion.exe`))
-	assert.Equal(t, `C:\100%%\scion.exe`, sshShellQuote(`C:\100%\scion.exe`))
-	assert.Equal(t, `C:\Program Files\x`, sshShellUnquote(sshShellQuote(`C:\Program Files\x`)))
+	assert.Equal(t, `"C:/a&b/scion.exe"`, sshShellQuote(`C:\a&b\scion.exe`))
+	assert.Equal(t, `C:/100%%/scion.exe`, sshShellQuote(`C:\100%\scion.exe`))
+	assert.Equal(t, `C:/Program Files/x`, sshShellUnquote(sshShellQuote(`C:\Program Files\x`)))
 }
 
 func TestSSHShellQuote(t *testing.T) {

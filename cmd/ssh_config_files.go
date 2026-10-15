@@ -481,15 +481,18 @@ func sshShellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// sshCmdQuote quotes s for cmd.exe: a word of path-safe characters,
-// including a Windows path's backslashes and drive colon, is left as is;
-// anything else is wrapped in double quotes. A Windows path cannot contain
-// a double quote, and endpoints and slugs are validated before they get
-// here.
+// sshCmdQuote quotes s for a Windows ssh client's ProxyCommand. Windows
+// OpenSSH runs it without a shell, but Git for Windows' ssh runs it with
+// /bin/sh, which drops unquoted backslashes, so backslashes become forward
+// slashes, which both accept in a Windows path. A word of path-safe
+// characters, including a drive colon, is then left as is; anything else is
+// wrapped in double quotes. A Windows path cannot contain a double quote,
+// and endpoints and slugs are validated before they get here.
 func sshCmdQuote(s string) string {
+	s = strings.ReplaceAll(s, `\`, "/")
 	safe := s != ""
 	for _, r := range s {
-		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && !strings.ContainsRune(`@%+=:,./_-\`, r) {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && !strings.ContainsRune("@%+=:,./_-", r) {
 			safe = false
 			break
 		}
