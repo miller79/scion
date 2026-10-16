@@ -1395,5 +1395,23 @@ class CopilotAgentPluginsTest(BaseTelemetryTest):
         # --version 10s default and install 15s default, both capped to 3s.
         self.assertEqual(self.cli.timeouts, [3.0, 3.0])
 
+
+class WriteHooksTest(unittest.TestCase):
+    def test_tool_hooks_get_short_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            provision._write_hooks(home)
+            with open(os.path.join(home, ".copilot", "hooks", "scion.json")) as f:
+                hooks = json.load(f)["hooks"]
+        self.assertEqual(set(hooks), set(provision._COPILOT_HOOK_EVENTS))
+        for event, entries in hooks.items():
+            self.assertEqual(len(entries), 1)
+            hook = entries[0]
+            self.assertEqual(hook["bash"], f"sciontool hook {event} --dialect=copilot")
+            if event in ("preToolUse", "postToolUse"):
+                self.assertEqual(hook["timeoutSec"], 10)
+            else:
+                self.assertNotIn("timeoutSec", hook)
+
+
 if __name__ == "__main__":
     unittest.main()

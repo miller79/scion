@@ -424,6 +424,16 @@ _COPILOT_HOOK_EVENTS = [
     "subagentStop",
 ]
 
+# Per-tool-call hooks get a shorter timeout than Copilot's default 30 s.
+# Some Copilot CLI releases lose the child-exit signal and only notice that
+# a hook finished when its timeout fires, which costs a minute per tool call
+# at the default. 10 s stays above sciontool's own worst case for a hook
+# (2 s session-state lock wait, 3 s Hub budget and the telemetry flush), so
+# a hook that is still working is never cut short. The other events keep
+# Copilot's default.
+_COPILOT_TOOL_HOOK_TIMEOUT_SEC = 10
+_COPILOT_TOOL_HOOK_EVENTS = {"preToolUse", "postToolUse"}
+
 
 def _write_hooks(home: str) -> None:
     """Write ~/.copilot/hooks/scion.json wiring Copilot events to sciontool.
@@ -436,12 +446,13 @@ def _write_hooks(home: str) -> None:
     """
     hooks: dict[str, list[dict[str, Any]]] = {}
     for event in _COPILOT_HOOK_EVENTS:
-        hooks[event] = [
-            {
-                "type": "command",
-                "bash": f"sciontool hook {event} --dialect=copilot",
-            }
-        ]
+        hook: dict[str, Any] = {
+            "type": "command",
+            "bash": f"sciontool hook {event} --dialect=copilot",
+        }
+        if event in _COPILOT_TOOL_HOOK_EVENTS:
+            hook["timeoutSec"] = _COPILOT_TOOL_HOOK_TIMEOUT_SEC
+        hooks[event] = [hook]
 
     hooks_data: dict[str, Any] = {"version": 1, "hooks": hooks}
 
