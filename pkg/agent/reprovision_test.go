@@ -425,6 +425,64 @@ func TestReprovision_StoppedContainer_Proceeds(t *testing.T) {
 	}
 }
 
+// TestReprovision_SameNameInOtherProject_Proceeds: agent names are unique only
+// within a project, so a running container with the same name in another hub
+// project must not make Reprovision refuse, while a running container in the
+// agent's own project still must.
+func TestReprovision_SameNameInOtherProject_Proceeds(t *testing.T) {
+	scionDir, _ := reprovisionSetup(t)
+	agentName := "ceo"
+	gc := &api.GitCloneConfig{URL: "https://example.com/repo.git"}
+	ctx := api.ContextWithGitClone(context.Background(), gc)
+	if _, _, _, err := ProvisionAgent(ctx, agentName, "default", "", "", scionDir, "", "created", "", ""); err != nil {
+		t.Fatalf("initial ProvisionAgent: %v", err)
+	}
+	ws := filepath.Join(scionDir, "agents", agentName, "workspace")
+	_ = os.MkdirAll(filepath.Join(ws, ".git"), 0755)
+
+	containers := func(ownPhase string) []api.AgentInfo {
+		return []api.AgentInfo{
+			{Name: agentName, Phase: ownPhase, Labels: map[string]string{"scion.name": agentName, "scion.project_id": "project-own"}},
+			{Name: agentName, Phase: "running", Labels: map[string]string{"scion.name": agentName, "scion.project_id": "project-other"}},
+		}
+	}
+	for _, tc := range []struct {
+		ownPhase   string
+		wantRefuse bool
+	}{
+		{ownPhase: "stopped", wantRefuse: false},
+		{ownPhase: "running", wantRefuse: true},
+	} {
+		t.Run("own_"+tc.ownPhase, func(t *testing.T) {
+			mockRT := &runtime.MockRuntime{
+				ListFunc: func(_ context.Context, filter map[string]string) ([]api.AgentInfo, error) {
+					var out []api.AgentInfo
+					for _, a := range containers(tc.ownPhase) {
+						if runtime.LabelsMatchFilter(a.Labels, filter) {
+							out = append(out, a)
+						}
+					}
+					return out, nil
+				},
+			}
+			mgr := NewManager(mockRT)
+			_, err := mgr.Reprovision(context.Background(), api.StartOptions{
+				Name: agentName, Template: "default", ProjectPath: scionDir, BrokerMode: true, GitClone: gc,
+				HubProjectID: "project-own",
+			})
+			if tc.wantRefuse {
+				if !errors.Is(err, ErrReprovisionRefused) {
+					t.Fatalf("expected ErrReprovisionRefused for the agent's own running container, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Reprovision must not be refused by a same-named agent in another project: %v", err)
+			}
+		})
+	}
+}
+
 // =============================================================================
 // Design §3.4 Amendment A23: explicit-mount (shared-workspace / hub-managed)
 // =============================================================================

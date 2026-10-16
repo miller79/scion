@@ -633,8 +633,17 @@ func (m *AgentManager) finishProvision(opts api.StartOptions, agentDir, agentHom
 // Reprovision's running-container precondition check (design §3.4 Amendment
 // A2). A List error is not treated as "not running" by the caller — see the
 // call site's comment.
-func (m *AgentManager) containerIsRunning(ctx context.Context, name string) (bool, error) {
-	agents, err := m.listRuntime(ctx, map[string]string{"scion.name": name})
+//
+// Agent names are unique only within a project, so when hubProjectID is set
+// the lookup is scoped to it: otherwise a running agent with the same name in
+// another project on the same broker would make every reprovision of this
+// one refuse.
+func (m *AgentManager) containerIsRunning(ctx context.Context, name, hubProjectID string) (bool, error) {
+	filter := map[string]string{"scion.name": name}
+	if hubProjectID != "" {
+		filter["scion.project_id"] = hubProjectID
+	}
+	agents, err := m.listRuntime(ctx, filter)
 	if err != nil {
 		return false, err
 	}
@@ -821,7 +830,7 @@ func (m *AgentManager) Reprovision(ctx context.Context, opts api.StartOptions) (
 	// (proceeding is the pre-fail-closed behavior; the hub is expected to
 	// have stopped the container already), but an affirmative "yes, still
 	// running" answer is always honored.
-	if running, err := m.containerIsRunning(ctx, opts.Name); err != nil {
+	if running, err := m.containerIsRunning(ctx, opts.Name, opts.HubProjectID); err != nil {
 		util.Debugf("reprovision: failed to check running state for %s, proceeding: %v", opts.Name, err)
 	} else if running {
 		return nil, fmt.Errorf("%w: agent %q container is still running; stop it first", ErrReprovisionRefused, opts.Name)
