@@ -25,7 +25,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -106,7 +105,7 @@ func ReserveEntry(home, profile, run, alias string) (*Reservation, error) {
 	if err := ensurePrivateDir(Dir(home), filepath.Dir(path)); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|openNoFollow, 0o600)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) || isSymlinkErr(err) {
 			return nil, fmt.Errorf("alias %q in run %q: %w (refusing to overwrite %s)", alias, run, ErrEntryExists, path)
@@ -314,7 +313,7 @@ func removeProfileCacheDir(home, profile string) error {
 // readPrivateFile reads a regular file owned by the caller and readable by
 // nobody else, never following a symlink.
 func readPrivateFile(path string) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|openNoFollow, 0)
 	if err != nil {
 		if isSymlinkErr(err) {
 			return nil, fmt.Errorf("refusing %s: it is a symlink", path)
@@ -329,11 +328,8 @@ func readPrivateFile(path string) ([]byte, error) {
 	if !fi.Mode().IsRegular() {
 		return nil, fmt.Errorf("refusing %s: it is not a regular file", path)
 	}
-	if fi.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("refusing %s: its mode %04o lets others read it; it must be 0600", path, fi.Mode().Perm())
-	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
-		return nil, fmt.Errorf("refusing %s: it is owned by another user", path)
+	if err := checkPrivateFile(path, fi); err != nil {
+		return nil, err
 	}
 	return io.ReadAll(io.LimitReader(f, 1<<20))
 }
@@ -347,7 +343,7 @@ func writeFileAtomic(path string, data []byte) error {
 		return err
 	}
 	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+"."+hex.EncodeToString(b[:])+".tmp")
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|openNoFollow, 0o600)
 	if err != nil {
 		return err
 	}
@@ -377,10 +373,4 @@ func writeFileAtomic(path string, data []byte) error {
 	}
 	ok = true
 	return nil
-}
-
-// isSymlinkErr reports whether err is the ELOOP O_NOFOLLOW returns for a
-// symlink.
-func isSymlinkErr(err error) bool {
-	return errors.Is(err, syscall.ELOOP)
 }
