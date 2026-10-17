@@ -129,7 +129,7 @@ func (s *Server) handleProjectWebDAV(w http.ResponseWriter, r *http.Request, pro
 	// attachment disposition goes on every method that returns file bytes
 	// (x/net/webdav serves GET, HEAD and POST through the same path); DAV
 	// clients ignore it and it makes browsers download instead of render.
-	w.Header().Set("Content-Security-Policy", untrustedContentSandboxCSP)
+	setUntrustedContentHeaders(w.Header(), untrustedContentSandboxCSP)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	switch r.Method {
 	case http.MethodGet, http.MethodHead, http.MethodPost:
