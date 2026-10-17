@@ -4160,6 +4160,11 @@ const webContentSecurityPolicy = "default-src 'self'; " +
 	"img-src 'self' data: blob: https:; " +
 	"connect-src 'self' data: ws: wss: http://localhost:* http://127.0.0.1:* https://storage.googleapis.com"
 
+// webPermissionsPolicy is the Permissions-Policy on every hub response.
+// untrustedContentPermissionsPolicy replaces it on user- and agent-written
+// content and must deny everything this one denies.
+const webPermissionsPolicy = "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+
 // securityHeadersMiddleware adds security headers to all responses.
 func (ws *WebServer) securityHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4168,7 +4173,7 @@ func (ws *WebServer) securityHeadersMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		w.Header().Set("Permissions-Policy", "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()")
+		w.Header().Set("Permissions-Policy", webPermissionsPolicy)
 		next.ServeHTTP(w, r)
 	})
 }
