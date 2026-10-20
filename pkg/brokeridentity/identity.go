@@ -30,12 +30,12 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/GoogleCloudPlatform/scion/pkg/api"
+	"github.com/GoogleCloudPlatform/scion/pkg/util/filelock"
 )
 
 // SchemaVersion is the current identity file schema version.
@@ -189,12 +189,12 @@ func lockDir(dir string) (func(), error) {
 	if err != nil {
 		return nil, fmt.Errorf("open instance lock: %w", err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := filelock.Lock(f); err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("lock instance directory: %w", err)
 	}
 	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = filelock.Unlock(f)
 		_ = f.Close()
 	}, nil
 }

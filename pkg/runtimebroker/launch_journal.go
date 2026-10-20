@@ -25,11 +25,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/GoogleCloudPlatform/scion/pkg/api"
 	"github.com/GoogleCloudPlatform/scion/pkg/hubclient"
+	"github.com/GoogleCloudPlatform/scion/pkg/util/filelock"
 )
 
 // The launch journal (design wave 3 §1 C-a, ptone/scion#4668) keeps each
@@ -297,9 +297,9 @@ func lockJournalInstance(root, instanceID string, mustExist bool) (*os.File, err
 		if err != nil {
 			return nil, err
 		}
-		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if err := filelock.TryLock(f); err != nil {
 			_ = f.Close()
-			if errors.Is(err, syscall.EWOULDBLOCK) {
+			if errors.Is(err, filelock.ErrWouldBlock) {
 				return nil, errJournalLocked
 			}
 			return nil, err
@@ -318,7 +318,7 @@ func lockJournalInstance(root, instanceID string, mustExist bool) (*os.File, err
 }
 
 func unlockJournalInstance(f *os.File) {
-	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	_ = filelock.Unlock(f)
 	_ = f.Close()
 }
 
