@@ -717,9 +717,18 @@ Use the root --global flag to sync to global scope instead of project scope.
 
 Use --all to sync all project-scoped local templates to the Hub at once.
 
+The template may also be given as a directory path (absolute, or starting with
+./ or ../, or containing a /). The directory is synced as is, and the Hub name
+defaults to its base name. This is how an agent that shares the project
+workspace syncs a template it edited elsewhere: such agents see the project's
+.scion directory read-only.
+
 Examples:
   # Sync a local template to the Hub (project scope by default)
   scion templates sync custom-claude
+
+  # Sync a template directory from a checkout
+  scion templates sync ./repo/.scion/templates/planner --name planner
 
   # Sync all project templates to Hub
   scion templates sync --all
@@ -812,29 +821,40 @@ func runTemplateSync(cmd *cobra.Command, args []string) error {
 
 	localTemplateName := args[0]
 
-	// If no explicit Hub name, use the local template name
-	if hubName == "" {
-		hubName = localTemplateName
-	}
+	var tpl *config.Template
+	if dir, isPath, err := templateSyncPathSource(localTemplateName); isPath {
+		if err != nil {
+			return err
+		}
+		tpl = &config.Template{Name: filepath.Base(dir), Path: dir}
+		if hubName == "" {
+			hubName = tpl.Name
+		}
+	} else {
+		// If no explicit Hub name, use the local template name
+		if hubName == "" {
+			hubName = localTemplateName
+		}
 
-	// Build resolution options - local only for source, since we're syncing TO hub
-	opts := &ResolveOpts{
-		LocalOnly:   true,
-		AutoConfirm: autoConfirm,
-	}
+		// Build resolution options - local only for source, since we're syncing TO hub
+		opts := &ResolveOpts{
+			LocalOnly:   true,
+			AutoConfirm: autoConfirm,
+		}
 
-	ctx := context.Background()
-	match, err := ResolveTemplate(ctx, localTemplateName, nil, opts, "sync")
-	if err != nil {
-		return fmt.Errorf("template '%s' not found locally: %w", localTemplateName, err)
-	}
+		ctx := context.Background()
+		match, err := ResolveTemplate(ctx, localTemplateName, nil, opts, "sync")
+		if err != nil {
+			return fmt.Errorf("template '%s' not found locally: %w", localTemplateName, err)
+		}
 
-	if !match.IsLocal() {
-		return fmt.Errorf("internal error: expected local template but got hub")
-	}
+		if !match.IsLocal() {
+			return fmt.Errorf("internal error: expected local template but got hub")
+		}
 
-	// Create template object for harness detection
-	tpl := &config.Template{Name: match.Name, Path: match.LocalPath}
+		// Create template object for harness detection
+		tpl = &config.Template{Name: match.Name, Path: match.LocalPath}
+	}
 
 	// Detect harness type from template config (optional - can be resolved during agent provisioning)
 	harnessType, err := detectHarnessType(tpl)
@@ -846,6 +866,27 @@ func runTemplateSync(cmd *cobra.Command, args []string) error {
 	warnDeprecatedHubAccessScopes(tpl.Name, tpl.Path)
 
 	return syncTemplateToHub(hubCtx, hubName, tpl.Path, destScope, harnessType)
+}
+
+// templateSyncPathSource reports whether arg names a template directory by
+// path rather than by template name: an absolute path, one starting with ./
+// or ../, or one containing a separator (template names never do). For a
+// path it returns the absolute directory, or an error when it is not an
+// existing directory.
+func templateSyncPathSource(arg string) (dir string, isPath bool, err error) {
+	if !filepath.IsAbs(arg) && !strings.HasPrefix(arg, "./") && !strings.HasPrefix(arg, "../") &&
+		!strings.ContainsRune(arg, '/') && !strings.ContainsRune(arg, filepath.Separator) {
+		return "", false, nil
+	}
+	abs, err := filepath.Abs(arg)
+	if err != nil {
+		return "", true, fmt.Errorf("cannot resolve template path %q: %w", arg, err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil || !info.IsDir() {
+		return "", true, fmt.Errorf("template path %q is not a directory", arg)
+	}
+	return abs, true, nil
 }
 
 // syncAllTemplatesToHub syncs all local project templates to the Hub.
