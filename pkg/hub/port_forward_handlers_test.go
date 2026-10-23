@@ -329,6 +329,7 @@ func TestAgentPortProxyResponseIsSandboxed(t *testing.T) {
 	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Set-Cookie", "session=agent-set; Path=/")
 		w.Header().Set("Content-Security-Policy", "default-src *")
+		w.Header().Set("Permissions-Policy", "camera=*")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("<html>agent content</html>"))
@@ -365,8 +366,10 @@ func TestAgentPortProxyResponseIsSandboxed(t *testing.T) {
 	rec = doAgentTokenRequest(t, srv, http.MethodGet, "/api/v1/agents/"+agent.ID+"/ports/"+portText+"/proxy/", nil, token)
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "<html>agent content</html>", rec.Body.String())
-	assert.Equal(t, untrustedContentSandboxCSP, rec.Header().Get("Content-Security-Policy"),
+	assert.Equal(t, agentServedPageSandboxCSP, rec.Header().Get("Content-Security-Policy"),
 		"the hub's sandbox CSP must be authoritative; the agent's own CSP must not pass through")
+	assert.Equal(t, untrustedContentPermissionsPolicy, rec.Header().Get("Permissions-Policy"),
+		"the hub's Permissions-Policy must replace the agent's own")
 	assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
 	assert.Empty(t, rec.Header().Values("Set-Cookie"), "the agent must not be able to set cookies on the hub origin")
 }
@@ -1057,4 +1060,55 @@ func TestAgentPortProxyBareURLWebSocketUnchanged(t *testing.T) {
 		assert.Equal(t, plainHeader, upHeader)
 		assert.Empty(t, up.Header().Get("Location"))
 	})
+}
+
+// The sandbox token sets are pinned exactly, so widening either policy is a
+// deliberate change to this test. Stored files and attachments get print and
+// dialogs; agent-served apps also get forms, pointer lock, orientation lock
+// and presentation. Neither policy may ever grant the hub's origin or launch
+// desktop protocol handlers.
+func TestSandboxCSPTokens(t *testing.T) {
+	tokens := func(csp string) []string {
+		f := strings.Fields(csp)
+		require.NotEmpty(t, f)
+		assert.Equal(t, "sandbox", f[0])
+		return f[1:]
+	}
+	assert.ElementsMatch(t, []string{
+		"allow-scripts", "allow-popups", "allow-popups-to-escape-sandbox", "allow-downloads", "allow-modals",
+	}, tokens(untrustedContentSandboxCSP))
+	assert.ElementsMatch(t, []string{
+		"allow-scripts", "allow-popups", "allow-popups-to-escape-sandbox", "allow-downloads", "allow-modals",
+		"allow-forms", "allow-pointer-lock", "allow-orientation-lock", "allow-presentation",
+	}, tokens(agentServedPageSandboxCSP))
+	for _, csp := range []string{untrustedContentSandboxCSP, agentServedPageSandboxCSP} {
+		for _, forbidden := range []string{
+			"allow-same-origin", "allow-top-navigation", "allow-top-navigation-by-user-activation",
+			"allow-top-navigation-to-custom-protocols", "allow-storage-access-by-user-activation",
+		} {
+			assert.NotContains(t, tokens(csp), forbidden)
+		}
+	}
+	assert.NotContains(t, tokens(untrustedContentSandboxCSP), "allow-forms", "stored files keep the stricter sandbox")
+}
+
+// The Permissions-Policy denies every powerful feature it names and leaves
+// clipboard writes allowed.
+func TestUntrustedContentPermissionsPolicy(t *testing.T) {
+	for _, d := range strings.Split(untrustedContentPermissionsPolicy, ",") {
+		d = strings.TrimSpace(d)
+		assert.True(t, strings.HasSuffix(d, "=()"), "directive %q must deny the feature", d)
+	}
+	for _, f := range []string{"camera", "microphone", "geolocation", "display-capture", "clipboard-read"} {
+		assert.Contains(t, untrustedContentPermissionsPolicy, f+"=()")
+	}
+	assert.NotContains(t, untrustedContentPermissionsPolicy, "clipboard-write")
+	for _, d := range strings.Split(webPermissionsPolicy, ",") {
+		assert.Contains(t, untrustedContentPermissionsPolicy, strings.TrimSpace(d),
+			"untrusted content must deny everything the hub-wide policy denies")
+	}
+	h := http.Header{}
+	setUntrustedContentHeaders(h, agentServedPageSandboxCSP)
+	assert.Equal(t, agentServedPageSandboxCSP, h.Get("Content-Security-Policy"))
+	assert.Equal(t, untrustedContentPermissionsPolicy, h.Get("Permissions-Policy"))
 }

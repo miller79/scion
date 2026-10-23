@@ -70,7 +70,50 @@ const maxPreviewFileSize = 50 * 1024 * 1024
 // responses. allow-same-origin must never be added: it would undo exactly
 // that isolation. The header has no effect when the response is loaded as a
 // subresource such as an <img>, so inline image previews are unaffected.
-const untrustedContentSandboxCSP = "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads"
+//
+// allow-modals lets a document call print() (a report's Print button) and
+// show alert/confirm/prompt dialogs. A dialog gives the document no reach
+// beyond its own opaque origin: it is UI the document could draw itself.
+//
+// Never add allow-top-navigation-to-custom-protocols either: it would let the
+// content launch desktop protocol handlers (mailto:, ms-word:, vscode:)
+// without a click.
+const untrustedContentSandboxCSP = "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals"
+
+// agentServedPageSandboxCSP is untrustedContentSandboxCSP plus the tokens
+// interactive apps need. It is sent on pages an agent serves live through the
+// port-forward and conduit proxies, which are apps (dashboards with search
+// boxes and filters, 3D and map viewers) rather than stored files. None of
+// the added tokens reaches past the page's opaque origin:
+//   - allow-forms: a form the page submits to the hub is a cross-site request
+//     that carries no SameSite=Lax session cookie, and a GET form navigates
+//     nowhere a script cannot.
+//   - allow-pointer-lock: needs a user gesture and is always released by Esc.
+//   - allow-orientation-lock: locks screen rotation, normally only in
+//     fullscreen.
+//   - allow-presentation: the browser always asks which screen to use.
+//
+// allow-same-origin must still never be added.
+const agentServedPageSandboxCSP = untrustedContentSandboxCSP + " allow-forms allow-pointer-lock allow-orientation-lock allow-presentation"
+
+// untrustedContentPermissionsPolicy turns off the powerful browser features
+// for user- and agent-written content. Browsers already deny most of them to
+// an opaque origin; the header makes that hold independently of browser
+// behaviour. It replaces webPermissionsPolicy on these responses, so it
+// denies everything that one does. clipboard-read is off so a page cannot
+// read what the viewer copied elsewhere; writing to the clipboard stays
+// allowed.
+const untrustedContentPermissionsPolicy = "accelerometer=(), gyroscope=(), magnetometer=(), " +
+	"camera=(), microphone=(), geolocation=(), display-capture=(), " +
+	"usb=(), serial=(), hid=(), bluetooth=(), payment=(), " +
+	"publickey-credentials-get=(), publickey-credentials-create=(), clipboard-read=()"
+
+// setUntrustedContentHeaders sets the sandbox csp and the Permissions-Policy
+// on a hub response whose bytes are written by users or agents.
+func setUntrustedContentHeaders(h http.Header, csp string) {
+	h.Set("Content-Security-Policy", csp)
+	h.Set("Permissions-Policy", untrustedContentPermissionsPolicy)
+}
 
 // contentDisposition builds a Content-Disposition header value with
 // mime.FormatMediaType, as the skill and template handlers do, so non-ASCII
@@ -825,7 +868,7 @@ func (s *Server) handleProjectWorkspaceDownload(w http.ResponseWriter, r *http.R
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	// Set on attachments too, so the file stays sandboxed if a browser ever
 	// renders one instead of downloading it.
-	w.Header().Set("Content-Security-Policy", untrustedContentSandboxCSP)
+	setUntrustedContentHeaders(w.Header(), untrustedContentSandboxCSP)
 	disposition := "attachment"
 	if r.URL.Query().Get("view") == "true" {
 		disposition = "inline"

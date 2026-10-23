@@ -252,7 +252,7 @@ func (s *Server) serveConduitProxy(w http.ResponseWriter, r *http.Request, agent
 					resp.Header.Del(k)
 				}
 			}
-			resp.Header.Set("Content-Security-Policy", untrustedContentSandboxCSP)
+			setUntrustedContentHeaders(resp.Header, agentServedPageSandboxCSP)
 			resp.Header.Set("X-Content-Type-Options", "nosniff")
 			return nil
 		},
