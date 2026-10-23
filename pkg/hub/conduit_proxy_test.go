@@ -347,7 +347,7 @@ func TestConduitProxyBareURLRedirect(t *testing.T) {
 		require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
 		assert.Equal(t, "hello /?x=1", string(body))
 		assert.Equal(t, bare+"/?x=1", resp.Request.URL.String())
-		assert.Equal(t, untrustedContentSandboxCSP, resp.Header.Get("Content-Security-Policy"))
+		assert.Equal(t, agentServedPageSandboxCSP, resp.Header.Get("Content-Security-Policy"))
 	})
 
 	t.Run("caller_without_access_unchanged", func(t *testing.T) {
