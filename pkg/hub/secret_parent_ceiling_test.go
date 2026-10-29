@@ -460,6 +460,9 @@ func TestUserSecretParentCeiling_SingleFaultDenies(t *testing.T) {
 			return base(f)
 		}, DenyCauseCeilingEffectExceeded, "effect_exceeded"},
 		{"uat-created child", func(t *testing.T, f *uspFixture) (AgentIdentity, Resource) {
+			// An edge recorded after the UAT legacy cutoff gets the strict
+			// check (user_secret_uat_legacy_fallback.go).
+			setUATLegacyCutoff(t, time.Now().Add(-time.Hour))
 			f.replaceAgentEdge(t, f.agentID, func(e *store.DelegationEdge) {
 				e.SourceCredentialKind = store.SourceCredentialUAT
 				e.EffectCeiling = boundedCeiling("project.read", "project.secret_read")
