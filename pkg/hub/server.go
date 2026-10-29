@@ -904,6 +904,14 @@ type StartExtras struct {
 	// (wire key previousProjectIds; see previousProjectIDs). Set on start
 	// and restart; empty sends nothing.
 	PreviousProjectIDs []string
+	// EnvClassifications is the start's env classification map, the one
+	// buildStartEnv built and setStartEnvToken added SCION_AUTH_TOKEN to
+	// (wire key envClassifications, as create sends it). The Runtime Broker
+	// accepts the agent's hub credential on a start or restart only when
+	// it is classified secret-bootstrap (a30594a04), so without it every
+	// start of an existing agent fails with ErrNoHubToken
+	// (ptone/scion#6663, ptone/scion#1350). Nil sends nothing.
+	EnvClassifications map[string]api.EnvKind
 }
 
 // applyStartExtras writes extras onto payload as flat top-level wire keys.
@@ -1001,6 +1009,9 @@ func applyStartExtras(payload map[string]interface{}, extras StartExtras) {
 	}
 	if extras.LaunchKeepaliveSeconds > 0 {
 		payload["launchKeepaliveSeconds"] = extras.LaunchKeepaliveSeconds
+	}
+	if extras.EnvClassifications != nil {
+		payload["envClassifications"] = extras.EnvClassifications
 	}
 }
 

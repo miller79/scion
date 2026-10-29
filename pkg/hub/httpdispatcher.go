@@ -3626,14 +3626,10 @@ func (d *HTTPAgentDispatcher) dispatchAgentStart(ctx context.Context, agent *sto
 	// so in the start response (ptone/scion#3982).
 	d.warnRerenderUnsupported(ctx, agent, inlineConfig)
 
-	// TODO(#1350): Thread envClassifications to broker via client.StartAgent.
-	// PRECONDITION for P3b: without this, the broker receives nil (state 3,
-	// "classification unavailable") on the start path. P3b must not land
-	// until #1350 is done — otherwise fail-closed + nil map = total outage.
-	// This includes SCION_GIT_CLONE_URL: the broker classifies it as
-	// EnvKindSecretInjected on its own side (start_context.go), but that
-	// classification does not reach the Hub until #1350 wires it back.
-	_ = envClassifications // avoid unused-variable error until #1350 wire threading
+	// envClassifications reaches the broker through extras (set below,
+	// after setStartEnvToken classifies the issued token): ptone/scion#1350,
+	// ptone/scion#6663. SCION_GIT_CLONE_URL is still classified on the
+	// broker's side only (start_context.go).
 
 	// Carry the same dispatch metadata the create path sends so that a
 	// re-provision reached via start (e.g. after the broker deletes a stale
@@ -3673,6 +3669,7 @@ func (d *HTTPAgentDispatcher) dispatchAgentStart(ctx context.Context, agent *sto
 	}
 	extras.RunID = runID
 	setStartEnvToken(resolvedEnv, &envClassifications, token)
+	extras.EnvClassifications = envClassifications
 	issued = token != ""
 
 	// send is one start send, including the hash-mismatch repair and
@@ -3892,11 +3889,8 @@ func (d *HTTPAgentDispatcher) DispatchAgentRestart(ctx context.Context, agent *s
 	resolvedEnv := startEnv.env
 	envClassifications := startEnv.classifications
 
-	// TODO(#1350): Thread envClassifications to broker via client.RestartAgent.
-	// PRECONDITION for P3b: without this, the broker receives nil (state 3,
-	// "classification unavailable") on the restart path. P3b must not land
-	// until #1350 is done — otherwise fail-closed + nil map = total outage.
-	_ = envClassifications // avoid unused-variable error until #1350 wire threading
+	// envClassifications reaches the broker through extras, set below after
+	// setStartEnvToken (ptone/scion#1350, ptone/scion#6663).
 
 	// Carry the same dispatch metadata as DispatchAgentStart (see comment
 	// there) so a re-provision reached via restart resolves required skills
@@ -3956,6 +3950,7 @@ func (d *HTTPAgentDispatcher) DispatchAgentRestart(ctx context.Context, agent *s
 	}
 	extras.RunID = runID
 	setStartEnvToken(resolvedEnv, &envClassifications, token)
+	extras.EnvClassifications = envClassifications
 
 	resp, err := d.client.RestartAgent(ctx, agent.RuntimeBrokerID, endpoint, agent.Slug, agent.ProjectID, resolvedEnv, extras)
 	if errors.Is(err, ErrLifecycleDeferred) {
