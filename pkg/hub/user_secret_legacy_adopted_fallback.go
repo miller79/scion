@@ -79,6 +79,16 @@ import (
 type legacyAdoptedFallback struct {
 	Role   string
 	EdgeID string
+	// Cohort names the group in the Warn line; empty means adopted_<Role>.
+	Cohort string
+}
+
+// cohort is the group named in the Warn line.
+func (fb *legacyAdoptedFallback) cohort() string {
+	if fb.Cohort != "" {
+		return fb.Cohort
+	}
+	return "adopted_" + fb.Role
 }
 
 // legacyAdoptedFallbackWarnInterval is the shortest gap between two Warn
@@ -94,6 +104,9 @@ func (a *AuthzService) legacyAdoptedSecretUseFallback(ctx context.Context, agent
 	}
 	if edge.DelegatorType != store.DelegationPrincipalUser || edge.DelegatorID == "" || edge.DelegatorID != agent.OwnerID {
 		return nil, nil
+	}
+	if fb := uatLegacySecretUseFallback(agent, edge, depth); fb != nil {
+		return fb, nil
 	}
 	if edge.SourceCredentialKind != store.SourceCredentialSystemMigration || edge.Kind != store.EffectCeilingBounded {
 		return nil, nil
@@ -206,12 +219,12 @@ func (a *AuthzService) recordLegacyAdoptedFallback(ctx context.Context, path str
 	a.legacyFallbackWarnOnce.Do(func() {
 		a.legacyFallbackWarn = newHookRefusalLimiter(legacyAdoptedFallbackWarnInterval, time.Now)
 	})
-	record, suppressed := a.legacyFallbackWarn.admit(agentID+"/"+secretID, "legacy_adopted_fallback/"+fb.Role)
+	record, suppressed := a.legacyFallbackWarn.admit(agentID+"/"+secretID, "legacy_adopted_fallback/"+fb.cohort())
 	if !record {
 		return
 	}
 	slog.WarnContext(ctx, "user secret allowed under the legacy adopted-agent fallback: compatibility policy V1 grants secret.use to full only",
-		"path", path, "agent_id", agentID, "cohort", "adopted_"+fb.Role, "edge_id", fb.EdgeID,
+		"path", path, "agent_id", agentID, "cohort", fb.cohort(), "edge_id", fb.EdgeID,
 		"secret", secretName, "secret_id", secretID, "user_id", userID,
 		"suppressed_since_last", suppressed, "total_uses", total)
 }
