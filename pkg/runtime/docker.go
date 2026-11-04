@@ -22,6 +22,7 @@ import (
 	"math/rand/v2"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,13 @@ import (
 	"github.com/GoogleCloudPlatform/scion/pkg/projectkeys"
 	"golang.org/x/sync/singleflight"
 )
+
+// defaultAgentPidsLimit caps the processes and threads one agent container
+// may hold (docker run --pids-limit). Without it a container inherits the
+// host's limit (about 200k), so a runaway agent can exhaust the host: one
+// spawning keyring daemons reached 44k threads (#210). Busy agents use a
+// few hundred.
+const defaultAgentPidsLimit = 4096
 
 type DockerRuntime struct {
 	Command string
@@ -93,6 +101,7 @@ func (r *DockerRuntime) Run(ctx context.Context, config RunConfig) (string, erro
 	if err != nil {
 		return "", err
 	}
+	newArgs = append(newArgs, "--pids-limit", strconv.Itoa(defaultAgentPidsLimit))
 
 	newArgs = appendSharedDirGroupArgs(newArgs, config, "docker", true)
 
