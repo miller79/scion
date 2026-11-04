@@ -71,6 +71,31 @@ echo "$@"
 	}
 }
 
+// TestDockerRuntime_Run_PidsLimit: every agent container is started with a
+// process/thread cap, so a runaway agent cannot exhaust the host (#210).
+func TestDockerRuntime_Run_PidsLimit(t *testing.T) {
+	tmpDir := t.TempDir()
+	mockDocker := filepath.Join(tmpDir, "mock-docker")
+	if err := os.WriteFile(mockDocker, []byte("#!/bin/sh\necho \"$@\"\n"), 0755); err != nil {
+		t.Fatalf("failed to write mock docker: %v", err)
+	}
+	runtime := &DockerRuntime{Command: mockDocker}
+
+	out, err := runtime.Run(context.Background(), RunConfig{
+		Harness:      &harness.Generic{},
+		Name:         "test-agent",
+		UnixUsername: "scion",
+		Image:        "scion-agent:latest",
+		Task:         "hello",
+	})
+	if err != nil {
+		t.Fatalf("runtime.Run failed: %v", err)
+	}
+	if !strings.Contains(out, "--pids-limit 4096") {
+		t.Errorf("expected '--pids-limit 4096' in run args, got %q", out)
+	}
+}
+
 // TestDockerRuntime_Run_ContextCancelled_RollsBackPartialContainer covers
 // ptone/scion#1886: if the caller's context is cancelled while `docker run
 // -d` is still talking to the daemon, killing the CLI subprocess alone does
