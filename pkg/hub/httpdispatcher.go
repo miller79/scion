@@ -1431,6 +1431,15 @@ func dispatchProfile(agent *store.Agent) *string {
 	return &profile
 }
 
+// dispatchNoAuth is the no-auth intent a start or restart sends: the
+// agent's recorded AppliedConfig.NoAuth, the same value create sends as
+// RemoteCreateAgentRequest.NoAuth. Without it a role=none agent, whose
+// no-auth intent is recorded only here, is started with the harness's
+// normal command and no credentials.
+func dispatchNoAuth(agent *store.Agent) bool {
+	return agent.AppliedConfig != nil && agent.AppliedConfig.NoAuth
+}
+
 // applyBrokerResponse updates agent fields from the broker's response and
 // relays the broker's hub-only env warnings to the dispatch warnings
 // collector on ctx, if the caller attached one.
@@ -3760,6 +3769,7 @@ func (d *HTTPAgentDispatcher) dispatchAgentStart(ctx context.Context, agent *sto
 	}
 	extras.TemplateID, extras.TemplateHash = dispatchTemplateIdentity(agent)
 	extras.Profile = dispatchProfile(agent)
+	extras.NoAuth = dispatchNoAuth(agent)
 	// A flat Runtime Broker receives the agent's valid pinned target.
 	extras.ExpectedRuntimeTargetID = validPinnedTarget(agent)
 	if d.creatorSkillPreResolver != nil {
@@ -4039,6 +4049,7 @@ func (d *HTTPAgentDispatcher) DispatchAgentRestart(ctx context.Context, agent *s
 	}
 	extras.TemplateID, extras.TemplateHash = dispatchTemplateIdentity(agent)
 	extras.Profile = dispatchProfile(agent)
+	extras.NoAuth = dispatchNoAuth(agent)
 	if agent.AppliedConfig != nil {
 		extras.HarnessConfig = agent.AppliedConfig.HarnessConfig
 		extras.HarnessConfigID = agent.AppliedConfig.HarnessConfigID
