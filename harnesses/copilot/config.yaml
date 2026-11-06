@@ -15,6 +15,14 @@
 harness: copilot
 image: scion-copilot:latest
 user: scion
+env:
+  # No D-Bus session bus in the container. Without an address, every libsecret
+  # lookup (Copilot falls back to the system keyring when its login is missing
+  # or fails) autolaunches a private dbus-daemon plus a gnome-keyring-daemon
+  # that are never reaped: an unauthenticated agent accumulated tens of
+  # thousands of threads. "disabled:" makes the lookup fail at once, so Copilot
+  # reports that it is not logged in instead.
+  DBUS_SESSION_BUS_ADDRESS: "disabled:"
 
 provisioner:
   type: container-script

@@ -78,6 +78,11 @@ env:
   # Consequence: ANTHROPIC_MODEL now reaches the supervised harness process
   # (and what it spawns) rather than every process in the container.
   ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5"
+  # No D-Bus session bus in the container: without an address, every libsecret
+  # lookup by a tool the agent runs autolaunches a private dbus-daemon plus a
+  # gnome-keyring-daemon that are never reaped. "disabled:" makes such a
+  # lookup fail at once instead.
+  DBUS_SESSION_BUS_ADDRESS: "disabled:"
 command:
   base: ["claude", "--no-chrome", "--dangerously-skip-permissions"]
   resume_flag: "--continue"
