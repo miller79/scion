@@ -1,5 +1,7 @@
 run
 -t
+--pids-limit
+4096
 -d
 -i
 --name
