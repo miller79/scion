@@ -416,6 +416,16 @@ export class ScionPageAgents extends LitElement {
         margin-top: 0.25rem;
       }
 
+      /* Table-specific: the Messaging cell keeps the mode badge and the
+         messageability arrow on one line, centred on each other. Without it
+         the wider "Project" badge pushes the arrow onto a second line. */
+      .messaging-cell {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.375rem;
+        white-space: nowrap;
+      }
+
       /* Table-specific: inline action buttons */
       .table-actions {
         display: flex;
@@ -2153,18 +2163,20 @@ export class ScionPageAgents extends LitElement {
           ${this.renderDeletionBanner(agent, true)}
         </td>
         <td class="hide-mobile">
-          <scion-message-mode-badge
-            mode=${agent.messageMode || 'project'}
-            size="small"
-          ></scion-message-mode-badge>
-          ${agent._messageability
-            ? html`
-                <scion-messageability-indicator
-                  .messageability=${agent._messageability}
-                  size="small"
-                ></scion-messageability-indicator>
-              `
-            : nothing}
+          <span class="messaging-cell">
+            <scion-message-mode-badge
+              mode=${agent.messageMode || 'project'}
+              size="small"
+            ></scion-message-mode-badge>
+            ${agent._messageability
+              ? html`
+                  <scion-messageability-indicator
+                    .messageability=${agent._messageability}
+                    size="small"
+                  ></scion-messageability-indicator>
+                `
+              : nothing}
+          </span>
         </td>
         <td class="hide-mobile">
           ${(agent.lastActivityEvent && !agent.lastActivityEvent.startsWith('0001')) ||
