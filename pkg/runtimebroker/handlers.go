@@ -3809,6 +3809,10 @@ func (s *Server) startAgent(w http.ResponseWriter, r *http.Request, id, projectI
 		// is used only for an agent without an image provenance record
 		// (hubSentProfile).
 		Profile *string `json:"profile,omitempty"`
+		// NoAuth is the agent's recorded no-auth intent, sent by the Hub on
+		// every start as it is on create, so the agent starts in the
+		// harness's no-auth mode again. An older Hub sends none.
+		NoAuth bool `json:"noAuth,omitempty"`
 		// GitClone, Branch, and WorkspaceMode carry the workspace-recreation
 		// inputs the Hub sends on start (GoogleCloudPlatform/scion#1931), so
 		// an agent's workspace can be recreated on a runtime that does not
@@ -4040,6 +4044,7 @@ func (s *Server) startAgent(w http.ResponseWriter, r *http.Request, id, projectI
 		TemplateID:               startReq.TemplateID,
 		TemplateHash:             startReq.TemplateHash,
 		HubProfile:               startReq.Profile,
+		NoAuth:                   startReq.NoAuth,
 		HTTPRequest:              r,
 		Operation:                opHTTPStart,
 	})
@@ -5178,6 +5183,10 @@ func (s *Server) restartAgent(w http.ResponseWriter, r *http.Request, id, projec
 		// secrets the Hub resolved for this restart, handled exactly as on
 		// start (buildStartContext). An older Hub sends none.
 		ResolvedSecrets []api.ResolvedSecret `json:"resolvedSecrets,omitempty"`
+		// NoAuth mirrors the start path's field: the agent's recorded
+		// no-auth intent, so a restart starts in the harness's no-auth mode
+		// as the create did. An older Hub sends none.
+		NoAuth bool `json:"noAuth,omitempty"`
 	}
 	if r.Body != nil && r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&restartReq); err != nil {
@@ -5330,6 +5339,7 @@ func (s *Server) restartAgent(w http.ResponseWriter, r *http.Request, id, projec
 		RunID:                    restartReq.RunID,
 		SharedWorkspace:          restartReq.SharedWorkspace,
 		HubProfile:               restartReq.Profile,
+		NoAuth:                   restartReq.NoAuth,
 		TemplateName:             restartReq.TemplateName,
 		TelemetryPolicy:          restartReq.TelemetryPolicy,
 		TemplateID:               restartReq.TemplateID,
