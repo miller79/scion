@@ -123,6 +123,8 @@ var layer0Prefixes = []string{
 	"server.hub.system_one",
 	// Default message mode of new agents — read into ServerConfig at startup.
 	"server.hub.default_message_mode",
+	// User access token issuance policy — read into ServerConfig at startup.
+	"server.hub.user_access_tokens",
 	// Separate relay process settings (scion server --role relay) — read
 	// at startup.
 	"server.relay",

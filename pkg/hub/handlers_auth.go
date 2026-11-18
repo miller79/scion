@@ -1079,6 +1079,9 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrUATTestIdentityDenied):
 			writeError(w, http.StatusForbidden, ErrCodeForbidden, err.Error(),
 				map[string]interface{}{"reason": "test_identity_cannot_create_tokens"})
+		case errors.Is(err, ErrUATCreationDisabled):
+			writeError(w, http.StatusForbidden, ErrCodeForbidden, err.Error(),
+				map[string]interface{}{"reason": "token_creation_disabled"})
 		case errors.As(err, &metadataErr):
 			// E.1: bounded metadata validation failure. The error message
 			// names the field/rule only; it never echoes the offending

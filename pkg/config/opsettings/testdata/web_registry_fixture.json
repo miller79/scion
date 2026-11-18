@@ -186,6 +186,7 @@
     "server.hub.chat",
     "server.hub.system_one",
     "server.hub.default_message_mode",
+    "server.hub.user_access_tokens",
     "server.relay"
   ],
   "file_keys": [

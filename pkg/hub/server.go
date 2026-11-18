@@ -650,6 +650,15 @@ type ServerConfig struct {
 	// mode of a new agent when neither the create request, its template nor
 	// its parent agent sets one. Empty means store.MessageModeProject.
 	DefaultMessageMode string
+
+	// UserAccessTokenMaxLifetime (server.hub.user_access_tokens.max_lifetime)
+	// is the longest lifetime of a new user access token. Zero means
+	// store.UATMaxExpiry (one year).
+	UserAccessTokenMaxLifetime time.Duration
+	// UserAccessTokenCreationOff
+	// (server.hub.user_access_tokens.creation_disabled) refuses new user
+	// access tokens; existing ones keep working.
+	UserAccessTokenCreationOff bool
 }
 
 // MaintenanceConfig holds configuration for routine maintenance operation executors.
@@ -3545,6 +3554,7 @@ func New(cfg ServerConfig, s store.Store) (_ *Server, retErr error) {
 	// RS4: Initialize user access token service with authorization, audit, and
 	// transactional support via the bounded domain service pattern.
 	srv.uatService = NewUserAccessTokenService(s, srv.authzService, logging.Subsystem("hub.uat"))
+	srv.uatService.SetIssuancePolicy(cfg.UserAccessTokenMaxLifetime, cfg.UserAccessTokenCreationOff)
 
 	// RS1 R2-R2: Run one-binding migration before accepting traffic.
 	// Idempotent — safe to re-run on every startup. Consolidates legacy

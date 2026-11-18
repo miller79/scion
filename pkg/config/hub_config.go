@@ -260,6 +260,10 @@ type HubServerConfig struct {
 	// its parent agent sets one. Empty means "project", the built-in
 	// default. See ValidateDefaultMessageMode for the accepted values.
 	DefaultMessageMode string `json:"defaultMessageMode,omitempty" yaml:"defaultMessageMode,omitempty" koanf:"defaultMessageMode"`
+
+	// UserAccessTokens holds the user access token issuance policy
+	// (server.hub.user_access_tokens). Read at startup.
+	UserAccessTokens HubUserAccessTokensConfig `json:"userAccessTokens" yaml:"userAccessTokens" koanf:"userAccessTokens"`
 }
 
 // defaultMessageModeValues are the values server.hub.default_message_mode
