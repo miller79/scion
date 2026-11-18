@@ -503,6 +503,11 @@ func (p *templatePersistence) GetBySlug(ctx context.Context, slug, scope, scopeI
 }
 
 func (p *templatePersistence) Create(ctx context.Context, rec *ResourceRecord, _ *collectedDir) error {
+	// Import and sync may not create a project or user template that
+	// shadows a global one (global_slug_shadow.go).
+	if err := p.s.templateSlugShadowsGlobal(ctx, rec.Scope, rec.Slug); err != nil {
+		return err
+	}
 	t := &store.Template{
 		ID:            rec.ID,
 		Name:          rec.Name,
@@ -855,6 +860,12 @@ func (p *harnessConfigPersistence) GetBySlug(ctx context.Context, slug, scope, s
 // commitHarnessConfigFiles. Harness is set because the column is non-empty;
 // the commit replaces it with the derived value.
 func (p *harnessConfigPersistence) Create(ctx context.Context, rec *ResourceRecord, cd *collectedDir) error {
+	// Import and sync, including a template's bundled harness configs, may
+	// not create a project or user harness config that shadows a global one
+	// (global_slug_shadow.go).
+	if err := p.s.harnessConfigSlugShadowsGlobal(ctx, rec.Scope, rec.Slug); err != nil {
+		return err
+	}
 	harnessType := p.harness
 	if idx := deriveHarnessConfigIndexFromCollected(cd, rec.Name); idx.Harness != "" {
 		harnessType = idx.Harness
