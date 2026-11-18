@@ -806,14 +806,16 @@ func TestSetMessageMode_APIRouting(t *testing.T) {
 func TestSetMessageMode_FullRoleAgentAllowed(t *testing.T) {
 	srv, s, owner, _, _, projectID := smmSetup(t)
 
-	// Target agent whose mode will be changed.
-	target := smmAgent(t, s, "smm-full-agent-target", projectID, store.MessageModeProject,
-		[]string{owner.ID})
-
 	// Caller agent with full-role scopes (same project).
 	caller := smmAgent(t, s, "smm-full-agent-caller", projectID, store.MessageModeProject,
 		[]string{owner.ID})
 	callerIdent := msgAuthzAgentIdentity(caller.ID, projectID, caller.Ancestry, ScopesForRole(AgentRoleFull)...)
+
+	// Target agent whose mode will be changed: a child of the caller (an
+	// agent changes the mode only of its descendants; a project peer is
+	// refused, see TestSetMessageMode_FullRoleAgentPeerDenied).
+	target := smmAgent(t, s, "smm-full-agent-target", projectID, store.MessageModeProject,
+		[]string{owner.ID, caller.ID})
 
 	rr := smmDoRequest(t, srv, target.ID, SetMessageModeRequest{Mode: "branch"}, callerIdent)
 
