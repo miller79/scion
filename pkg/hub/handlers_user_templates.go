@@ -204,6 +204,9 @@ func (s *Server) createUserTemplate(w http.ResponseWriter, r *http.Request) {
 		BadRequest(w, "invalid slug: name cannot be slugified")
 		return
 	}
+	if s.refuseTemplateGlobalShadow(w, ctx, store.TemplateScopeUser, slug) {
+		return
+	}
 
 	if err := validateUploadFilePaths(req.Files); err != nil {
 		if !writeInvalidFilePathError(w, err) {
@@ -344,6 +347,9 @@ func (s *Server) updateUserTemplate(w http.ResponseWriter, r *http.Request, id s
 	}
 	if template.Slug == "" {
 		template.Slug = api.Slugify(template.Name)
+	}
+	if template.Slug != existing.Slug && s.refuseTemplateGlobalShadow(w, ctx, template.Scope, template.Slug) {
+		return
 	}
 
 	if err := s.store.UpdateTemplate(ctx, &template); err != nil {

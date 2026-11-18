@@ -58,7 +58,7 @@ var ProjectTargetApplicability = map[string]bool{
 	"project.create": false, "project.read": true, "project.update": true,
 	"project.delete": true, "project.manage": true, "project.register": false,
 	"project.set_messaging_policy": true, "project.clone": false, "project.list": false,
-	"project.manage_visitors": true,
+	"project.manage_visitors": true, "project.manage_pre_start_hooks": true,
 	// project.chat_post targets an existing project's chat threads.
 	"project.chat_post": true,
 
