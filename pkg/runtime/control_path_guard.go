@@ -125,6 +125,13 @@ func expandHostSource(path string) string {
 	return expanded
 }
 
+// ExpandHostVolumeSource expands a configured volume source exactly as the
+// container runtimes do before binding it (environment variables, then a
+// leading "~"), so a caller judging a source judges what will be mounted.
+func ExpandHostVolumeSource(path string) string {
+	return expandHostSource(path)
+}
+
 // CheckVolumeSources applies the configured-volume control-path check to
 // every host-path volume in vols, with each source expanded as it will be
 // when the agent's container is created. It is for configuration time: a

@@ -73,6 +73,14 @@ func resolvePhysical(p string) (string, error) {
 	return "", fmt.Errorf("no part of %q exists", p)
 }
 
+// ResolvePhysical is resolvePhysical for callers outside this package that
+// make their own allow-list decision on a host path (the agent policy's
+// allowed_host_volume_sources): the absolute path p with every symlink
+// resolved, or an error the caller must treat as a refusal.
+func ResolvePhysical(p string) (string, error) {
+	return resolvePhysical(p)
+}
+
 // pathEqual reports whether a and b name the same path, by spelling: exact,
 // or case-insensitively on a case-insensitive platform. For refusals only.
 func pathEqual(a, b string) bool {

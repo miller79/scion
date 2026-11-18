@@ -327,6 +327,60 @@ The check runs at each of these points:
 - **Runtime listing.** If the Runtime Broker cannot list a runtime's containers, it cannot tell which agents to check, so it stops none and tries again at the next check.
 - **Hard links.** Directories are not walked. A hard link to a protected file, placed inside an allowed directory by a process on the host, is not detected. An agent cannot create such a link itself.
 
+## Agent Policy (`agent_policy`)
+
+The agent policy is the operator's limit on what any agent on this host may run with. It is enforced on the agent's final, fully resolved configuration, immediately before the container is created, on every runtime. Whatever set a value (settings, profiles, flat instance `agent_defaults`, harness configs, templates, the agent's stored config, inline config such as `scion create --config`, or a Hub request) makes no difference, so requesters, project members, project owners, harness configs and templates cannot get around it.
+
+The policy is read only from the **global** settings file (`~/.scion/settings.yaml` of the user running the Runtime Broker). A project's `settings.yaml`, the Hub settings overlay and `SCION_*` environment variables never set or loosen it. It is read on every agent start, so a change applies to the next start without a restart. Absent or empty means no policy (today's behaviour).
+
+```yaml
+schema_version: "1"
+agent_policy:
+  # The final image must start with one of these (compared fully qualified:
+  # "postgres" is docker.io/library/postgres). A prefix ending in "/" matches
+  # anything under it; any other prefix matches only at a reference boundary,
+  # so registry.example.com/agents/claude does not match .../claude-evil.
+  allowed_image_prefixes:
+    - registry.example.com/agents/
+  # allow (default) | deny | allowlist: configured host-path volumes.
+  host_volumes: allowlist
+  allowed_host_volume_sources:
+    - /srv/agent-data
+  # Optional: volume types allowed at all (local, nfs, gcs,
+  # cloudrun-volume, gke-shared-volume). Empty means every type.
+  allowed_volume_types: [local]
+  max_resources:
+    cpu: "8"
+    memory: 8Gi
+  require_telemetry: true
+  max_limits:
+    max_turns: 500
+    max_model_calls: 2000
+    max_duration: 8h
+```
+
+| Field | Effect |
+| :--- | :--- |
+| `allowed_image_prefixes` | When non-empty, an agent whose image does not match is refused before the image is pulled. A short name is read as Docker reads it (`docker.io/library/...` or `docker.io/<org>/...`), and the agent then runs the fully qualified reference, so the image checked is the image run on every runtime, whatever its short-name resolution. |
+| `host_volumes` | `allow` (default): no check. `deny`: every configured host-path volume is refused. `allowlist`: a configured host-path volume must come from `allowed_host_volume_sources`. Named volumes and relative sources are refused under `deny` and `allowlist`. On Docker, Podman and Apple container every volume whose type is not exactly `gcs` is a host path (those runtimes bind `nfs`, `cloudrun-volume`, `GCS` and any other type from the host); on other runtimes every volume except types exactly `gcs`, `cloudrun-volume` and `gke-shared-volume`. Under `deny` and `allowlist` a **requested workspace** (`config.workspace`) and the repository root mounted with it must also lie in the project's directory or checkout, the agent's own workspace, the Scion global directory, or (with `allowlist`) an allowed source. Workspaces Scion places itself, including those of a storage backend, are never refused. |
+| `allowed_host_volume_sources` | Absolute path prefixes (no `.` or `..` elements, not `/`). The source is expanded as the runtime expands it (environment variables, `~`), then must be at or under a prefix, per path element, both lexically (`..` applied) and with every symbolic link on this host resolved. Only with `host_volumes: allowlist`. |
+| `allowed_volume_types` | When non-empty, a configured volume of any other type is refused. The type is compared exactly as written (an empty type is `local`), as the runtimes compare it, so `GCS` is not `gcs`. |
+| `max_resources.cpu`, `max_resources.memory` | Every CPU or memory request and limit, in `resources` and in `kubernetes.resources`, above the maximum is refused, and so is a limit that any runtime would read as zero (Docker reads `0` as unlimited) or a negative value. A value is compared at its largest reading by any runtime's parser (`512m` memory is 512 MB to Docker). A missing limit is set to the maximum, so no limit does not mean unlimited; on Kubernetes the request is then set to the default request (`250m` CPU, `512Mi` memory, at most the maximum) so the API server does not default it to the limit. Use Kubernetes quantities (`"8"`, `"500m"`, `8Gi`). On Cloud Run, choose maximums that form an allowed CPU/memory pair, since a filled limit must fit Cloud Run's bands. |
+| `require_telemetry` | Telemetry is forced on: the harness telemetry environment is applied and `SCION_TELEMETRY_ENABLED` and `SCION_TELEMETRY_CLOUD_ENABLED` are set to `true`, replacing any value from config, a request or the template environment. Where telemetry is exported (`SCION_OTEL_*`) is not policed. |
+| `max_limits` | Ceilings. A missing, unlimited (`0`) or larger `max_turns`, `max_model_calls` or `max_duration` is lowered to the ceiling (not refused), in the `SCION_MAX_*` environment the agent's limits are delivered in. `0` or empty sets no ceiling for that limit. |
+
+Scion's own mounts (the workspace, repository root, agent home, shared directories, harness auth files and git config) are never judged by the volume rules; only volumes from the agent's configuration are. Volumes the operator configures in settings or profiles are configuration volumes too, so list their sources in `allowed_host_volume_sources`.
+
+A refused start fails with `400` (`validation_error`; an asynchronous launch records `container_config`) and a message that names the agent config field and the policy setting, for example `agent policy: image: image "postgres:18" is not from an allowed registry or repository (agent_policy.allowed_image_prefixes)`. It repeats only the requester's own value, never the allow lists or a resolved host path. The Runtime Broker logs each refusal at WARN with the agent, field and setting. An invalid policy, an unknown key under `agent_policy` (a misspelling such as `max_resource:`), or a global settings file that mentions `agent_policy` but cannot be loaded refuses every start (fail closed); the log names the problem. A prefix ending in `/` names a namespace: `docker.io/myorg/` and `myorg/` both match `docker.io/myorg/...`.
+
+**Limitations.**
+
+- The policy is per host: each Runtime Broker enforces its own global settings file. Managed agents (`managedAgent: true`) run directly from the Hub, never on a Runtime Broker, so this policy does not apply to them.
+- It judges what the container is created with. The run limits are enforced inside the container (`sciontool` reads `SCION_MAX_*` and keeps its counters in the agent's home), so an agent with root in its own container can get around them. There is no Runtime Broker-side timer that stops an agent at `max_duration`.
+- Env keys (for example proxy or `SCION_OTEL_*` telemetry endpoint variables) are not restricted. On the substrate runtime an environment secret or resolved auth entry of the same name is applied after the pinned telemetry and limit values.
+- `disk` and extended resources (GPUs) are not capped. Kubernetes `context`, `namespace`, `serviceAccountName` and `runtimeClassName` are not policed.
+- An allowed host volume source is resolved when the agent starts; a symbolic link swapped in between that check and the bind is not detected.
+
 ## Telemetry Configuration (`telemetry`)
 
 Controls agent telemetry collection, forwarding, privacy filtering, and debug output. Telemetry settings can be defined at global or project scope and are merged across the hierarchy (last write wins). A template's `telemetry` block is ignored; the Hub telemetry configuration and project telemetry policy also apply, and an agent's own config can only turn telemetry on or off. See the [telemetry ladder](/scion/reference/settings-precedence/#the-telemetry-ladder).
