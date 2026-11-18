@@ -559,6 +559,9 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubState>
   // The co-located broker listens on loopback, like the hub (it would
   // default to all interfaces in hosted mode).
   if (options.runtimeBroker) env.SCION_SERVER_RUNTIMEBROKER_HOST = '127.0.0.1';
+  // A hosted hub refuses --enable-test-login unless it is declared a test
+  // hub (server.hub.class: test).
+  if (testLogin) env.SCION_SERVER_HUB_CLASS = 'test';
 
   // Find a free port
   const port = await findFreePort();
