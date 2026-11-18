@@ -293,3 +293,31 @@ func TestCreateGCPServiceAccount_RefusesHubAndBrokerHostSA(t *testing.T) {
 	rec := doRequest(t, srv, http.MethodPost, path, map[string]string{"email": "agent@my-project.iam.gserviceaccount.com"})
 	assert.Equal(t, http.StatusCreated, rec.Code, "an ordinary account is still registered: %s", rec.Body.String())
 }
+
+func TestProjectClone_SkipsReservedServiceAccount(t *testing.T) {
+	srv, s := testServer(t)
+	ctx := context.Background()
+	projectID := createTestProjectForSA(t, srv, s)
+	srv.gcpTokenGenerator = &mockGCPTokenGenerator{email: "hub-sa@hub-project.iam.gserviceaccount.com"}
+
+	// Rows registered before reserved accounts were refused.
+	reserved := &store.GCPServiceAccount{ID: tid("rh-clone-reserved-sa"), Scope: store.ScopeProject, ScopeID: projectID,
+		Email: "hub-sa@hub-project.iam.gserviceaccount.com", ProjectID: "hub-project", Verified: true}
+	ordinary := &store.GCPServiceAccount{ID: tid("rh-clone-ordinary-sa"), Scope: store.ScopeProject, ScopeID: projectID,
+		Email: "agent@my-project.iam.gserviceaccount.com", ProjectID: "my-project", Verified: true}
+	require.NoError(t, s.CreateGCPServiceAccount(ctx, reserved))
+	require.NoError(t, s.CreateGCPServiceAccount(ctx, ordinary))
+
+	rec := doRequest(t, srv, http.MethodPost, "/api/v1/projects/"+projectID+"/clone", CloneProjectRequest{Name: "rh-sa-clone"})
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	var clone store.Project
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &clone))
+
+	list, err := s.ListGCPServiceAccounts(ctx, store.GCPServiceAccountFilter{Scope: store.ScopeProject, ScopeID: clone.ID})
+	require.NoError(t, err)
+	var emails []string
+	for _, sa := range list {
+		emails = append(emails, sa.Email)
+	}
+	assert.Equal(t, []string{"agent@my-project.iam.gserviceaccount.com"}, emails, "the reserved account is not carried into the clone")
+}

@@ -830,9 +830,17 @@ func (s *Server) cloneProjectGCPServiceAccounts(ctx context.Context, srcProjectI
 	srcToClonedID := make(map[string]string, len(accounts))
 	skippedIDs := make(map[string]bool)
 	for _, sa := range accounts {
-		if s.isHubOwnServiceAccountEmail(sa.Email) {
+		// Upstream skips the Hub's own service account; broker host service
+		// accounts are reserved too (reservedServiceAccountUse,
+		// gcp_sa_reserved.go), so a row registered before either rule is not
+		// carried into the clone.
+		reservedReason, rerr := s.reservedServiceAccountUse(ctx, sa.Email)
+		if rerr != nil {
+			return rerr
+		}
+		if s.isHubOwnServiceAccountEmail(sa.Email) || reservedReason != "" {
 			slog.Warn("project clone skipped reserved GCP service account",
-				"src_project_id", srcProjectID, "clone_id", clone.ID, "sa_id", sa.ID, "email", sa.Email)
+				"src_project_id", srcProjectID, "clone_id", clone.ID, "sa_id", sa.ID, "email", sa.Email, "reason", reservedReason)
 			skippedIDs[sa.ID] = true
 			continue
 		}
