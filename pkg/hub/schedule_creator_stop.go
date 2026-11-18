@@ -1,0 +1,66 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package hub
+
+import "net/http"
+
+// scheduleCreatorMayStop reports whether the request's user may pause or
+// delete schedule scheduleID of projectID because they created it, when
+// the project-level scheduled_event.update/delete permission alone would
+// refuse them. Project members can create recurring schedules but hold
+// neither permission, so without this they could not stop their own.
+//
+// Pause and delete only stop future runs, so this grants nothing new. It
+// applies only to a user's interactive session (a scoped access token keeps
+// its own scope ceiling), only while the user can still read the project's
+// schedules, and only to a schedule in projectID whose stored creator
+// (CreatedBy, written by the hub from the authenticated identity at create)
+// is that user and whose current authority (its initiator attribution) is
+// still that user: after an owner edits or resumes it, it runs under the
+// owner and the creator path no longer applies. It returns false when the
+// normal gate would allow the
+// request, so that path (and its audit) is unchanged.
+func (s *Server) scheduleCreatorMayStop(r *http.Request, projectID, scheduleID string, action Action) bool {
+	ctx := r.Context()
+	identity := GetIdentityFromContext(ctx)
+	if isNilIdentity(identity) || identity.ID() == "" {
+		return false
+	}
+	if _, ok := identity.(UserIdentity); !ok || identity.Type() == "agent" {
+		return false
+	}
+	if !sessionCredentialAllowed(ctx) {
+		return false
+	}
+	if s.scheduledEventAccessDecision(ctx, projectID, action, nil).allowed {
+		return false
+	}
+	if !s.scheduledEventAccessDecision(ctx, projectID, ActionRead, nil).allowed {
+		return false
+	}
+	sc, err := s.store.GetSchedule(ctx, scheduleID)
+	if err != nil || sc == nil || sc.ProjectID != projectID {
+		return false
+	}
+	if sc.CreatedBy == "" || sc.CreatedBy != identity.ID() {
+		return false
+	}
+	// The schedule must also still run under the creator's own authority:
+	// once someone else re-authorized it (an edit or resume records them as
+	// the initiator), stopping it is theirs to decide, not the creator's.
+	initiator := s.scheduledInitiator(sc.InitiatorAttribution)
+	return !initiator.LegacyUnknown && initiator.PrincipalKind == identity.Type() &&
+		initiator.PrincipalID == identity.ID()
+}

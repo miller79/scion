@@ -699,6 +699,7 @@ var startupCheckedFileBlocks = []struct {
 		return config.ValidateDefaultMessageMode(gc.Hub.DefaultMessageMode)
 	}},
 	{[]string{"server", "hub", "user_access_tokens"}, func(gc *config.GlobalConfig) error { return gc.Hub.UserAccessTokens.Validate() }},
+	{[]string{"server", "hub", "schedules"}, func(gc *config.GlobalConfig) error { return gc.Hub.Schedules.Validate() }},
 	{[]string{"server", "hub", "platform_request_timeout"}, func(gc *config.GlobalConfig) error {
 		return config.ValidatePlatformRequestTimeout(gc.Hub.PlatformRequestTimeout)
 	}},

@@ -174,8 +174,17 @@ func (s *Server) handleSchedules(w http.ResponseWriter, r *http.Request, project
 		return
 	}
 
+	// Pause and delete only stop future runs: the user who created a
+	// schedule may do them even without scheduled_event.update/delete
+	// (scheduleCreatorMayStop). Everything else, and every other caller,
+	// goes through the project-level gate.
+	stopOnly := schedulePath != "" &&
+		(((len(pathParts) == 1 || pathParts[1] == "") && r.Method == http.MethodDelete) ||
+			(len(pathParts) > 1 && pathParts[1] == "pause"))
+	creatorStop := stopOnly && s.scheduleCreatorMayStop(r, projectID, pathParts[0], authzAction)
+
 	// Authorize access — fail closed for all identity types.
-	if !s.authorizeScheduledEventAccess(w, r, projectID, authzAction) {
+	if !creatorStop && !s.authorizeScheduledEventAccess(w, r, projectID, authzAction) {
 		return
 	}
 
@@ -285,6 +294,9 @@ func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request, projectI
 		writeCronParseError(w, err)
 		return
 	}
+	if !s.checkScheduleFrequency(w, req.CronExpr) {
+		return
+	}
 	timeZone, err := normalizeScheduleTimeZone(req.TimeZone)
 	if err != nil {
 		writeScheduleTimingError(w, err)
@@ -384,7 +396,15 @@ func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request, projectI
 		return
 	}
 
-	if err := s.store.CreateSchedule(r.Context(), &schedule); err != nil {
+	// The per-project recurring schedule cap is checked in the same
+	// transaction as the insert, under the per-project quota lock.
+	maxActive := s.config.ScheduleMaxActivePerProject
+	if err := s.store.CreateScheduleChecked(r.Context(), &schedule, 1, func(snap store.ScheduledExecQuotaSnapshot) error {
+		return scheduleQuotaCheck(snap, maxActive)
+	}); err != nil {
+		if writeScheduleQuotaError(w, err) {
+			return
+		}
 		if errors.Is(err, store.ErrAlreadyExists) {
 			writeScheduleNameConflict(w, r, req.Name)
 			return
@@ -746,20 +766,39 @@ func (s *Server) updateSchedule(w http.ResponseWriter, r *http.Request, projectI
 		attribution = &newAttr
 	}
 
+	// A schedule that is (re)armed with a new or re-enabled cron expression
+	// must respect the hub's minimum interval.
+	if (fields.CronExpr || enabling) && schedule.Status == store.ScheduleStatusActive &&
+		!s.checkScheduleFrequency(w, schedule.CronExpr) {
+		return
+	}
+
 	var updateErr error
+	maxActive := s.config.ScheduleMaxActivePerProject
 	if effectiveEventType == scheduledEventTypeExec && schedule.Status == store.ScheduleStatusActive && execPayload != nil {
 		targetID := execPayload.AgentID
 		scheduleID := schedule.ID
 		updateErr = s.store.UpdateScheduleChecked(r.Context(), schedule, fields, prevRevision, prevRevisionKnown, attribution,
 			scheduledExecMaxPerProject+1, func(snap store.ScheduledExecQuotaSnapshot) error {
-				return scheduledExecQuotaCheck(snap, targetID, scheduleID)
+				if err := scheduledExecQuotaCheck(snap, targetID, scheduleID); err != nil {
+					return err
+				}
+				if !enabling {
+					return nil
+				}
+				return scheduleQuotaCheck(snap, maxActive)
+			})
+	} else if enabling {
+		// Re-enabling counts against the per-project recurring cap.
+		updateErr = s.store.UpdateScheduleChecked(r.Context(), schedule, fields, prevRevision, prevRevisionKnown, attribution,
+			1, func(snap store.ScheduledExecQuotaSnapshot) error {
+				return scheduleQuotaCheck(snap, maxActive)
 			})
 	} else {
 		updateErr = s.store.UpdateSchedule(r.Context(), schedule, fields, prevRevision, prevRevisionKnown, attribution)
 	}
 	if updateErr != nil {
-		if errors.Is(updateErr, errScheduledExecQuota) {
-			writeError(w, http.StatusTooManyRequests, ErrCodeQuotaExceeded, updateErr.Error(), nil)
+		if writeScheduleQuotaError(w, updateErr) {
 			return
 		}
 		if errors.Is(updateErr, store.ErrRevisionConflict) {
@@ -912,6 +951,11 @@ func (s *Server) resumeSchedule(w http.ResponseWriter, r *http.Request, projectI
 		writeScheduleTimingError(w, err)
 		return
 	}
+	// A schedule created before the hub's minimum interval (or under a
+	// lower one) must be edited before it can be resumed.
+	if !s.checkScheduleFrequency(w, schedule.CronExpr) {
+		return
+	}
 
 	ceiling, ok := s.revisionAuthorityCeiling(w, r, projectID, ActionUpdate)
 	if !ok {
@@ -937,6 +981,7 @@ func (s *Server) resumeSchedule(w http.ResponseWriter, r *http.Request, projectI
 	schedule.AuthorityCeiling = ceiling
 
 	fields := store.ScheduleFieldMask{Status: true, NextRunAt: true}
+	maxActive := s.config.ScheduleMaxActivePerProject
 	var resumeErr error
 	if execPayload != nil {
 		if encoded, encErr := execPayload.encode(); encErr == nil && encoded != schedule.Payload {
@@ -946,14 +991,19 @@ func (s *Server) resumeSchedule(w http.ResponseWriter, r *http.Request, projectI
 		targetID := execPayload.AgentID
 		resumeErr = s.store.UpdateScheduleChecked(r.Context(), schedule, fields, prevRevision, prevRevisionKnown, &newAttr,
 			scheduledExecMaxPerProject+1, func(snap store.ScheduledExecQuotaSnapshot) error {
-				return scheduledExecQuotaCheck(snap, targetID, scheduleID)
+				if err := scheduledExecQuotaCheck(snap, targetID, scheduleID); err != nil {
+					return err
+				}
+				return scheduleQuotaCheck(snap, maxActive)
 			})
 	} else {
-		resumeErr = s.store.UpdateSchedule(r.Context(), schedule, fields, prevRevision, prevRevisionKnown, &newAttr)
+		resumeErr = s.store.UpdateScheduleChecked(r.Context(), schedule, fields, prevRevision, prevRevisionKnown, &newAttr,
+			1, func(snap store.ScheduledExecQuotaSnapshot) error {
+				return scheduleQuotaCheck(snap, maxActive)
+			})
 	}
 	if resumeErr != nil {
-		if errors.Is(resumeErr, errScheduledExecQuota) {
-			writeError(w, http.StatusTooManyRequests, ErrCodeQuotaExceeded, resumeErr.Error(), nil)
+		if writeScheduleQuotaError(w, resumeErr) {
 			return
 		}
 		if errors.Is(resumeErr, store.ErrRevisionConflict) {
