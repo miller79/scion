@@ -805,7 +805,7 @@ var projectOperations = []OperationSpec{
 	{
 		ID:     "project.clone",
 		Domain: "project",
-		Description: "Clone a project into a new project owned by the caller. The caller needs project.read on the source and " +
+		Description: "Clone a project into a new project owned by the caller. The caller needs project.update on the source and " +
 			"project.create as a collection-level create at the hub scope; a token also needs the project:clone selector",
 		EntryPoints: []EntryPoint{
 			{Kind: EntryPointHTTPRoute, Pattern: "/api/v1/projects/{id}/clone", Method: "POST"},
@@ -2211,10 +2211,14 @@ var projectOperations = []OperationSpec{
 			{Kind: EntryPointHTTPRoute, Pattern: "/api/v1/projects/{id}/pre-start-hooks/{hookId}/activate", Method: "POST"},
 			{Kind: EntryPointHTTPRoute, Pattern: "/api/v1/projects/{id}/pre-start-hooks/{hookId}", Method: "DELETE"},
 		},
-		Principals:       []PrincipalKind{PrincipalUser},
-		Credentials:      []CredentialKind{CredentialSessionJWT, CredentialScopedUAT},
+		Principals:  []PrincipalKind{PrincipalUser},
+		Credentials: []CredentialKind{CredentialSessionJWT},
+		// A hook runs inside every agent of the project, so writing one
+		// needs project.manage_pre_start_hooks, which no built-in project
+		// role holds (hub admins hold it hub-wide). No selector exists for
+		// it, so a token is refused.
 		ResourceResolver: "project-from-url",
-		BasePermission:   "project.update",
+		BasePermission:   "project.manage_pre_start_hooks",
 		Effects:          []SecurityEffect{EffectCreateResource, EffectUpdateResource, EffectDeleteResource},
 		DelegationKind:   DelegationNone,
 		AuthorityEval:    AuthorityEvalNone,
@@ -2225,8 +2229,11 @@ var projectOperations = []OperationSpec{
 			Atomic:        true,
 		},
 		DenialCodes: []DenialCode{DenialForbidden},
-		TestRefs:    []TestRef{{Package: "pkg/hub", Function: "TestBearerDispositionMatrix_CatalogEntryPoints"}},
-		Bearer:      AdmitOn(BearerTargetProjectPath, BearerBoundaryProject, BearerBoundaryHub),
+		TestRefs: []TestRef{
+			{Package: "pkg/hub", Function: "TestBearerDispositionMatrix_CatalogEntryPoints"},
+			{Package: "pkg/hub", Function: "TestProjectPreStartHookWrite_ProjectOwnerDenied"},
+		},
+		Bearer: SessionOnly(ReasonGovernancePending),
 	},
 	{
 		ID:          "project.settings.read",

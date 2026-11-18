@@ -103,7 +103,7 @@ func (s *Server) handleProjectPreStartHooks(w http.ResponseWriter, r *http.Reque
 				Type:    "project",
 				ID:      project.ID,
 				OwnerID: project.OwnerID,
-			}, ActionUpdate)
+			}, ActionManagePreStartHooks)
 			if !decision.Allowed {
 				Forbidden(w)
 				return
@@ -223,7 +223,7 @@ func (s *Server) handleProjectPreStartHookByID(w http.ResponseWriter, r *http.Re
 			return
 		}
 		if userIdent, ok := identity.(UserIdentity); ok {
-			if !s.authzService.CheckAccess(ctx, userIdent, projectRes, ActionUpdate).Allowed {
+			if !s.authzService.CheckAccess(ctx, userIdent, projectRes, ActionManagePreStartHooks).Allowed {
 				Forbidden(w)
 				return
 			}
@@ -263,7 +263,7 @@ func (s *Server) handleProjectPreStartHookByID(w http.ResponseWriter, r *http.Re
 
 	case http.MethodPut:
 		if userIdent, ok := identity.(UserIdentity); ok {
-			if !s.authzService.CheckAccess(ctx, userIdent, projectRes, ActionUpdate).Allowed {
+			if !s.authzService.CheckAccess(ctx, userIdent, projectRes, ActionManagePreStartHooks).Allowed {
 				Forbidden(w)
 				return
 			}
@@ -336,7 +336,7 @@ func (s *Server) handleProjectPreStartHookByID(w http.ResponseWriter, r *http.Re
 
 	case http.MethodDelete:
 		if userIdent, ok := identity.(UserIdentity); ok {
-			if !s.authzService.CheckAccess(ctx, userIdent, projectRes, ActionUpdate).Allowed {
+			if !s.authzService.CheckAccess(ctx, userIdent, projectRes, ActionManagePreStartHooks).Allowed {
 				Forbidden(w)
 				return
 			}

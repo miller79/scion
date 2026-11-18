@@ -442,6 +442,18 @@ func (s *Server) createGCPServiceAccount(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusBadRequest, code, msg, nil)
 		return
 	}
+	// The Hub's own service account and broker host service accounts are
+	// never registered in a project (gcp_sa_reserved.go).
+	reason, err := s.reservedServiceAccountUse(r.Context(), req.Email)
+	if err != nil {
+		writeErrorFromErr(w, err, "")
+		return
+	}
+	if reason != "" {
+		writeError(w, http.StatusUnprocessableEntity, ErrCodeInvalidRequest,
+			"this service account cannot be registered in a project: "+reason, map[string]interface{}{"field": "email", "reason": "reserved_service_account"})
+		return
+	}
 
 	sa := &store.GCPServiceAccount{
 		ID:            uuid.New().String(),

@@ -358,6 +358,9 @@ func (s *Server) createHarnessConfig(w http.ResponseWriter, r *http.Request) {
 	if s.refuseGlobalHarnessConfigSlug(ctx, w, createScope, slug) {
 		return
 	}
+	if s.refuseHarnessConfigGlobalShadow(w, ctx, createScope, slug) {
+		return
+	}
 
 	// The row carries the requested harness until its first commit derives
 	// Harness and Config from config.yaml.
@@ -745,6 +748,9 @@ func (s *Server) updateHarnessConfig(w http.ResponseWriter, r *http.Request, exi
 	if hc.Slug != existing.Slug && s.refuseGlobalHarnessConfigSlug(ctx, w, hc.Scope, hc.Slug) {
 		return
 	}
+	if hc.Slug != existing.Slug && s.refuseHarnessConfigGlobalShadow(w, ctx, hc.Scope, hc.Slug) {
+		return
+	}
 
 	if err := s.store.UpdateHarnessConfig(ctx, &hc); err != nil {
 		writeErrorFromErr(w, err, "")
@@ -773,6 +779,9 @@ func (s *Server) patchHarnessConfig(w http.ResponseWriter, r *http.Request, exis
 		return
 	}
 	if existing.Slug != prevSlug && s.refuseGlobalHarnessConfigSlug(ctx, w, existing.Scope, existing.Slug) {
+		return
+	}
+	if existing.Slug != prevSlug && s.refuseHarnessConfigGlobalShadow(w, ctx, existing.Scope, existing.Slug) {
 		return
 	}
 
@@ -1408,6 +1417,9 @@ func (s *Server) handleHarnessConfigClone(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if s.refuseGlobalHarnessConfigSlug(ctx, w, clone.Scope, clone.Slug) {
+		return
+	}
+	if s.refuseHarnessConfigGlobalShadow(w, ctx, clone.Scope, clone.Slug) {
 		return
 	}
 
