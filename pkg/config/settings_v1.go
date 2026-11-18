@@ -1932,6 +1932,10 @@ type V1ServerHubConfig struct {
 	// SystemOne holds Hub-wide System One rule evaluation settings
 	// (server.hub.system_one).
 	SystemOne *V1ServerHubSystemOneConfig `json:"system_one,omitempty" yaml:"system_one,omitempty" koanf:"system_one"`
+	// DefaultMessageMode is the message mode of a new agent when neither the
+	// create request, its template nor its parent agent sets one ("" =
+	// "project"; one of none, lineage, branch, project). Read at startup.
+	DefaultMessageMode string `json:"default_message_mode,omitempty" yaml:"default_message_mode,omitempty" koanf:"default_message_mode"`
 }
 
 // V1ServerHubSystemOneConfig holds Hub-wide System One rule evaluation
@@ -4765,6 +4769,7 @@ func ConvertV1ServerToGlobalConfig(v1 *V1ServerConfig) *GlobalConfig {
 		if so := v1.Hub.SystemOne; so != nil {
 			gc.Hub.SystemOne = HubSystemOneConfig{MaxEvalTime: so.MaxEvalTime}
 		}
+		gc.Hub.DefaultMessageMode = v1.Hub.DefaultMessageMode
 	}
 
 	if r := v1.Relay; r != nil {
@@ -5197,6 +5202,7 @@ func ConvertGlobalToV1ServerConfig(gc *GlobalConfig) *V1ServerConfig {
 	if so := gc.Hub.SystemOne; !so.IsZero() {
 		v1Hub.SystemOne = &V1ServerHubSystemOneConfig{MaxEvalTime: so.MaxEvalTime}
 	}
+	v1Hub.DefaultMessageMode = gc.Hub.DefaultMessageMode
 	if gc.Hub.StartClaimLeaseTTL > 0 {
 		v1Hub.StartClaimLeaseTTL = gc.Hub.StartClaimLeaseTTL.String()
 	}

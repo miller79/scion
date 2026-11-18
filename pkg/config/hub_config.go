@@ -262,6 +262,31 @@ type HubServerConfig struct {
 	// SystemOne holds Hub-wide System One rule evaluation settings
 	// (server.hub.system_one).
 	SystemOne HubSystemOneConfig `json:"systemOne" yaml:"systemOne" koanf:"systemOne"`
+
+	// DefaultMessageMode is server.hub.default_message_mode: the message
+	// mode of a new agent when neither the create request, its template nor
+	// its parent agent sets one. Empty means "project", the built-in
+	// default. See ValidateDefaultMessageMode for the accepted values.
+	DefaultMessageMode string `json:"defaultMessageMode,omitempty" yaml:"defaultMessageMode,omitempty" koanf:"defaultMessageMode"`
+}
+
+// defaultMessageModeValues are the values server.hub.default_message_mode
+// accepts. "hub" is not one of them: hub mode reaches agents in other
+// projects and must be granted per agent, never by a hub-wide default.
+var defaultMessageModeValues = []string{"none", "lineage", "branch", "project"}
+
+// ValidateDefaultMessageMode checks server.hub.default_message_mode. Empty
+// (unset) is valid and means "project".
+func ValidateDefaultMessageMode(mode string) error {
+	if mode == "" {
+		return nil
+	}
+	for _, v := range defaultMessageModeValues {
+		if mode == v {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid server.hub.default_message_mode %q: must be one of %s", mode, strings.Join(defaultMessageModeValues, ", "))
 }
 
 // DefaultHubID generates a deterministic hub instance ID from the machine hostname.
