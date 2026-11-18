@@ -81,6 +81,8 @@ var dbFileOnlyRequestPaths = [][]string{
 	{"server", "hub", "system_one"},
 	// Default message mode of new agents: Layer 0, read at startup.
 	{"server", "hub", "default_message_mode"},
+	// User access token issuance policy: Layer 0, read at startup.
+	{"server", "hub", "user_access_tokens"},
 	{"server", "hub", "disable_legacy_storage_fallback"},
 	{"server", "relay"},
 	// server.keyring_file is never API-writable: rejectGateProtectedSettingsKeys

@@ -87,6 +87,16 @@ Controls the central Hub API server.
 | `platform_request_timeout` | duration | | Request timeout of the platform in front of the Hub, for example the Cloud Run service timeout. No default. When set, the events stream maximum age and the conduit `lifetime_cap` are lowered to 0.8 of it (see [Platform request timeout](#platform-request-timeout)). Between `"150s"` and `"24h"`. Startup-only: restart required to change. Env: `SCION_SERVER_HUB_PLATFORMREQUESTTIMEOUT`. |
 | `chat` | object | | Web chat limits (see [Chat search](#chat-search-serverhubchatsearch)). |
 | `default_message_mode` | string | `"project"` | [Message mode](/scion/reference/messaging-authorization/) of a new agent when neither the create request, its template nor its parent agent sets one: `none`, `lineage`, `branch` or `project`. `hub` is refused: hub mode is granted per agent. Existing agents keep their mode. Startup-only: restart required to change. Env: `SCION_SERVER_HUB_DEFAULTMESSAGEMODE`. |
+| `user_access_tokens` | object | | User access token issuance policy (see [User access tokens](#user-access-tokens-serverhubuser_access_tokens)). |
+
+#### User access tokens (`server.hub.user_access_tokens`)
+
+Limits on [personal access tokens](/scion/hosted/user/personal-access-tokens/). Startup-only: restart required to change.
+
+| Field | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `max_lifetime` | duration | `"8760h"` (1 year) | Longest lifetime of a new token, between `"1h"` and `"8760h"`. A request for a longer expiry is refused with `400`; a request without an expiry gets 90 days or this value, whichever is shorter. When set below one year, an existing token older than this value is refused at use as expired. Env: `SCION_SERVER_HUB_USERACCESSTOKENS_MAXLIFETIME`. |
+| `creation_disabled` | bool | `false` | Refuse every new token with `403` (reason `token_creation_disabled`). Existing tokens keep working until they expire or are revoked. Env: `SCION_SERVER_HUB_USERACCESSTOKENS_CREATIONDISABLED`. |
 
 #### CORS (`server.hub.cors`)
 

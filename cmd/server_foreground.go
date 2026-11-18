@@ -1685,6 +1685,16 @@ func validateTestLogin(hosted, enabled bool, hubClass string) error {
 	return nil
 }
 
+// userAccessTokenMaxLifetime resolves server.hub.user_access_tokens.max_lifetime
+// (validated by validateServerPreflight; the one-year default otherwise).
+func userAccessTokenMaxLifetime(cfg *config.GlobalConfig) time.Duration {
+	d, err := cfg.Hub.UserAccessTokens.MaxLifetimeDuration()
+	if err != nil {
+		return config.UserAccessTokenMaxLifetimeLimit
+	}
+	return d
+}
+
 // validateHostedBasic runs lightweight checks that apply to all --hosted
 // deployments (both single-instance VMs and Cloud Run HA). The session
 // secret backs hub JWT signing and web sessions only, so a broker-only
@@ -1839,6 +1849,9 @@ func validateServerPreflight(cfg *config.GlobalConfig) error {
 		return err
 	}
 	if err := config.ValidateDefaultMessageMode(cfg.Hub.DefaultMessageMode); err != nil {
+		return err
+	}
+	if err := cfg.Hub.UserAccessTokens.Validate(); err != nil {
 		return err
 	}
 	if err := validateLongLivedRequestSettings(cfg); err != nil {
@@ -2979,6 +2992,8 @@ func buildHubServerConfig(cfg *config.GlobalConfig, hubEndpoint, devAuthToken st
 		CSPReportRawSamples:          cfg.Hub.CSPReportRawSamples,
 		MembershipSweepReportOnly:    cfg.Hub.MembershipSweepReportOnly,
 		DefaultMessageMode:           cfg.Hub.DefaultMessageMode,
+		UserAccessTokenMaxLifetime:   userAccessTokenMaxLifetime(cfg),
+		UserAccessTokenCreationOff:   cfg.Hub.UserAccessTokens.CreationDisabled,
 		LaunchTimeout:                cfg.Hub.LaunchTimeout,
 		LaunchKeepaliveSeconds:       cfg.Hub.LaunchKeepaliveSeconds,
 		ConduitTCPAllowedPorts:       append([]int(nil), cfg.Hub.Conduit.TCPAllowedPorts...),
