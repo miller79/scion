@@ -199,7 +199,8 @@ func serverConfigResponseFromSettings(vs *config.VersionedSettings) ServerConfig
 // nor is the relay-peer secret ever returned, nor the proxy driver settings
 // (WS2), nor the server keyring file path and its world-readable override
 // (ptone/scion#1530), nor server.trusted_proxies (the transport policy's
-// trust set), nor server.hub.internal_url (ptone/scion#555). Both tiers' GET builders and the env_values view use it, so
+// trust set), nor server.hub.internal_url (ptone/scion#555), nor
+// server.hub.import_source_allowlist. Both tiers' GET builders and the env_values view use it, so
 // the three cannot drift.
 func hideNeverShownServerKeys(srv *config.V1ServerConfig) {
 	if srv == nil {
@@ -210,6 +211,7 @@ func hideNeverShownServerKeys(srv *config.V1ServerConfig) {
 		srv.Hub.TestIdentities = nil
 		srv.Hub.GCPProjectID = ""
 		srv.Hub.InternalURL = ""
+		srv.Hub.ImportSourceAllowlist = nil
 		if c := srv.Hub.Conduit; c != nil {
 			c.PeerSecret = ""
 		}

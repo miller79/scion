@@ -83,6 +83,7 @@ func claudeTarGzServer(t *testing.T) *httptest.Server {
 		_, _ = w.Write(archive)
 	}))
 	t.Cleanup(srv.Close)
+	routeImportTestServer(t, srv)
 	return srv
 }
 

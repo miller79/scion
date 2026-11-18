@@ -400,7 +400,7 @@ func TestHarnessConfigReimport_UpdatesRowByIDAfterSlugRename(t *testing.T) {
 			cur.Slug = "derive-hc-renamed"
 			_ = s.UpdateHarnessConfig(ctx, cur)
 		}
-		resp, err := http.Get(archive.URL + r.URL.Path)
+		resp, err := http.Get(importTestRealURL(archive.URL) + r.URL.Path)
 		if err != nil {
 			w.WriteHeader(http.StatusBadGateway)
 			return
@@ -410,6 +410,7 @@ func TestHarnessConfigReimport_UpdatesRowByIDAfterSlugRename(t *testing.T) {
 		_, _ = io.Copy(w, resp.Body)
 	}))
 	t.Cleanup(src.Close)
+	routeImportTestServer(t, src)
 
 	rec := doRequest(t, srv, http.MethodPost, "/api/v1/harness-configs/"+hc.ID+"/reimport",
 		map[string]interface{}{"sourceUrl": src.URL + "/configs/derive.tar.gz"})

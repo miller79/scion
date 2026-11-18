@@ -1808,6 +1808,11 @@ func validateServerPreflight(cfg *config.GlobalConfig) error {
 		return err
 	}
 	cfg.Hub.InternalURL = internalURL
+	importAllowlist, err := config.NormalizeImportSourceAllowlist(cfg.Hub.ImportSourceAllowlist)
+	if err != nil {
+		return err
+	}
+	cfg.Hub.ImportSourceAllowlist = importAllowlist
 	if err := cfg.Hub.Conduit.Validate(); err != nil {
 		return err
 	}
@@ -2943,6 +2948,7 @@ func buildHubServerConfig(cfg *config.GlobalConfig, hubEndpoint, devAuthToken st
 		HubEndpoint:                  hubEndpoint,
 		AgentEndpoint:                cfg.Hub.AgentEndpoint,
 		InternalURL:                  cfg.Hub.InternalURL,
+		ImportSourceAllowlist:        cfg.Hub.ImportSourceAllowlist,
 		SlowRequestThreshold:         cfg.SlowRequestThreshold,
 		StalledThreshold:             cfg.Hub.StalledThreshold,
 		MissingAgentGrace:            cfg.Hub.MissingAgentGrace,

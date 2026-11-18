@@ -38,8 +38,10 @@ import (
 // (ptone/scion#4942), and the server keyring file path (ptone/scion#1530:
 // the keyring is a deploy-time secret input read once at startup) and its
 // operator-only world-readable override, server.trusted_proxies (the
-// transport policy's trust set), and server.hub.internal_url (where broker
-// plugins send their signed Hub API calls; ptone/scion#555). A key matches itself and every key nested
+// transport policy's trust set), server.hub.internal_url (where broker
+// plugins send their signed Hub API calls; ptone/scion#555), and
+// server.hub.import_source_allowlist (the sources the Hub fetches imports
+// from on its own host). A key matches itself and every key nested
 // under it.
 var neverAPIWritableSettingsKeys = []string{
 	config.HubClassKey,
@@ -47,6 +49,9 @@ var neverAPIWritableSettingsKeys = []string{
 	// The URL hub-managed broker plugins send HMAC-signed Hub API calls
 	// to (ptone/scion#555): a web session must not redirect it.
 	config.HubInternalURLKey,
+	// The sources the Hub fetches templates and harness-configs from on
+	// its own host: a web session must not widen them.
+	config.ImportSourceAllowlistKey,
 	config.TestIdentitiesKey,
 	config.ProxyDriverPrincipalsKey,
 	config.ProxyDriverTokenAudienceKey,

@@ -50,7 +50,8 @@ var unusableProvisionerCases = []struct {
 	{"empty command", "provisioner:\n  type: container-script\n  interface_version: 1\n", "provisioner.command is empty"},
 }
 
-// tarGzFilesServer serves files as a .tar.gz archive at any *.tar.gz path.
+// tarGzFilesServer serves files as a .tar.gz archive at any *.tar.gz path,
+// under an https://github.com URL hub imports accept (routeImportTestServer).
 func tarGzFilesServer(t *testing.T, files map[string]string) *httptest.Server {
 	t.Helper()
 	var buf bytes.Buffer
@@ -73,6 +74,7 @@ func tarGzFilesServer(t *testing.T, files map[string]string) *httptest.Server {
 		_, _ = w.Write(archive)
 	}))
 	t.Cleanup(srv.Close)
+	routeImportTestServer(t, srv)
 	return srv
 }
 
