@@ -38,8 +38,11 @@ func (s *Server) reservedServiceAccountUse(ctx context.Context, email string) (s
 	if email == "" {
 		return "", nil
 	}
-	if s.gcpTokenGenerator != nil {
-		if hubSA := strings.TrimSpace(s.gcpTokenGenerator.ServiceAccountEmail()); hubSA != "" && strings.EqualFold(hubSA, email) {
+	s.mu.RLock()
+	gen := s.gcpTokenGenerator
+	s.mu.RUnlock()
+	if gen != nil {
+		if hubSA := strings.TrimSpace(gen.ServiceAccountEmail()); hubSA != "" && strings.EqualFold(hubSA, email) {
 			return "it is the Hub's own service account", nil
 		}
 	}
