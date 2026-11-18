@@ -1695,6 +1695,27 @@ func userAccessTokenMaxLifetime(cfg *config.GlobalConfig) time.Duration {
 	return d
 }
 
+// scheduleMinIntervalSetting resolves server.hub.schedules.min_interval
+// (validated by validateServerPreflight; the default otherwise).
+func scheduleMinIntervalSetting(cfg *config.GlobalConfig) time.Duration {
+	d, err := cfg.Hub.Schedules.MinIntervalDuration()
+	if err != nil {
+		return config.DefaultScheduleMinInterval
+	}
+	return d
+}
+
+// scheduleMaxActivePerProjectSetting resolves
+// server.hub.schedules.max_active_per_project (validated by
+// validateServerPreflight; the default otherwise).
+func scheduleMaxActivePerProjectSetting(cfg *config.GlobalConfig) int {
+	n, err := cfg.Hub.Schedules.MaxActivePerProjectValue()
+	if err != nil {
+		return config.DefaultScheduleMaxActivePerProject
+	}
+	return n
+}
+
 // validateHostedBasic runs lightweight checks that apply to all --hosted
 // deployments (both single-instance VMs and Cloud Run HA). The session
 // secret backs hub JWT signing and web sessions only, so a broker-only
@@ -1852,6 +1873,9 @@ func validateServerPreflight(cfg *config.GlobalConfig) error {
 		return err
 	}
 	if err := cfg.Hub.UserAccessTokens.Validate(); err != nil {
+		return err
+	}
+	if err := cfg.Hub.Schedules.Validate(); err != nil {
 		return err
 	}
 	if err := validateLongLivedRequestSettings(cfg); err != nil {
@@ -2994,6 +3018,8 @@ func buildHubServerConfig(cfg *config.GlobalConfig, hubEndpoint, devAuthToken st
 		DefaultMessageMode:           cfg.Hub.DefaultMessageMode,
 		UserAccessTokenMaxLifetime:   userAccessTokenMaxLifetime(cfg),
 		UserAccessTokenCreationOff:   cfg.Hub.UserAccessTokens.CreationDisabled,
+		ScheduleMinInterval:          scheduleMinIntervalSetting(cfg),
+		ScheduleMaxActivePerProject:  scheduleMaxActivePerProjectSetting(cfg),
 		LaunchTimeout:                cfg.Hub.LaunchTimeout,
 		LaunchKeepaliveSeconds:       cfg.Hub.LaunchKeepaliveSeconds,
 		ConduitTCPAllowedPorts:       append([]int(nil), cfg.Hub.Conduit.TCPAllowedPorts...),
