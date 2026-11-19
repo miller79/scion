@@ -297,7 +297,11 @@
         "agentSecretsUserScopeOnly:boolean",
         "autoExposePortsEnabled:boolean",
         "nativeChatEnabled:boolean",
-        "telemetryEnabled:boolean"
+        "telemetryEnabled:boolean",
+        "uploads.chunkSize:number",
+        "uploads.maxAttachmentSize:number",
+        "uploads.maxWorkspaceFileSize:number",
+        "uploads:object"
       ]
     },
     "/api/v1/system/status": {
