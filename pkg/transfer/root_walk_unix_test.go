@@ -39,10 +39,12 @@ func openTestRoot(t *testing.T, dir string) *os.Root {
 
 // A subdirectory replaced between the walk reading its entry and opening it
 // fails the walk without blocking, in both users of the walk: by a FIFO
-// (ENOTDIR, never opened); by a link (the trailing separator follows it, and
-// the SameFile check refuses it: ErrDirReplaced); by another directory inside
-// the root (only the SameFile check refuses it: ErrDirReplaced). An
-// unchanged tree walks normally.
+// (ENOTDIR, never opened); by a link to a directory outside the root (go1.26.1
+// follows it through the trailing separator and the SameFile check refuses
+// it; go1.26.11 refuses the open as an escape from the root and the walk then
+// sees the entry is now a link; ErrDirReplaced either way);
+// by another directory inside the root (only the SameFile check refuses it:
+// ErrDirReplaced). An unchanged tree walks normally.
 func TestWalkRoot_SubdirectorySwappedDuringWalk(t *testing.T) {
 	swaps := map[string]func(t *testing.T, p string){
 		"FIFO": func(t *testing.T, p string) {
@@ -104,7 +106,7 @@ func TestWalkRoot_SubdirectorySwappedDuringWalk(t *testing.T) {
 					if err == nil {
 						t.Errorf("%s succeeded with sub replaced by a %s during the walk", wname, sname)
 					} else if sname != "FIFO" && !errors.Is(err, ErrDirReplaced) {
-						t.Errorf("%s with sub replaced by a %s: err = %v, want ErrDirReplaced (the SameFile refusal)", wname, sname, err)
+						t.Errorf("%s with sub replaced by a %s: err = %v, want ErrDirReplaced", wname, sname, err)
 					}
 				})
 			})
