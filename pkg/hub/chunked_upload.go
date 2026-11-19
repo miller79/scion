@@ -44,7 +44,9 @@ package hub
 // chunkedUploadResultTTL, so a client whose finish response was lost (a
 // proxy timing out while the hub copies a large file) can repeat the finish
 // and get the same answer instead of a 404. Uploads idle for
-// chunkedUploadIdleTTL are removed by the chunked-upload-sweep scheduler task.
+// chunkedUploadIdleTTL are removed by the chunked-upload-sweep scheduler task,
+// and by every start before it checks the limits, so an upload a caller left
+// (a tab closed mid-upload sends no abort) holds no capacity for long.
 //
 // Capacity: the declared sizes of all uploads in progress are capped by
 // server.hub.uploads.max_pending_size, and one caller's by a quarter of it
@@ -80,8 +82,12 @@ const chunkedUploadOpParam = "upload"
 
 const (
 	// chunkedUploadIdleTTL is how long an upload may go without a call
-	// before the sweep removes it.
-	chunkedUploadIdleTTL = time.Hour
+	// before it is removed and its declared size no longer counts against
+	// max_pending_size. A client sends the next chunk as soon as one is
+	// answered, and a call in progress is never removed, so this only
+	// bounds how long an abandoned upload, or a start sent with no bytes,
+	// holds capacity.
+	chunkedUploadIdleTTL = 10 * time.Minute
 	// chunkedUploadMaxPerOwner caps the uploads one principal has in
 	// progress at once.
 	chunkedUploadMaxPerOwner = 4
@@ -108,11 +114,6 @@ const (
 	// chunkedUploadMaxResults bounds the responses kept; the oldest is
 	// dropped first.
 	chunkedUploadMaxResults = 1024
-	// chunkedUploadAbandonedAfter is how long one caller's upload may go
-	// without a call before a new upload of the same caller, refused
-	// otherwise by the caller's limits, replaces it (a tab closed mid-upload
-	// sends no abort).
-	chunkedUploadAbandonedAfter = 10 * time.Minute
 )
 
 var (
@@ -208,18 +209,9 @@ func (m *chunkedUploads) begin(owner, scope, name, sum string, size, maxPending,
 		m.mu.Unlock()
 		removeUploadFiles(expired)
 	}()
+	// expireLocked above removed every caller's uploads idle past
+	// chunkedUploadIdleTTL, so they count against none of the limits.
 	n, ownerReserved := m.ownerUsageLocked(owner)
-	if n >= chunkedUploadMaxPerOwner || ownerReserved+size > ownerMax {
-		// Replace this caller's abandoned uploads before refusing.
-		for id, u := range m.sessions {
-			if u.owner == owner && !u.busy && now.Sub(u.lastUsed) > chunkedUploadAbandonedAfter {
-				delete(m.sessions, id)
-				m.reserved -= u.size
-				expired = append(expired, u.path)
-			}
-		}
-		n, ownerReserved = m.ownerUsageLocked(owner)
-	}
 	if n >= chunkedUploadMaxPerOwner {
 		return nil, errChunkedUploadTooMany
 	}

@@ -540,9 +540,9 @@ func TestPublicSettings_AttachmentLimitFromArtifacts(t *testing.T) {
 	require.NotEqual(t, int64(1<<30), resp.Uploads.MaxAttachmentSize)
 }
 
-// An upload of the same caller idle past chunkedUploadAbandonedAfter (a tab
-// closed mid-upload) is replaced when the caller's limits would otherwise
-// refuse a new one.
+// An upload of the same caller idle past chunkedUploadIdleTTL (a tab closed
+// mid-upload) is removed when the caller's limits would otherwise refuse a
+// new one.
 func TestChunkedUpload_AbandonedUploadReplaced(t *testing.T) {
 	srv, target, _, tmp := chunkedWorkspaceServer(t, 1<<20)
 	srv.config.Uploads.MaxPendingSize = 4 << 20 // a caller may hold 1 MiB
@@ -553,9 +553,46 @@ func TestChunkedUpload_AbandonedUploadReplaced(t *testing.T) {
 
 	srv.chunkedUploads.mu.Lock()
 	for _, u := range srv.chunkedUploads.sessions {
-		u.lastUsed = time.Now().Add(-chunkedUploadAbandonedAfter - time.Minute)
+		u.lastUsed = time.Now().Add(-chunkedUploadIdleTTL - time.Minute)
 	}
 	srv.chunkedUploads.mu.Unlock()
 	startChunked(t, srv, target, "", "next", 1<<20, "")
 	require.Len(t, uploadTempFiles(t, tmp), 1, "the abandoned upload's file is removed")
+}
+
+// Uploads that other callers started and then left idle for 10 minutes no
+// longer hold the hub-wide capacity: a start that would get 503 removes
+// them first, while uploads used more recently are kept.
+func TestChunkedUpload_IdleUploadsOfOthersFreeCapacity(t *testing.T) {
+	srv, target, _, tmp := chunkedWorkspaceServer(t, 1<<20)
+	srv.config.Uploads.MaxPendingSize = 4 << 20
+	now := time.Now()
+	for i := 0; i < 4; i++ {
+		_, err := srv.chunkedUploads.begin(fmt.Sprintf("user:holder-%d", i), "workspace:x", "x", "",
+			1<<20, 4<<20, 1<<20, now)
+		require.NoError(t, err)
+	}
+	idleFor := func(d time.Duration) {
+		srv.chunkedUploads.mu.Lock()
+		defer srv.chunkedUploads.mu.Unlock()
+		for _, u := range srv.chunkedUploads.sessions {
+			u.lastUsed = time.Now().Add(-d)
+		}
+	}
+	start := func() *httptest.ResponseRecorder {
+		body, _ := json.Marshal(chunkedUploadStartRequest{Name: "next", Size: 1 << 20})
+		return chunkedCall(t, srv, target, "start", "", bytes.NewReader(body), "application/json")
+	}
+
+	rec := start()
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	idleFor(5 * time.Minute)
+	rec = start()
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, "uploads used 5 minutes ago are kept: %s", rec.Body.String())
+
+	idleFor(10*time.Minute + time.Second)
+	rec = start()
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	require.Len(t, uploadTempFiles(t, tmp), 1, "the idle uploads' files are removed")
+	require.Equal(t, int64(1<<20), srv.chunkedUploads.reserved)
 }
