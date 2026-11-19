@@ -45,9 +45,11 @@ var walkRootBeforeOpenDir atomic.Pointer[func(rel string)]
 // swapped in for it fails with ENOTDIR without being opened, so it cannot
 // block. The opened directory must be the one its entry described
 // (os.SameFile with the entry's Lstat-style info); a link or another
-// directory swapped in fails with ErrDirReplaced. (fs.WalkDir over root.FS()
-// would open a subdirectory with a blocking open that follows a link inside
-// the root.)
+// directory swapped in fails with ErrDirReplaced. If the open itself fails
+// (for example os.Root refusing a link that leads out of the root, or ENOTDIR
+// for a FIFO) and the entry is no longer that directory, the error wraps both
+// the open error and ErrDirReplaced. (fs.WalkDir over root.FS() would open a
+// subdirectory with a blocking open that follows a link inside the root.)
 func walkRoot(root *os.Root, fn func(rel string, d fs.DirEntry) error) error {
 	f, err := root.Open(".")
 	if err != nil {
@@ -94,6 +96,9 @@ func walkRootDir(root *os.Root, rel string, f *os.File, fn func(rel string, d fs
 		}
 		sub, err := root.OpenFile(filepath.FromSlash(child)+string(filepath.Separator), os.O_RDONLY, 0)
 		if err != nil {
+			if dirReplaced(root, child, want) {
+				return fmt.Errorf("open directory %s: %w: %w", child, err, ErrDirReplaced)
+			}
 			return fmt.Errorf("open directory %s: %w", child, err)
 		}
 		got, err := sub.Stat()
@@ -110,4 +115,15 @@ func walkRootDir(root *os.Root, rel string, f *os.File, fn func(rel string, d fs
 		}
 	}
 	return nil
+}
+
+// dirReplaced reports whether the entry rel of root (not followed if it is a
+// link) is no longer the directory want, after opening it failed. It reports
+// false if rel cannot be examined, so the open error is returned unchanged.
+func dirReplaced(root *os.Root, rel string, want fs.FileInfo) bool {
+	got, err := root.Lstat(filepath.FromSlash(rel))
+	if err != nil {
+		return false
+	}
+	return !got.IsDir() || !os.SameFile(want, got)
 }
