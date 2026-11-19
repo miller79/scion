@@ -526,6 +526,12 @@ func applyAgentPolicyResources(p *config.V1AgentPolicy, agentName, runtimeName s
 				return nil, err
 			}
 		}
+		// Only the Kubernetes runtime reads the kubernetes.resources map;
+		// every other runtime runs with the common spec alone, so there the
+		// map is checked above but never stands in for a missing limit.
+		if runtimeName != "kubernetes" {
+			hasK8sLimit, hasK8sRequest = false, false
+		}
 		// No limit is not "unlimited": the maximum becomes the limit.
 		if *r.limit == "" && (!hasK8sLimit || k8sLimit == "") {
 			*r.limit = r.max
@@ -598,9 +604,40 @@ func pinRunEnv(cfg *runtime.RunConfig, key, value string) {
 	}
 }
 
+// policyTelemetryDestinationEnv are the env names that decide where, and
+// whether, sciontool exports telemetry off the host (pkg/sciontool/telemetry
+// LoadConfig). Any of them set by the requester can switch export off or
+// make the pipeline refuse to start (cloud export asked for with no
+// destination, GCP with no project, an exporter that cannot be built), so
+// under require_telemetry they come from the operator alone.
+var policyTelemetryDestinationEnv = []string{
+	policyEnvTelemetryCloudEnabled,
+	"SCION_TELEMETRY_CLOUD_PROVIDER",
+	"SCION_OTEL_ENDPOINT",
+	"SCION_OTEL_PROTOCOL",
+	"SCION_OTEL_HEADERS",
+	"SCION_OTEL_INSECURE",
+	"SCION_OTEL_SKIP_TLS_VERIFY",
+	"SCION_OTEL_CA_FILE",
+	"SCION_OTEL_CERT_FILE",
+	"SCION_OTEL_KEY_FILE",
+	"SCION_GCP_PROJECT_ID",
+}
+
 // applyAgentPolicyTelemetry forces telemetry on: the runtime's harness
-// telemetry env (RunConfig.TelemetryEnabled) and sciontool's own switches.
-func applyAgentPolicyTelemetry(p *config.V1AgentPolicy, agentName string, cfg *runtime.RunConfig) {
+// telemetry env (RunConfig.TelemetryEnabled) and sciontool's own switch.
+//
+// The export destination is left to the operator: every
+// policyTelemetryDestinationEnv name is pinned to its value in operatorEnv
+// (the broker settings telemetry and the hub default, never the agent's own
+// config or env), or to empty, which sciontool reads as unset, when the
+// operator sets none; the pin also keeps an env-type secret from setting it.
+// SCION_TELEMETRY_CLOUD_ENABLED is never pinned to true, even when the
+// operator config says so: sciontool refuses to start the pipeline when
+// cloud export is asked for explicitly with no destination, while left unset
+// it exports when a destination is configured and runs locally otherwise.
+// An operator's explicit false is kept.
+func applyAgentPolicyTelemetry(p *config.V1AgentPolicy, agentName string, cfg *runtime.RunConfig, operatorEnv map[string]string) {
 	if p == nil || !p.RequireTelemetry {
 		return
 	}
@@ -610,7 +647,17 @@ func applyAgentPolicyTelemetry(p *config.V1AgentPolicy, agentName string, cfg *r
 	}
 	cfg.TelemetryEnabled = true
 	pinRunEnv(cfg, policyEnvTelemetryEnabled, "true")
-	pinRunEnv(cfg, policyEnvTelemetryCloudEnabled, "true")
+	for _, key := range policyTelemetryDestinationEnv {
+		value := operatorEnv[key]
+		if key == policyEnvTelemetryCloudEnabled && value != "false" {
+			value = ""
+		}
+		if cur, set := envEntryValue(cfg.Env, key); set && cur != value {
+			slog.Warn("Agent policy replaced a requested telemetry destination setting with the operator's",
+				"agent", agentName, "setting", "agent_policy.require_telemetry", "env", key)
+		}
+		pinRunEnv(cfg, key, value)
+	}
 }
 
 // applyAgentPolicyLimits lowers the agent's run limits to max_limits: a
@@ -656,9 +703,10 @@ func applyAgentPolicyLimits(p *config.V1AgentPolicy, agentName string, cfg *runt
 // agent's merged config (Scion's own shared-directory volumes are appended
 // after them and are not judged). Refusals come first, so a refused start
 // changes nothing; then the image is pinned to its fully qualified form,
-// missing resource limits are filled, telemetry is forced on and run
-// limits are lowered to their ceilings.
-func enforceAgentPolicy(p *config.V1AgentPolicy, agentName, runtimeName string, cfg *runtime.RunConfig, configVolumes []api.VolumeMount, ws agentPolicyWorkspace) error {
+// missing resource limits are filled, telemetry is forced on (with the
+// export destination from operatorTelemetryEnv, see
+// applyAgentPolicyTelemetry) and run limits are lowered to their ceilings.
+func enforceAgentPolicy(p *config.V1AgentPolicy, agentName, runtimeName string, cfg *runtime.RunConfig, configVolumes []api.VolumeMount, ws agentPolicyWorkspace, operatorTelemetryEnv map[string]string) error {
 	if p == nil {
 		return nil
 	}
@@ -678,7 +726,7 @@ func enforceAgentPolicy(p *config.V1AgentPolicy, agentName, runtimeName string, 
 	}
 	cfg.Image = image
 	cfg.Resources = resources
-	applyAgentPolicyTelemetry(p, agentName, cfg)
+	applyAgentPolicyTelemetry(p, agentName, cfg, operatorTelemetryEnv)
 	applyAgentPolicyLimits(p, agentName, cfg)
 	return nil
 }
