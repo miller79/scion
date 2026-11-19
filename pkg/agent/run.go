@@ -770,9 +770,14 @@ func (m *AgentManager) Start(ctx context.Context, opts api.StartOptions) (*api.A
 	if finalScionCfg != nil {
 		agentOwnTelemetry = cloneTelemetryConfig(finalScionCfg.Telemetry)
 	}
+	// operatorTelemetry is the two lower tiers alone (settings < hub
+	// default), without the agent's own: under the agent policy's
+	// require_telemetry it alone decides the export destination.
+	var operatorTelemetry *api.ScionConfig
 	if hubTelemetry := cloneTelemetryConfig(api.HubAgentDefaultsFromContext(ctx).TelemetryDefault()); hubTelemetry != nil {
 		util.Debugf("Start: merging hub default telemetry config in base position")
 		finalScionCfg = config.MergeScionConfig(&api.ScionConfig{Telemetry: hubTelemetry}, finalScionCfg)
+		operatorTelemetry = &api.ScionConfig{Telemetry: cloneTelemetryConfig(hubTelemetry)}
 	}
 
 	if settings != nil {
@@ -796,6 +801,9 @@ func (m *AgentManager) Start(ctx context.Context, opts api.StartOptions) (*api.A
 				Telemetry: config.ConvertV1TelemetryToAPI(settings.Telemetry),
 			}
 			finalScionCfg = config.MergeScionConfig(settingsCfg, finalScionCfg)
+			operatorTelemetry = config.MergeScionConfig(&api.ScionConfig{
+				Telemetry: config.ConvertV1TelemetryToAPI(settings.Telemetry),
+			}, operatorTelemetry)
 		} else {
 			util.Debugf("Start: settings.Telemetry is nil, skipping telemetry merge")
 		}
@@ -3119,7 +3127,11 @@ authDone:
 	// The agent policy's single choke point: the RunConfig is final here,
 	// and Runtime.Run (below) is the only call that creates an agent
 	// container on any runtime.
-	if err := enforceAgentPolicy(agentPolicy, opts.Name, m.Runtime.Name(), &runCfg, configVolumes, policyWorkspace); err != nil {
+	var operatorTelemetryEnv map[string]string
+	if operatorTelemetry != nil {
+		operatorTelemetryEnv = config.TelemetryConfigToEnv(operatorTelemetry.Telemetry)
+	}
+	if err := enforceAgentPolicy(agentPolicy, opts.Name, m.Runtime.Name(), &runCfg, configVolumes, policyWorkspace, operatorTelemetryEnv); err != nil {
 		return nil, err
 	}
 	slog.Info("agent start: pre-runtime provisioning complete", "agent", opts.Name,

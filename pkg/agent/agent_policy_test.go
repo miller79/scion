@@ -334,17 +334,51 @@ func TestApplyAgentPolicyTelemetry(t *testing.T) {
 		FallbackEnv:      map[string]string{"SCION_TELEMETRY_ENABLED": "false", "B": "2"},
 	}
 	fallback := cfg.FallbackEnv
-	applyAgentPolicyTelemetry(p, "a", cfg)
+	applyAgentPolicyTelemetry(p, "a", cfg, nil)
 	assert.True(t, cfg.TelemetryEnabled)
-	assert.Equal(t, []string{"A=1", "SCION_TELEMETRY_ENABLED=true", "SCION_TELEMETRY_CLOUD_ENABLED=true"}, cfg.Env)
+	env := envListToMap(cfg.Env)
+	assert.Equal(t, "1", env["A"])
+	assert.Equal(t, "true", env["SCION_TELEMETRY_ENABLED"])
+	assert.Equal(t, "", env["SCION_TELEMETRY_CLOUD_ENABLED"], "the requester's cloud switch is dropped, never pinned on")
 	assert.Equal(t, map[string]string{"B": "2"}, cfg.FallbackEnv)
 	assert.Equal(t, "false", fallback["SCION_TELEMETRY_ENABLED"], "the caller's map must not be modified")
 	assert.Contains(t, cfg.SuppressedFallbackKeys, "SCION_TELEMETRY_ENABLED")
 	assert.Contains(t, cfg.SuppressedFallbackKeys, "SCION_TELEMETRY_CLOUD_ENABLED")
+	n := 0
+	for _, e := range cfg.Env {
+		if k, _, _ := strings.Cut(e, "="); k == "SCION_TELEMETRY_CLOUD_ENABLED" || k == "SCION_TELEMETRY_ENABLED" {
+			n++
+		}
+	}
+	assert.Equal(t, 2, n, "exactly one entry per pinned name")
+
+	// The destination is the operator's: requester values are replaced by
+	// it, or emptied when the operator sets none. An operator's explicit
+	// cloud true is still not pinned; its explicit false is kept.
+	cfg = &runtime.RunConfig{Env: []string{
+		"SCION_OTEL_ENDPOINT=attacker.example:4317", "SCION_TELEMETRY_CLOUD_PROVIDER=gcp",
+		"SCION_GCP_PROJECT_ID=p", "SCION_OTEL_INSECURE=true", "SCION_TELEMETRY_CLOUD_ENABLED=false",
+	}}
+	applyAgentPolicyTelemetry(p, "a", cfg, map[string]string{
+		"SCION_OTEL_ENDPOINT": "otel.example:4317", "SCION_TELEMETRY_CLOUD_ENABLED": "true",
+	})
+	env = envListToMap(cfg.Env)
+	assert.Equal(t, "otel.example:4317", env["SCION_OTEL_ENDPOINT"])
+	assert.Equal(t, "", env["SCION_TELEMETRY_CLOUD_PROVIDER"])
+	assert.Equal(t, "", env["SCION_GCP_PROJECT_ID"])
+	assert.Equal(t, "", env["SCION_OTEL_INSECURE"])
+	assert.Equal(t, "", env["SCION_TELEMETRY_CLOUD_ENABLED"])
+	for _, k := range policyTelemetryDestinationEnv {
+		_, set := env[k]
+		assert.True(t, set, "%s is pinned (so no env secret can set it)", k)
+	}
+	cfg = &runtime.RunConfig{Env: []string{"SCION_TELEMETRY_CLOUD_ENABLED=true"}}
+	applyAgentPolicyTelemetry(p, "a", cfg, map[string]string{"SCION_TELEMETRY_CLOUD_ENABLED": "false"})
+	assert.Equal(t, "false", envListToMap(cfg.Env)["SCION_TELEMETRY_CLOUD_ENABLED"])
 
 	// Not required: nothing changes.
 	cfg = &runtime.RunConfig{Env: []string{"SCION_TELEMETRY_ENABLED=false"}}
-	applyAgentPolicyTelemetry(&config.V1AgentPolicy{}, "a", cfg)
+	applyAgentPolicyTelemetry(&config.V1AgentPolicy{}, "a", cfg, map[string]string{"SCION_OTEL_ENDPOINT": "otel.example:4317"})
 	assert.False(t, cfg.TelemetryEnabled)
 	assert.Equal(t, []string{"SCION_TELEMETRY_ENABLED=false"}, cfg.Env)
 }
@@ -567,4 +601,67 @@ func TestStart_AgentPolicyRequestedWorkspace(t *testing.T) {
 	_, ran, err = startWithAgentPolicyOpts(t, deny, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, ran)
+}
+
+// On a runtime other than Kubernetes the kubernetes.resources map is never
+// read (only the k8s runtime applies it), so it must not stop a missing
+// limit from being filled with the maximum: otherwise docker run gets no
+// --cpus or --memory and the container is unlimited.
+func TestApplyAgentPolicyResources_KubernetesMapOnBindRuntimes(t *testing.T) {
+	p := &config.V1AgentPolicy{MaxResources: &config.V1AgentPolicyResources{CPU: "8", Memory: "8Gi"}}
+	k8s := &api.KubernetesConfig{Resources: &api.K8sResources{
+		Limits:   map[string]string{"cpu": "1", "memory": "1Gi"},
+		Requests: map[string]string{"cpu": "1", "memory": "1Gi"},
+	}}
+	for _, rt := range []string{"docker", "podman", "container"} {
+		t.Run(rt, func(t *testing.T) {
+			out, err := applyAgentPolicyResources(p, "a", rt, nil, k8s)
+			require.NoError(t, err)
+			require.NotNil(t, out)
+			assert.Equal(t, api.ResourceList{CPU: "8", Memory: "8Gi"}, out.Limits,
+				"the limits the runtime reads must be filled")
+		})
+	}
+	// The map is still checked against the maximum on every runtime.
+	big := &api.KubernetesConfig{Resources: &api.K8sResources{Limits: map[string]string{"memory": "64Gi"}}}
+	_, err := applyAgentPolicyResources(p, "a", "docker", nil, big)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "kubernetes.resources.limits.memory")
+}
+
+// A volume targeting /workspace is how a requester names the workspace
+// without config.workspace; under host_volumes deny a source outside the
+// allowed roots must still be refused.
+func TestStart_AgentPolicyWorkspaceVolume(t *testing.T) {
+	base := "schema_version: \"1\"\nactive_profile: local\nprofiles:\n  local:\n    runtime: docker\n"
+	deny := base + "agent_policy:\n  host_volumes: deny\n"
+	viaVolume := func(tmp string, o *api.StartOptions) {
+		ws := filepath.Join(tmp, "elsewhere")
+		require.NoError(t, os.MkdirAll(ws, 0o755))
+		o.InlineConfig = &api.ScionConfig{Volumes: []api.VolumeMount{{Source: ws, Target: "/workspace"}}}
+	}
+	_, ran, err := startWithAgentPolicyOpts(t, deny, nil, viaVolume)
+	require.Error(t, err)
+	assert.Equal(t, 0, ran, "the container must not be created")
+}
+
+// Under require_telemetry the export destination comes from the operator's
+// settings telemetry, whatever the requester's inline config and env say.
+func TestStart_AgentPolicyTelemetryDestinationIsOperators(t *testing.T) {
+	settings := agentPolicyRunSettings + "telemetry:\n  cloud:\n    endpoint: otel.example:4317\n"
+	off := false
+	cfg, ran, err := startWithAgentPolicy(t, settings, &api.ScionConfig{
+		Telemetry: &api.TelemetryConfig{Cloud: &api.TelemetryCloudConfig{Enabled: &off, Endpoint: "other.example:4317"}},
+		Env: map[string]string{
+			"SCION_TELEMETRY_CLOUD_PROVIDER": "gcp",
+			"SCION_OTEL_ENDPOINT":            "other.example:4317",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, ran)
+	env := envListToMap(cfg.Env)
+	assert.Equal(t, "otel.example:4317", env["SCION_OTEL_ENDPOINT"])
+	assert.Equal(t, "", env["SCION_TELEMETRY_CLOUD_PROVIDER"])
+	assert.Equal(t, "", env["SCION_TELEMETRY_CLOUD_ENABLED"])
+	assert.Equal(t, "true", env["SCION_TELEMETRY_ENABLED"])
 }
