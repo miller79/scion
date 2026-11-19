@@ -171,13 +171,6 @@ func (b *fetchBudget) addPath(root, rel string, isDir bool) error {
 	return nil
 }
 
-// reset forgets everything counted so far.
-func (b *fetchBudget) reset() {
-	if b != nil {
-		b.bytes, b.files, b.seen = 0, 0, nil
-	}
-}
-
 // content wraps r, the content of a file being written, so that reading
 // past the byte budget fails.
 func (b *fetchBudget) content(r io.Reader) io.Reader {
@@ -274,8 +267,8 @@ func NormalizeTemplateSourceURL(raw string) string {
 	// Add https:// scheme if missing (not rclone, not already http/https,
 	// and not a gs:// Cloud Storage URL, which the Hub accepts when its
 	// import source allowlist names the bucket)
-	if !strings.HasPrefix(s, ":") && !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") &&
-		!(len(s) >= len("gs://") && strings.EqualFold(s[:len("gs://")], "gs://")) {
+	isGS := len(s) >= len("gs://") && strings.EqualFold(s[:len("gs://")], "gs://")
+	if !strings.HasPrefix(s, ":") && !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") && !isGS {
 		s = "https://" + s
 	}
 
