@@ -43,6 +43,23 @@ type PublicSettingsResponse struct {
 	// unauthenticated endpoint reveals nothing beyond what a 403 would
 	// reveal anyway.
 	AgentSecretsUserScopeOnly bool `json:"agentSecretsUserScopeOnly"`
+	// Uploads are the web upload limits (server.hub.uploads), so the web UI
+	// can check a file before sending it and chunk a large one.
+	Uploads PublicUploadLimits `json:"uploads"`
+}
+
+// PublicUploadLimits are the upload limits the web UI reads, in bytes.
+type PublicUploadLimits struct {
+	// ChunkSize is the request body size of one chunk of a chunked upload;
+	// a file larger than it is uploaded in chunks.
+	ChunkSize int64 `json:"chunkSize"`
+	// MaxAttachmentSize is the per-file limit of a chat attachment
+	// uploaded from the web UI (the artifact service's file limit while
+	// attachments are stored there).
+	MaxAttachmentSize int64 `json:"maxAttachmentSize"`
+	// MaxWorkspaceFileSize is the per-file limit of a project workspace or
+	// shared directory upload.
+	MaxWorkspaceFileSize int64 `json:"maxWorkspaceFileSize"`
 }
 
 // nativeChatEnabled reports whether the built-in chat feature is active.
@@ -82,5 +99,10 @@ func (s *Server) handlePublicSettings(w http.ResponseWriter, r *http.Request) {
 		DefaultTemplate:           defaults.DefaultTemplate,
 		DefaultModel:              defaults.DefaultModel,
 		AgentSecretsUserScopeOnly: s.agentSecretsUserScopeOnly(),
+		Uploads: PublicUploadLimits{
+			ChunkSize:            s.config.Uploads.EffectiveChunkSize(),
+			MaxAttachmentSize:    s.webAttachmentMaxBytes(r.Context()),
+			MaxWorkspaceFileSize: s.config.Uploads.EffectiveMaxWorkspaceFileSize(),
+		},
 	})
 }

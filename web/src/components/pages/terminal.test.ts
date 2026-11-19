@@ -30,6 +30,7 @@
 
 import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
 import { requestUrl } from '../../client/__fixtures__/request-url.js';
+import { invalidatePublicSettings } from '../../client/server-feature-flags.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -68,6 +69,8 @@ function dir(name: string, extra: Partial<SharedDir> = {}): SharedDir {
 interface MockOptions {
   /** Shared dirs returned by the project shared-dirs endpoint. */
   sharedDirs?: SharedDir[];
+  /** The hub's upload limits (GET /api/v1/settings/public uploads). */
+  uploads?: Record<string, number>;
   /** Status for the upload POST (default 200). */
   uploadStatus?: number;
 }
@@ -89,6 +92,15 @@ function makeFetchMock(calls: Call[], opts: MockOptions = {}) {
       }
     }
     calls.push({ url: href, method, body: parsed });
+
+    if (href.includes('/api/v1/settings/public')) {
+      return Promise.resolve(jsonResponse({ uploads: opts.uploads ?? {} }, 200));
+    }
+
+    // Chunked upload start (the other chunked calls answer 200 below).
+    if (href.includes('upload=start')) {
+      return Promise.resolve(jsonResponse({ uploadId: 'u1', chunkSize: 8 << 20 }, 201));
+    }
 
     // Shared dirs endpoint
     if (href.includes('/shared-dirs') && method === 'GET') {
@@ -142,6 +154,7 @@ function createForUploadTest(calls: Call[], opts: MockOptions = {}): any {
 }
 
 function cleanup() {
+  invalidatePublicSettings();
   document.body.innerHTML = '';
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -223,38 +236,87 @@ describe('terminal — _handleFileDrop size validation', () => {
 
     await (el as any)._handleFileDrop(fileList);
 
-    expect(el.uploadStatus).toContain('exceeds 50MB');
+    expect(el.uploadStatus).toContain('exceeds the maximum size of 50 MiB');
     expect(el.isUploading).toBe(false);
   });
 
-  it('shows error when total exceeds 100MB', async () => {
+  it('takes the per-file limit from the hub and sends a 51 MiB file in one request', async () => {
     const calls: Call[] = [];
-    const el = await createForUploadTest(calls);
+    const el = await createForUploadTest(calls, {
+      uploads: { maxWorkspaceFileSize: 1 << 30, chunkSize: 8 << 20 },
+    });
     el.uploadEnabled = true;
     el.uploadTargetDir = 'scratchpad';
     el.uploadBasePath = '/scion-volumes/scratchpad';
 
-    const file1 = new File(['x'], 'a.bin');
-    Object.defineProperty(file1, 'size', { value: 40 * 1024 * 1024 });
-    const file2 = new File(['x'], 'b.bin');
-    Object.defineProperty(file2, 'size', { value: 40 * 1024 * 1024 });
-    const file3 = new File(['x'], 'c.bin');
-    Object.defineProperty(file3, 'size', { value: 25 * 1024 * 1024 });
-    const files = [file1, file2, file3];
+    const bigFile = new File(['x'], 'big.bin');
+    Object.defineProperty(bigFile, 'size', { value: 51 * 1024 * 1024 });
     const fileList = {
-      length: 3,
-      0: file1,
-      1: file2,
-      2: file3,
+      length: 1,
+      0: bigFile,
       [Symbol.iterator]: function* () {
-        for (const f of files) yield f;
+        yield bigFile;
       },
     } as unknown as FileList;
 
     await (el as any)._handleFileDrop(fileList);
 
-    expect(el.uploadStatus).toContain('100MB');
-    expect(el.isUploading).toBe(false);
+    expect(el.uploadStatus).not.toContain('exceeds');
+    const uploadCalls = calls.filter((c) => c.url.includes('/shared-dirs/scratchpad/files'));
+    expect(uploadCalls.length).toBe(1);
+    expect(uploadCalls[0].url).not.toContain('upload=');
+  });
+
+  it('chunks a file larger than the hub takes in one request', async () => {
+    const calls: Call[] = [];
+    const el = await createForUploadTest(calls, {
+      uploads: { maxWorkspaceFileSize: 1 << 30, chunkSize: 8 << 20 },
+    });
+    el.uploadEnabled = true;
+    el.uploadTargetDir = 'scratchpad';
+    el.uploadBasePath = '/scion-volumes/scratchpad';
+
+    // Above the 100 MiB one-request body limit.
+    const bigFile = new File(['x'], 'big.bin');
+    Object.defineProperty(bigFile, 'size', { value: 101 * 1024 * 1024 });
+    const fileList = {
+      length: 1,
+      0: bigFile,
+      [Symbol.iterator]: function* () {
+        yield bigFile;
+      },
+    } as unknown as FileList;
+
+    await (el as any)._handleFileDrop(fileList);
+
+    expect(el.uploadStatus).not.toContain('exceeds');
+    const uploadCalls = calls.filter((c) => c.url.includes('/shared-dirs/scratchpad/files'));
+    expect(uploadCalls[0].url).toContain('upload=start');
+    expect(uploadCalls.at(-1)?.url).toContain('upload=finish');
+    expect(uploadCalls.filter((c) => c.url.includes('upload=chunk')).length).toBe(13);
+  });
+
+  it('names the hub limit when a file exceeds it', async () => {
+    const calls: Call[] = [];
+    const el = await createForUploadTest(calls, { uploads: { maxWorkspaceFileSize: 1 << 30 } });
+    el.uploadEnabled = true;
+    el.uploadTargetDir = 'scratchpad';
+    el.uploadBasePath = '/scion-volumes/scratchpad';
+
+    const hugeFile = new File(['x'], 'huge.bin');
+    Object.defineProperty(hugeFile, 'size', { value: (1 << 30) + 1 });
+    const fileList = {
+      length: 1,
+      0: hugeFile,
+      [Symbol.iterator]: function* () {
+        yield hugeFile;
+      },
+    } as unknown as FileList;
+
+    await (el as any)._handleFileDrop(fileList);
+
+    expect(el.uploadStatus).toContain('exceeds the maximum size of 1 GiB');
+    expect(calls.some((c) => c.url.includes('/files') && c.method === 'POST')).toBe(false);
   });
 });
 

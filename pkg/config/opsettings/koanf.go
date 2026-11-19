@@ -121,6 +121,9 @@ var layer0Prefixes = []string{
 	// System One rule evaluation ceiling (max_eval_time) — read into
 	// ServerConfig at startup (ptone/scion#8044).
 	"server.hub.system_one",
+	// Web upload limits (per-file maximums, chunk size, pending cap) — read
+	// into ServerConfig at startup.
+	"server.hub.uploads",
 	// Separate relay process settings (scion server --role relay) — read
 	// at startup.
 	"server.relay",

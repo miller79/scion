@@ -302,6 +302,8 @@ export class ScionChatComposer extends LitElement {
 
   /** W7: Upload in progress. */
   @state() private uploading = false;
+  /** Percent of a chunked upload sent, or null when not known. */
+  @state() private uploadPercent: number | null = null;
 
   /** Artifacts picked with "Attach artifact", sent as references. */
   @state() private pendingArtifacts: PendingArtifact[] = [];
@@ -373,6 +375,7 @@ export class ScionChatComposer extends LitElement {
       this.uploadFailures = [];
       this.pendingArtifacts = [];
       this.uploading = false;
+      this.uploadPercent = null;
       this.resetMentionTracking();
       this.restoreDraft();
     }
@@ -1355,7 +1358,11 @@ export class ScionChatComposer extends LitElement {
           ${this.pendingArtifacts.length > 0 ? this.renderPendingArtifacts() : nothing}
           ${this.pendingFiles.length > 0 ? this.renderPendingFiles() : nothing}
           ${this.uploadFailures.length > 0 ? this.renderUploadFailures() : nothing}
-          ${this.uploading ? html`<div class="upload-progress">Uploading...</div>` : nothing}
+          ${this.uploading
+            ? html`<div class="upload-progress" role="status">
+                Uploading${this.uploadPercent !== null ? ` ${this.uploadPercent}%` : '...'}
+              </div>`
+            : nothing}
         </div>
       </div>
     `;
@@ -1978,49 +1985,102 @@ export class ScionChatComposer extends LitElement {
     const switchedAway = (): boolean => this.conversationKey !== uploadKey;
 
     this.uploading = true;
+    this.uploadPercent = null;
     try {
-      const formData = new FormData();
+      const { apiFetch } = await import('../../../client/api.js');
+      const { getUploadLimits, fitsOneChatRequest, formatUploadSize, uploadFileChunked } =
+        await import('../../../client/chunked-upload.js');
+      const limits = await getUploadLimits();
+
+      // A file over the hub's per-file limit is named with that limit here,
+      // before anything is sent.
+      const failures: UploadFailure[] = [];
+      const accepted: File[] = [];
+      for (const file of files) {
+        if (file.size > limits.maxAttachmentSize) {
+          failures.push({
+            name: file.name,
+            error: `exceeds the maximum size of ${formatUploadSize(limits.maxAttachmentSize)}`,
+          });
+        } else {
+          accepted.push(file);
+        }
+      }
+
       // A DM belongs to no project, and the hub accepts only project-less
       // uploads there. The composer can still hold a projectId in a DM (an
       // agent DM carries the agent's project, a DM opened from a project
       // scope carries that project), so the field is left out for a DM.
-      if (!this.isDirectMessage()) {
-        formData.append('project_id', this.projectId);
-      }
-      for (const file of files) {
-        formData.append('files', file);
-      }
-
-      const { apiFetch } = await import('../../../client/api.js');
-      const res = await apiFetch('/api/v1/chat/attachments', {
-        method: 'POST',
-        body: formData,
-      });
-
-      const data = (await res.json().catch(() => ({}))) as {
-        attachments?: UploadedAttachment[];
-        failures?: UploadFailure[];
-        // The hub's error helper nests the reason under `error`; a plain
-        // `message` is read too so a handler that answers flat is not silently
-        // reduced to "Upload failed".
-        error?: { message?: string };
-        message?: string;
-      };
-      if (switchedAway()) return;
+      const projectId = this.isDirectMessage() ? '' : this.projectId;
+      const attachments: UploadedAttachment[] = [];
+      let requestError = '';
 
       // The server reports per file: some may be stored while others are
       // refused. Anything it did take is attached, and the refusals are named
-      // rather than collapsed into one "upload failed".
-      this.uploadFailures = data.failures ?? [];
-      if (data.attachments?.length) {
-        this.pendingFiles = [...this.pendingFiles, ...data.attachments];
-      }
+      // rather than collapsed into one "upload failed". A failure with no
+      // per-file detail is about the request itself.
+      const absorb = async (res: Response, file?: File): Promise<void> => {
+        const data = (await res.json().catch(() => ({}))) as {
+          attachments?: UploadedAttachment[];
+          failures?: UploadFailure[];
+          // The hub's error helper nests the reason under `error`; a plain
+          // `message` is read too so a handler that answers flat is not
+          // silently reduced to "Upload failed".
+          error?: { message?: string };
+          message?: string;
+        };
+        failures.push(...(data.failures ?? []));
+        attachments.push(...(data.attachments ?? []));
+        if (!res.ok && !data.failures?.length) {
+          const message = data.error?.message || data.message || 'Upload failed';
+          if (file) failures.push({ name: file.name, error: message });
+          else requestError = message;
+        }
+      };
 
-      // A failure with no per-file detail is about the request itself.
-      if (!res.ok && this.uploadFailures.length === 0) {
+      if (accepted.length > 0 && fitsOneChatRequest(accepted, limits.maxAttachmentSize)) {
+        const formData = new FormData();
+        if (projectId) formData.append('project_id', projectId);
+        for (const file of accepted) formData.append('files', file);
+        await absorb(
+          await apiFetch('/api/v1/chat/attachments', { method: 'POST', body: formData })
+        );
+      } else {
+        // What one request cannot take goes up file by file, in chunks
+        // (each request at most the hub's chunk size).
+        const total = accepted.reduce((sum, f) => sum + f.size, 0);
+        let done = 0;
+        for (const file of accepted) {
+          try {
+            const res = await uploadFileChunked('/api/v1/chat/attachments', file, {
+              ...(projectId ? { query: { project_id: projectId } } : {}),
+              onProgress: (sent) => {
+                if (!switchedAway() && total > 0) {
+                  this.uploadPercent = Math.floor(((done + sent) / total) * 100);
+                }
+              },
+            });
+            await absorb(res, file);
+          } catch (err) {
+            failures.push({
+              name: file.name,
+              error: err instanceof Error ? err.message : 'Upload failed',
+            });
+          }
+          if (switchedAway()) return;
+          done += file.size;
+        }
+      }
+      if (switchedAway()) return;
+
+      this.uploadFailures = failures;
+      if (attachments.length) {
+        this.pendingFiles = [...this.pendingFiles, ...attachments];
+      }
+      if (requestError && failures.length === 0) {
         this.dispatchEvent(
           new CustomEvent('composer-error', {
-            detail: { message: data.error?.message || data.message || 'Upload failed' },
+            detail: { message: requestError },
             bubbles: true,
             composed: true,
           })
@@ -2038,7 +2098,10 @@ export class ScionChatComposer extends LitElement {
     } finally {
       // After a switch the indicator belongs to the new conversation, which
       // the switch already reset; an upload started there may be running.
-      if (!switchedAway()) this.uploading = false;
+      if (!switchedAway()) {
+        this.uploading = false;
+        this.uploadPercent = null;
+      }
     }
   }
 
