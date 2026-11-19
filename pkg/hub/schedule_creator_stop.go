@@ -14,7 +14,11 @@
 
 package hub
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/GoogleCloudPlatform/scion/pkg/store"
+)
 
 // scheduleCreatorMayStop reports whether the request's user may pause or
 // delete schedule scheduleID of projectID because they created it. It is
@@ -32,32 +36,56 @@ import "net/http"
 // is that user and whose current authority (its initiator attribution) is
 // still that user: after an owner edits or resumes it, it runs under the
 // owner and the creator path no longer applies.
-func (s *Server) scheduleCreatorMayStop(r *http.Request, projectID, scheduleID string) bool {
+//
+// When it allows the request it also returns the schedule's
+// AuthorizationRevision it checked. The pause or delete handler reloads the
+// schedule and refuses (creatorStopCurrent) if the revision changed in
+// between, so an owner's re-authorization landing after this check is not
+// overridden.
+func (s *Server) scheduleCreatorMayStop(r *http.Request, projectID, scheduleID string) (int, bool) {
 	ctx := r.Context()
 	identity := GetIdentityFromContext(ctx)
 	if isNilIdentity(identity) || identity.ID() == "" {
-		return false
+		return 0, false
 	}
 	if _, ok := identity.(UserIdentity); !ok || identity.Type() == "agent" {
-		return false
+		return 0, false
 	}
 	if !sessionCredentialAllowed(ctx) {
-		return false
+		return 0, false
 	}
 	if !s.scheduledEventAccessDecision(ctx, projectID, ActionRead, nil).allowed {
-		return false
+		return 0, false
 	}
 	sc, err := s.store.GetSchedule(ctx, scheduleID)
 	if err != nil || sc == nil || sc.ProjectID != projectID {
-		return false
+		return 0, false
 	}
 	if sc.CreatedBy == "" || sc.CreatedBy != identity.ID() {
-		return false
+		return 0, false
 	}
 	// The schedule must also still run under the creator's own authority:
 	// once someone else re-authorized it (an edit or resume records them as
 	// the initiator), stopping it is theirs to decide, not the creator's.
 	initiator := s.scheduledInitiator(sc.InitiatorAttribution)
-	return !initiator.LegacyUnknown && initiator.PrincipalKind == identity.Type() &&
-		initiator.PrincipalID == identity.ID()
+	if initiator.LegacyUnknown || initiator.PrincipalKind != identity.Type() ||
+		initiator.PrincipalID != identity.ID() {
+		return 0, false
+	}
+	return sc.AuthorizationRevision, true
+}
+
+// creatorStopCurrent reports whether a pause or delete may go ahead on
+// schedule, the row the handler reloaded. creatorRevision is nil unless the
+// creator path (scheduleCreatorMayStop) allowed the request, and then holds
+// the authorization revision that check saw: when the reloaded row has
+// another one, someone re-authorized the schedule in between, so it answers
+// 409 and returns false.
+func creatorStopCurrent(w http.ResponseWriter, schedule *store.Schedule, creatorRevision *int) bool {
+	if creatorRevision == nil || schedule.AuthorizationRevision == *creatorRevision {
+		return true
+	}
+	writeError(w, http.StatusConflict, ErrCodeRevisionConflict,
+		"schedule was re-authorized while this request was checked; refresh and retry", nil)
+	return false
 }

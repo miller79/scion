@@ -182,8 +182,18 @@ func (s *Server) handleSchedules(w http.ResponseWriter, r *http.Request, project
 		(((len(pathParts) == 1 || pathParts[1] == "") && r.Method == http.MethodDelete) ||
 			(len(pathParts) > 1 && pathParts[1] == "pause"))
 	var creatorStop func() bool
+	// creatorRevision is set when the creator path allowed the request: the
+	// authorization revision it checked, which the handler compares with the
+	// row it reloads.
+	var creatorRevision *int
 	if stopOnly {
-		creatorStop = func() bool { return s.scheduleCreatorMayStop(r, projectID, pathParts[0]) }
+		creatorStop = func() bool {
+			rev, ok := s.scheduleCreatorMayStop(r, projectID, pathParts[0])
+			if ok {
+				creatorRevision = &rev
+			}
+			return ok
+		}
 	}
 
 	// Authorize access — fail closed for all identity types.
@@ -218,10 +228,10 @@ func (s *Server) handleSchedules(w http.ResponseWriter, r *http.Request, project
 		case http.MethodPatch:
 			s.updateSchedule(w, r, projectID, scheduleID)
 		case http.MethodDelete:
-			s.deleteSchedule(w, r, projectID, scheduleID)
+			s.deleteSchedule(w, r, projectID, scheduleID, creatorRevision)
 		}
 	case "pause":
-		s.pauseSchedule(w, r, projectID, scheduleID)
+		s.pauseSchedule(w, r, projectID, scheduleID, creatorRevision)
 	case "resume":
 		s.resumeSchedule(w, r, projectID, scheduleID)
 	case "history":
@@ -828,13 +838,18 @@ func (s *Server) updateSchedule(w http.ResponseWriter, r *http.Request, projectI
 	writeJSON(w, http.StatusOK, scheduleResponse(s.newExecRevealer(r.Context()), *schedule))
 }
 
-// deleteSchedule handles DELETE /api/v1/projects/{projectId}/schedules/{id}
-func (s *Server) deleteSchedule(w http.ResponseWriter, r *http.Request, projectID, scheduleID string) {
+// deleteSchedule handles DELETE /api/v1/projects/{projectId}/schedules/{id}.
+// creatorRevision is non-nil when the creator path allowed it (see
+// creatorStopCurrent).
+func (s *Server) deleteSchedule(w http.ResponseWriter, r *http.Request, projectID, scheduleID string, creatorRevision *int) {
 	schedule, ok := s.loadScheduleForProject(w, r, projectID, scheduleID)
 	if !ok {
 		return
 	}
 	if !s.authorizeScheduledEventRow(w, r, projectID, ActionDelete, scheduleRow(schedule)) {
+		return
+	}
+	if !creatorStopCurrent(w, schedule, creatorRevision) {
 		return
 	}
 
@@ -858,13 +873,18 @@ func (s *Server) deleteSchedule(w http.ResponseWriter, r *http.Request, projectI
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// pauseSchedule handles POST /api/v1/projects/{projectId}/schedules/{id}/pause
-func (s *Server) pauseSchedule(w http.ResponseWriter, r *http.Request, projectID, scheduleID string) {
+// pauseSchedule handles POST /api/v1/projects/{projectId}/schedules/{id}/pause.
+// creatorRevision is non-nil when the creator path allowed it (see
+// creatorStopCurrent).
+func (s *Server) pauseSchedule(w http.ResponseWriter, r *http.Request, projectID, scheduleID string, creatorRevision *int) {
 	schedule, ok := s.loadScheduleForProject(w, r, projectID, scheduleID)
 	if !ok {
 		return
 	}
 	if !s.authorizeScheduledEventRow(w, r, projectID, ActionUpdate, scheduleRow(schedule)) {
+		return
+	}
+	if !creatorStopCurrent(w, schedule, creatorRevision) {
 		return
 	}
 	if schedule.Status != store.ScheduleStatusActive {
