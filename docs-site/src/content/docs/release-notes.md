@@ -14,6 +14,13 @@ Scion release notes are published for each preview and stable release. Earlier n
 - [v0.3.0-preview.7](/scion/release-notes/v0-3-0-preview-7/)
 - [v0.3.0-preview.6](/scion/release-notes/v0-3-0-preview-6/)
 
+## Configurable web upload limits, with chunked uploads for large files
+
+`server.hub.uploads` sets the per-file limits of chat attachments (`max_attachment_size`) and of project workspace and shared directory uploads (`max_workspace_file_size`). The web UI sends an upload in one request, as before, whenever the Hub's one-request limits take it (a 100 MiB body for workspace and shared directory uploads; for chat attachments, 10 files in 10 × the smaller of the per-file limit and 10 MiB). Only uploads one request cannot take go in chunks of `chunk_size`: a file above those limits (possible once a per-file limit is raised), or files that together exceed them, which one request refused before. See [Uploads](/scion/reference/server-config/#uploads-serverhubuploads).
+
+- **Multi-instance Hubs: chunked uploads need session affinity.** A chunked upload lives in one Hub instance's memory, so every request of it must reach that instance. On a Hub with several instances (Cloud Run with a minimum of 2 instances, or a Helm deployment during a rolling update), configure session affinity; without it, chunked uploads fail with `404`. Uploads within the one-request limits are not affected.
+- **Temporary chunk files on Cloud Run.** Chunks are written under `TMPDIR`, which is memory-backed on Cloud Run, so up to `max_pending_size` (at least 1 GiB by default) counts against the instance's memory. On Cloud Run, lower `max_pending_size` to fit the instance memory, or set `TMPDIR` to a directory on a mounted disk volume.
+
 ## Default `server.hub.schedules.max_active_per_project` cap raised to 100
 
 The default per-project cap on active recurring schedules (`server.hub.schedules.max_active_per_project`) has been raised from `50` to `100` so projects with routine per-agent schedules (such as nightly retrospectives, heartbeats, and sweeps) have more headroom before new schedule creates are refused with `429` (`quota_exceeded`). Setting `0` still disables the cap, and the maximum allowed value (`10000`) is unchanged. See [Server Configuration — Recurring schedules](/scion/reference/server-config/#recurring-schedules-serverhubschedules).

@@ -16,9 +16,12 @@
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import {
+  _setOneRequestLimitsForTest,
   _setUploadRetryDelayForTest,
   DEFAULT_UPLOAD_LIMITS,
+  fitsOneChatRequest,
   fitsOneRequest,
+  fitsOneWorkspaceRequest,
   formatUploadSize,
   getUploadLimits,
   uploadFileChunked,
@@ -147,6 +150,7 @@ describe('chunked-upload', () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     invalidatePublicSettings();
+    _setOneRequestLimitsForTest(null);
   });
 
   it('reads the limits from the hub, with defaults for missing fields', async () => {
@@ -165,9 +169,38 @@ describe('chunked-upload', () => {
     expect(formatUploadSize(900)).toBe('900 B');
   });
 
-  it('decides one request versus chunks from the chunk size', () => {
+  it('decides one request versus chunks from a body limit', () => {
     expect(fitsOneRequest([fileOf(4), fileOf(4)], 2048 + 8)).toBe(true);
     expect(fitsOneRequest([fileOf(4), fileOf(5)], 2048 + 8)).toBe(false);
+  });
+
+  it('uses the hub one-request limits, not the chunk size', () => {
+    const blobs = (...sizes: number[]): Blob[] => sizes.map((size) => ({ size }) as Blob);
+    const MiB = 1024 * 1024;
+    // Workspace: a 100 MiB body (maxUploadTotalSize), whatever the per-file limit.
+    expect(fitsOneWorkspaceRequest(blobs(50 * MiB, 49 * MiB))).toBe(true);
+    expect(fitsOneWorkspaceRequest(blobs(60 * MiB))).toBe(true);
+    expect(fitsOneWorkspaceRequest(blobs(50 * MiB, 50 * MiB))).toBe(false);
+    expect(fitsOneWorkspaceRequest(blobs(101 * MiB))).toBe(false);
+    // Chat: at most 10 files, in 10 × min(per-file limit, 10 MiB) + 1 MiB.
+    expect(fitsOneChatRequest(blobs(10 * MiB), 10 * MiB)).toBe(true);
+    expect(fitsOneChatRequest(blobs(...Array(10).fill(10 * MiB)), 10 * MiB)).toBe(true);
+    expect(fitsOneChatRequest(blobs(...Array(11).fill(1)), 10 * MiB)).toBe(false);
+    expect(fitsOneChatRequest(blobs(60 * MiB), 1 << 30)).toBe(true);
+    expect(fitsOneChatRequest(blobs(102 * MiB), 1 << 30)).toBe(false);
+    expect(fitsOneChatRequest(blobs(2 * MiB, 2 * MiB), 2 * MiB)).toBe(true);
+    expect(fitsOneChatRequest(blobs(...Array(10).fill(2 * MiB)), 1 * MiB)).toBe(false);
+  });
+
+  it('sends a workspace file above the chunk size in one request while one request takes it', async () => {
+    // A chunked upload must reach one hub instance throughout, so it is
+    // used only for what one request cannot take.
+    const hub = fakeHub({ chunkSize: 10, uploads: { maxWorkspaceFileSize: 4096, chunkSize: 10 } });
+    await uploadWorkspaceFiles('/w', [
+      { path: 'c', file: fileOf(1100) },
+      { path: 'd', file: fileOf(900) },
+    ]);
+    expect(hub.calls.map((c) => c.op)).toEqual([null]);
   });
 
   it('splits a file into chunks, reports progress and sends the exact bytes', async () => {
@@ -262,9 +295,10 @@ describe('chunked-upload', () => {
 
   it('sends small workspace files in one request and large ones in chunks', async () => {
     // One request holds 2058 bytes: two small files and their framing fit.
+    _setOneRequestLimitsForTest({ workspaceBody: 2058 });
     const hub = fakeHub({
       chunkSize: 100,
-      uploads: { maxWorkspaceFileSize: 4096, chunkSize: 2058 },
+      uploads: { maxWorkspaceFileSize: 4096, chunkSize: 100 },
     });
     await uploadWorkspaceFiles('/w', [
       { path: 'a', file: fileOf(4) },

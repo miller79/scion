@@ -2026,7 +2026,7 @@ export class ScionChatComposer extends LitElement {
     this.uploadPercent = null;
     try {
       const { apiFetch } = await import('../../../client/api.js');
-      const { getUploadLimits, fitsOneRequest, formatUploadSize, uploadFileChunked } =
+      const { getUploadLimits, fitsOneChatRequest, formatUploadSize, uploadFileChunked } =
         await import('../../../client/chunked-upload.js');
       const limits = await getUploadLimits();
 
@@ -2076,7 +2076,7 @@ export class ScionChatComposer extends LitElement {
         }
       };
 
-      if (accepted.length > 0 && fitsOneRequest(accepted, limits.chunkSize)) {
+      if (accepted.length > 0 && fitsOneChatRequest(accepted, limits.maxAttachmentSize)) {
         const formData = new FormData();
         if (projectId) formData.append('project_id', projectId);
         for (const file of accepted) formData.append('files', file);
@@ -2084,8 +2084,8 @@ export class ScionChatComposer extends LitElement {
           await apiFetch('/api/v1/chat/attachments', { method: 'POST', body: formData })
         );
       } else {
-        // Larger files go up one by one, in chunks, so no request is larger
-        // than the hub's chunk size.
+        // What one request cannot take goes up file by file, in chunks
+        // (each request at most the hub's chunk size).
         const total = accepted.reduce((sum, f) => sum + f.size, 0);
         let done = 0;
         for (const file of accepted) {
