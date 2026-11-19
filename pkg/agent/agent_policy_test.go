@@ -372,6 +372,22 @@ func TestApplyAgentPolicyTelemetry(t *testing.T) {
 		_, set := env[k]
 		assert.True(t, set, "%s is pinned (so no env secret can set it)", k)
 	}
+	// A requested GCP key would switch sciontool to GCP-native export to
+	// the key's project, and a requested receiver port can stop the
+	// pipeline: the key is removed, the ports pinned empty.
+	cfg = &runtime.RunConfig{
+		Env:         []string{"SCION_OTEL_GCP_CREDENTIALS=/workspace/key.json", "SCION_OTEL_GRPC_PORT=1", "SCION_OTEL_HTTP_PORT=2"},
+		FallbackEnv: map[string]string{"SCION_OTEL_GCP_CREDENTIALS": "/workspace/key.json"},
+	}
+	applyAgentPolicyTelemetry(p, "a", cfg, nil)
+	env = envListToMap(cfg.Env)
+	_, credSet := env["SCION_OTEL_GCP_CREDENTIALS"]
+	assert.False(t, credSet, "a requested telemetry credential is removed")
+	assert.NotContains(t, cfg.FallbackEnv, "SCION_OTEL_GCP_CREDENTIALS")
+	assert.Contains(t, cfg.SuppressedFallbackKeys, "SCION_OTEL_GCP_CREDENTIALS")
+	assert.Equal(t, "", env["SCION_OTEL_GRPC_PORT"])
+	assert.Equal(t, "", env["SCION_OTEL_HTTP_PORT"])
+
 	cfg = &runtime.RunConfig{Env: []string{"SCION_TELEMETRY_CLOUD_ENABLED=true"}}
 	applyAgentPolicyTelemetry(p, "a", cfg, map[string]string{"SCION_TELEMETRY_CLOUD_ENABLED": "false"})
 	assert.Equal(t, "false", envListToMap(cfg.Env)["SCION_TELEMETRY_CLOUD_ENABLED"])
@@ -630,8 +646,11 @@ func TestApplyAgentPolicyResources_KubernetesMapOnBindRuntimes(t *testing.T) {
 }
 
 // A volume targeting /workspace is how a requester names the workspace
-// without config.workspace; under host_volumes deny a source outside the
-// allowed roots must still be refused.
+// without config.workspace. It is taken out of the configured volumes
+// (extractWorkspaceFromVolumes), so the policy's volume rules never see it;
+// what refuses a source outside the allowed roots is Start's workspace
+// root check, with or without a policy. This pins that refusal, which the
+// policy relies on for this path.
 func TestStart_AgentPolicyWorkspaceVolume(t *testing.T) {
 	base := "schema_version: \"1\"\nactive_profile: local\nprofiles:\n  local:\n    runtime: docker\n"
 	deny := base + "agent_policy:\n  host_volumes: deny\n"
@@ -640,9 +659,12 @@ func TestStart_AgentPolicyWorkspaceVolume(t *testing.T) {
 		require.NoError(t, os.MkdirAll(ws, 0o755))
 		o.InlineConfig = &api.ScionConfig{Volumes: []api.VolumeMount{{Source: ws, Target: "/workspace"}}}
 	}
-	_, ran, err := startWithAgentPolicyOpts(t, deny, nil, viaVolume)
-	require.Error(t, err)
-	assert.Equal(t, 0, ran, "the container must not be created")
+	for name, settings := range map[string]string{"host_volumes deny": deny, "no policy": base} {
+		_, ran, err := startWithAgentPolicyOpts(t, settings, nil, viaVolume)
+		require.Error(t, err, name)
+		assert.Equal(t, 0, ran, "%s: the container must not be created", name)
+		assert.Contains(t, err.Error(), "outside the permitted workspace root", name)
+	}
 }
 
 // Under require_telemetry the export destination comes from the operator's
@@ -664,4 +686,16 @@ func TestStart_AgentPolicyTelemetryDestinationIsOperators(t *testing.T) {
 	assert.Equal(t, "", env["SCION_TELEMETRY_CLOUD_PROVIDER"])
 	assert.Equal(t, "", env["SCION_TELEMETRY_CLOUD_ENABLED"])
 	assert.Equal(t, "true", env["SCION_TELEMETRY_ENABLED"])
+
+	// A project's settings file (in the repository, so the requester's)
+	// is not the operator's either.
+	cfg, ran, err = startWithAgentPolicyOpts(t, settings, nil, func(_ string, o *api.StartOptions) {
+		require.NoError(t, os.WriteFile(filepath.Join(o.ProjectPath, "settings.yaml"), []byte(
+			"schema_version: \"1\"\ntelemetry:\n  cloud:\n    enabled: false\n    endpoint: other.example:4317\n"), 0o644))
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, ran)
+	env = envListToMap(cfg.Env)
+	assert.Equal(t, "otel.example:4317", env["SCION_OTEL_ENDPOINT"], "project settings must not set the destination")
+	assert.Equal(t, "", env["SCION_TELEMETRY_CLOUD_ENABLED"], "project settings must not switch export off")
 }
