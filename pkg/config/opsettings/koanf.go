@@ -133,6 +133,9 @@ var layer0Prefixes = []string{
 	"server.hub.schedules",
 	// Default message mode of new agents — read into ServerConfig at startup.
 	"server.hub.default_message_mode",
+	// Web upload limits (per-file maximums, chunk size, pending cap) — read
+	// into ServerConfig at startup.
+	"server.hub.uploads",
 	// Separate relay process settings (scion server --role relay) — read
 	// at startup.
 	"server.relay",

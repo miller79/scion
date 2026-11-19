@@ -6792,7 +6792,37 @@ func (s *Server) handleAttachmentUpload(w http.ResponseWriter, r *http.Request) 
 	// size limit.
 	toArtifacts := s.attachmentUploadsToArtifacts(ctx)
 	maxFile := s.attachmentMaxBytes(ctx, toArtifacts)
+
+	// A chunked upload (?upload=start|chunk|finish|abort) carries its
+	// project in the query string. Every call is authorized here as a
+	// one-request upload is, and the finished file is stored by
+	// storeAttachmentParts, as one is.
+	if op := r.URL.Query().Get(chunkedUploadOpParam); op != "" {
+		projectID := r.URL.Query().Get("project_id")
+		if !s.authorizeAttachmentUpload(w, r, user, token, projectID) {
+			return
+		}
+		s.serveChunkedUpload(w, r, op, chunkedUploadTarget{
+			scope:   "chat-attachment:" + projectID,
+			maxSize: maxFile,
+			validateName: func(name string) error {
+				_, err := SanitizeFilename(name)
+				return err
+			},
+			finish: func(w http.ResponseWriter, r *http.Request, f chunkedUploadFile) {
+				s.storeAttachmentParts(r.Context(), w, []uploadPart{f.part()}, toArtifacts, maxFile, as, wcs, projectID, user.ID())
+			},
+		})
+		return
+	}
+
+	// A one-request upload keeps the body cap it had before per-file limits
+	// became configurable: a larger file goes through the chunked upload,
+	// whose temporary files are capped hub-wide (max_pending_size).
 	formLimit := maxFile * MaxAttachmentsPerMessage
+	if !toArtifacts {
+		formLimit = min(maxFile, MaxAttachmentSize) * MaxAttachmentsPerMessage
+	}
 
 	// The body is capped before anything reads it, so the total-size limit
 	// (the per-file limit times MaxAttachmentsPerMessage, plus room for the
@@ -6804,6 +6834,9 @@ func (s *Server) handleAttachmentUpload(w http.ResponseWriter, r *http.Request) 
 	cleanup, err := parseMultipartUpload(r, uploadFormMemory)
 	defer cleanup()
 	if err != nil {
+		if writeWorkspaceBodyTooLarge(w, err) {
+			return
+		}
 		BadRequest(w, "invalid multipart form or request too large")
 		return
 	}
@@ -6812,40 +6845,7 @@ func (s *Server) handleAttachmentUpload(w http.ResponseWriter, r *http.Request) 
 	// optional: an upload without one is stored project-less and reachable only
 	// through the messages that reference it.
 	projectID := r.FormValue("project_id")
-
-	// Authorize: an upload to a space is a chat write, decided as for a
-	// send: read access to the project, then the token's inbox:write for
-	// it, then the post action of a thread of the project
-	// (chatThreadAccess). A reader who may not post gets 403
-	// chat_post_denied. A project-less upload is a profile
-	// write: it needs no project access, and it is refused to a federated
-	// caller; it binds to a conversation only through a send, which makes
-	// the send's decision.
-	if projectID != "" {
-		project, err := s.store.GetProject(ctx, projectID)
-		if err != nil {
-			NotFound(w, "Project")
-			return
-		}
-		if !s.authorize(w, r, projectResource(project), ActionRead) {
-			return
-		}
-		if !s.authorizeChatTokenProject(w, r, token, permInboxWrite, project.ID, chatRefuseForbidden) {
-			return
-		}
-		access, err := s.chatThreadAccess(ctx, user, chatThreadRef{Project: project})
-		if err != nil {
-			writeErrorFromErr(w, err, "")
-			return
-		}
-		if !access.Can(ChatActionPost) {
-			logAuthzDenial(r, user, projectResource(project), ActionChatPost, access.postDenial.Reason)
-			chatSendPostDenied(access.Reason).write(w)
-			return
-		}
-	} else if !requireProfileWriter(w, r) {
-		return
-	} else if !s.authorizeChatTokenProject(w, r, token, permInboxWrite, "", chatRefuseForbidden) {
+	if !s.authorizeAttachmentUpload(w, r, user, token, projectID) {
 		return
 	}
 
@@ -6858,29 +6858,78 @@ func (s *Server) handleAttachmentUpload(w http.ResponseWriter, r *http.Request) 
 		ValidationError(w, fmt.Sprintf("too many files: %d (max %d)", len(files), MaxAttachmentsPerMessage), nil)
 		return
 	}
+	parts := make([]uploadPart, 0, len(files))
+	for _, fh := range files {
+		parts = append(parts, partFromHeader(fh))
+	}
+	s.storeAttachmentParts(ctx, w, parts, toArtifacts, maxFile, as, wcs, projectID, user.ID())
+}
 
-	// One bad file in a selection of ten used to lose the other nine. Each file
-	// now succeeds or fails on its own and the response reports both, so the
-	// composer can keep what worked and name what did not.
-	results := make([]attachmentUploadResult, 0, len(files))
+// authorizeAttachmentUpload decides a user upload of chat attachments to
+// projectID ("" for a project-less upload) and writes the refusal. An upload
+// to a space is a chat write, decided as for a send: read access to the
+// project, then the token's inbox:write for it, then the post action of a
+// thread of the project (chatThreadAccess). A reader who may not post gets
+// 403 chat_post_denied. A project-less upload is a profile write: it needs
+// no project access, and it is refused to a federated caller; it binds to a
+// conversation only through a send, which makes the send's decision.
+func (s *Server) authorizeAttachmentUpload(w http.ResponseWriter, r *http.Request, user UserIdentity, token *ScopedUserIdentity, projectID string) bool {
+	ctx := r.Context()
+	if projectID == "" {
+		return requireProfileWriter(w, r) &&
+			s.authorizeChatTokenProject(w, r, token, permInboxWrite, "", chatRefuseForbidden)
+	}
+	project, err := s.store.GetProject(ctx, projectID)
+	if err != nil {
+		NotFound(w, "Project")
+		return false
+	}
+	if !s.authorize(w, r, projectResource(project), ActionRead) {
+		return false
+	}
+	if !s.authorizeChatTokenProject(w, r, token, permInboxWrite, project.ID, chatRefuseForbidden) {
+		return false
+	}
+	access, err := s.chatThreadAccess(ctx, user, chatThreadRef{Project: project})
+	if err != nil {
+		writeErrorFromErr(w, err, "")
+		return false
+	}
+	if !access.Can(ChatActionPost) {
+		logAuthzDenial(r, user, projectResource(project), ActionChatPost, access.postDenial.Reason)
+		chatSendPostDenied(access.Reason).write(w)
+		return false
+	}
+	return true
+}
+
+// storeAttachmentParts stores each file of a user upload and writes the
+// response. One bad file in a selection of ten used to lose the other nine.
+// Each file now succeeds or fails on its own and the response reports both,
+// so the composer can keep what worked and name what did not.
+func (s *Server) storeAttachmentParts(
+	ctx context.Context, w http.ResponseWriter, parts []uploadPart, toArtifacts bool, maxFile int64,
+	as AttachmentStore, wcs WebChatStore, projectID, userID string,
+) {
+	results := make([]attachmentUploadResult, 0, len(parts))
 	failures := make([]attachmentUploadFailure, 0)
 	internalError := false
-	for _, fh := range files {
+	for _, part := range parts {
 		var result attachmentUploadResult
 		var err error
 		if toArtifacts {
-			result, err = s.storeUploadedArtifact(ctx, maxFile, fh)
+			result, err = s.storeUploadedArtifact(ctx, maxFile, part)
 		} else {
-			result, err = s.storeUploadedFile(ctx, as, wcs, projectID, user.ID(), fh)
+			result, err = s.storeUploadedFile(ctx, as, wcs, projectID, userID, maxFile, part)
 		}
 		if err != nil {
 			var rejection attachmentRejection
 			if !errors.As(err, &rejection) {
 				internalError = true
-				s.messageLog.Error("Attachment upload failed", "file", fh.Filename, "error", err)
+				s.messageLog.Error("Attachment upload failed", "file", part.Filename, "error", err)
 			}
 			failures = append(failures, attachmentUploadFailure{
-				Name:  fh.Filename,
+				Name:  part.Filename,
 				Error: uploadFailureMessage(err),
 			})
 			continue
@@ -6940,7 +6989,7 @@ func uploadFailureMessage(err error) string {
 // storeUploadedFile, and stores it as an upload of the caller in the
 // artifact service (ptone/scion#4595). The response has the same shape;
 // its id is the artifact id.
-func (s *Server) storeUploadedArtifact(ctx context.Context, maxFile int64, fh *multipart.FileHeader) (attachmentUploadResult, error) {
+func (s *Server) storeUploadedArtifact(ctx context.Context, maxFile int64, fh uploadPart) (attachmentUploadResult, error) {
 	file, safeName, mimeType, err := openClassifiedUpload(fh, maxFile)
 	if err != nil {
 		return attachmentUploadResult{}, err
@@ -6968,7 +7017,7 @@ func (s *Server) storeUploadedArtifact(ctx context.Context, maxFile int64, fh *m
 // maxFile, the filename rules and the type classifier, and returns it
 // opened and rewound, with its sanitized name and classified MIME type. A
 // refusal the uploader can fix is an attachmentRejection.
-func openClassifiedUpload(fh *multipart.FileHeader, maxFile int64) (multipart.File, string, string, error) {
+func openClassifiedUpload(fh uploadPart, maxFile int64) (multipart.File, string, string, error) {
 	if fh.Size > maxFile {
 		return nil, "", "", rejectAttachment("file exceeds the maximum size of %d bytes", maxFile)
 	}
@@ -7001,7 +7050,7 @@ func openClassifiedUpload(fh *multipart.FileHeader, maxFile int64) (multipart.Fi
 // storeUploadedFile validates, classifies, and stores one uploaded file.
 func (s *Server) storeUploadedFile(
 	ctx context.Context, as AttachmentStore, wcs WebChatStore,
-	projectID, userID string, fh *multipart.FileHeader,
+	projectID, userID string, maxFile int64, fh uploadPart,
 ) (attachmentUploadResult, error) {
 	// The filename error is passed through without a prefix. Every error
 	// SanitizeFilename can return already names the problem — "invalid
@@ -7012,7 +7061,7 @@ func (s *Server) storeUploadedFile(
 	// blocklists (#1045). The type is classified from the content, not from
 	// the Content-Type the client put on the part: that header is a claim
 	// the uploader controls.
-	file, safeName, mimeType, err := openClassifiedUpload(fh, MaxAttachmentSize)
+	file, safeName, mimeType, err := openClassifiedUpload(fh, maxFile)
 	if err != nil {
 		return attachmentUploadResult{}, err
 	}
