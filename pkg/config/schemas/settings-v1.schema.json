@@ -1962,25 +1962,6 @@
           "x-env-var": "SCION_SERVER_HUB_DEFAULTMESSAGEMODE",
           "x-since": "1"
         },
-        "user_access_tokens": {
-          "type": "object",
-          "description": "User access token issuance policy. Read at startup.",
-          "additionalProperties": false,
-          "properties": {
-            "max_lifetime": {
-              "type": "string",
-              "description": "Longest lifetime of a new user access token, as a Go duration (e.g. '720h'; default one year, between '1h' and '8760h'). Longer requests are refused; the 90-day default is clamped to it. When set below one year, tokens older than it are refused at use.",
-              "x-env-var": "SCION_SERVER_HUB_USERACCESSTOKENS_MAXLIFETIME",
-              "x-since": "1"
-            },
-            "creation_disabled": {
-              "type": "boolean",
-              "description": "Refuse the creation of new user access tokens. Existing tokens keep working until they expire or are revoked.",
-              "x-env-var": "SCION_SERVER_HUB_USERACCESSTOKENS_CREATIONDISABLED",
-              "x-since": "1"
-            }
-          }
-        },
         "schedules": {
           "type": "object",
           "description": "Limits on recurring schedules, for every kind and author. Read at startup.",

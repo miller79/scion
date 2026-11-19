@@ -367,8 +367,7 @@ scion hub token create \
 - `--scopes` (required) — a comma-separated list of the scopes above.
 - `--expires` — a duration (`90m`, `2h`, `30d`, `1y`) or an RFC 3339 date
   (`2026-12-31T00:00:00Z`). Defaults to 90 days; maximum 1 year. `m` means minutes; there is
-  no month unit (use `30d` or `1y` for longer). `1y` is always 365 days. A Hub operator can
-  lower the maximum (see [Hub limits on tokens](#hub-limits-on-tokens)).
+  no month unit (use `30d` or `1y` for longer). `1y` is always 365 days.
 - `--purpose` — an optional description of what the token is for (up to 128 bytes).
 - `--label` — an optional `key=value` label; repeat the flag for more (up to 8). Keys are
   lowercase, start with a letter and may contain digits, `_`, `.` and `-` (up to 32 bytes).
@@ -802,19 +801,6 @@ Your account can hold up to 50 tokens that are not revoked, project and hub toke
 A revoked token does not count. An expired token counts until you revoke or delete it. Creating
 a token beyond the limit is refused with `409` and error code `limit_exceeded`; revoke or delete
 tokens you do not use to free a slot.
-
-### Hub limits on tokens
-
-A Hub operator can restrict tokens with two startup settings under
-`server.hub.user_access_tokens` (see the [server configuration
-reference](/scion/reference/server-config/#user-access-tokens-serverhubuser_access_tokens)):
-
-- `max_lifetime` lowers the maximum lifetime below 1 year. A request for a longer expiry is
-  refused with `400`, and a token created without an expiry gets 90 days or the maximum,
-  whichever is shorter. An existing token older than the maximum is refused at use as expired
-  (`401`); revoke it and create a new one.
-- `creation_disabled` refuses every new token with `403` (reason `token_creation_disabled`).
-  Existing tokens keep working until they expire or are revoked.
 
 ### Rotating a token
 

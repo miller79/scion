@@ -46,15 +46,10 @@ var (
 	ErrInvalidUATFormat = errors.New("invalid token format")
 	ErrUATLimitExceeded = errors.New("token limit exceeded")
 	ErrInvalidUATScope  = errors.New("invalid token scope")
-	ErrUATExpiryTooLong = errors.New("token expiry exceeds maximum")
-
-	// ErrUATCreationDisabled refuses a new token on a hub whose operator
-	// turned token creation off
-	// (server.hub.user_access_tokens.creation_disabled).
-	ErrUATCreationDisabled = errors.New("creating user access tokens is disabled on this hub")
-	ErrUATExpiryPast       = errors.New("token expiry must be in the future")
-	ErrUATNameRequired     = errors.New("token name is required")
-	ErrUATScopeEmpty       = errors.New("at least one scope is required")
+	ErrUATExpiryTooLong = errors.New("token expiry exceeds maximum (1 year)")
+	ErrUATExpiryPast    = errors.New("token expiry must be in the future")
+	ErrUATNameRequired  = errors.New("token name is required")
+	ErrUATScopeEmpty    = errors.New("at least one scope is required")
 
 	// ErrUATProjectIDEmpty is returned when a token request names neither
 	// an explicit boundary nor a project ID. Its message names the project
@@ -168,41 +163,6 @@ type UserAccessTokenService struct {
 	authz    *AuthzService
 	logger   *slog.Logger
 	nowFunc  func() time.Time
-
-	// maxLifetime is the hub's maximum token lifetime
-	// (server.hub.user_access_tokens.max_lifetime); zero or above
-	// store.UATMaxExpiry means store.UATMaxExpiry.
-	maxLifetime time.Duration
-	// creationDisabled refuses new tokens
-	// (server.hub.user_access_tokens.creation_disabled).
-	creationDisabled bool
-}
-
-// SetIssuancePolicy applies the hub's user access token settings: the
-// maximum lifetime of a token (zero: store.UATMaxExpiry) and whether new
-// tokens may be created. Call it before the service handles requests.
-func (s *UserAccessTokenService) SetIssuancePolicy(maxLifetime time.Duration, creationDisabled bool) {
-	s.maxLifetime = maxLifetime
-	s.creationDisabled = creationDisabled
-}
-
-// effectiveMaxLifetime is the longest lifetime a token may have on this hub.
-func (s *UserAccessTokenService) effectiveMaxLifetime() time.Duration {
-	if s.maxLifetime <= 0 || s.maxLifetime > store.UATMaxExpiry {
-		return store.UATMaxExpiry
-	}
-	return s.maxLifetime
-}
-
-// formatUATLifetime renders a maximum lifetime for an error message.
-func formatUATLifetime(d time.Duration) string {
-	if d == store.UATMaxExpiry {
-		return "1 year"
-	}
-	if d%(24*time.Hour) == 0 {
-		return fmt.Sprintf("%d days", int64(d/(24*time.Hour)))
-	}
-	return d.String()
 }
 
 // NewUserAccessTokenService creates a new UAT service.
@@ -337,9 +297,6 @@ func (s *UserAccessTokenService) CreateTokenWithParams(ctx context.Context, para
 	if err := s.enforceSessionCredential(ctx, params.UserID); err != nil {
 		return "", nil, err
 	}
-	if s.creationDisabled {
-		return "", nil, ErrUATCreationDisabled
-	}
 
 	// Containment: a test identity of any kind (member or admin) never
 	// mints further credentials. The reserved-domain check needs no store
@@ -398,20 +355,18 @@ func (s *UserAccessTokenService) CreateTokenWithParams(ctx context.Context, para
 		return "", nil, ErrUATScopeEmpty
 	}
 
-	// Validate / default expiry. The default is clamped to the hub's
-	// maximum; an explicit longer expiry is refused.
+	// Validate / default expiry.
 	now := s.nowFunc()
-	maxLifetime := s.effectiveMaxLifetime()
 	expiresAt := params.ExpiresAt
 	if expiresAt == nil {
-		defaultExpiry := now.Add(min(store.UATDefaultExpiry, maxLifetime))
+		defaultExpiry := now.Add(store.UATDefaultExpiry)
 		expiresAt = &defaultExpiry
 	}
 	if expiresAt.Before(now) {
 		return "", nil, ErrUATExpiryPast
 	}
-	if expiresAt.After(now.Add(maxLifetime)) {
-		return "", nil, fmt.Errorf("%w (%s)", ErrUATExpiryTooLong, formatUATLifetime(maxLifetime))
+	if expiresAt.After(now.Add(store.UATMaxExpiry)) {
+		return "", nil, ErrUATExpiryTooLong
 	}
 
 	// --- Mint eligibility via CanMintSelector (ptone/scion#2092, #2117) ---
@@ -596,15 +551,6 @@ func (s *UserAccessTokenService) ValidateToken(ctx context.Context, key string) 
 	}
 
 	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) {
-		return nil, &UATRejection{err: ErrUATExpired, Reason: "expired", Found: true, TokenID: token.ID}
-	}
-	// A token older than the hub's current maximum lifetime is expired,
-	// so lowering server.hub.user_access_tokens.max_lifetime also bounds
-	// tokens issued under a longer maximum. It applies only when the
-	// maximum is set below the one-year issuance cap, so the default keeps
-	// today's behaviour (including for any legacy token without an expiry).
-	if s.maxLifetime > 0 && s.maxLifetime < store.UATMaxExpiry &&
-		!token.Created.IsZero() && time.Now().After(token.Created.Add(s.maxLifetime)) {
 		return nil, &UATRejection{err: ErrUATExpired, Reason: "expired", Found: true, TokenID: token.ID}
 	}
 
