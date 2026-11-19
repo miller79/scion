@@ -174,17 +174,20 @@ func (s *Server) handleSchedules(w http.ResponseWriter, r *http.Request, project
 		return
 	}
 
-	// Pause and delete only stop future runs: the user who created a
-	// schedule may do them even without scheduled_event.update/delete
-	// (scheduleCreatorMayStop). Everything else, and every other caller,
-	// goes through the project-level gate.
+	// Pause and delete only stop future runs: when the project-level gate
+	// refuses them, the user who created the schedule may still do them
+	// (scheduleCreatorMayStop). The gate is decided once either way;
+	// everything else, and every other caller, gets the gate alone.
 	stopOnly := schedulePath != "" &&
 		(((len(pathParts) == 1 || pathParts[1] == "") && r.Method == http.MethodDelete) ||
 			(len(pathParts) > 1 && pathParts[1] == "pause"))
-	creatorStop := stopOnly && s.scheduleCreatorMayStop(r, projectID, pathParts[0], authzAction)
+	var creatorStop func() bool
+	if stopOnly {
+		creatorStop = func() bool { return s.scheduleCreatorMayStop(r, projectID, pathParts[0]) }
+	}
 
 	// Authorize access — fail closed for all identity types.
-	if !creatorStop && !s.authorizeScheduledEventAccess(w, r, projectID, authzAction) {
+	if !s.authorizeScheduledEventRowOr(w, r, projectID, authzAction, nil, creatorStop) {
 		return
 	}
 

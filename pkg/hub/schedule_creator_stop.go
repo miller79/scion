@@ -17,10 +17,12 @@ package hub
 import "net/http"
 
 // scheduleCreatorMayStop reports whether the request's user may pause or
-// delete schedule scheduleID of projectID because they created it, when
-// the project-level scheduled_event.update/delete permission alone would
-// refuse them. Project members can create recurring schedules but hold
-// neither permission, so without this they could not stop their own.
+// delete schedule scheduleID of projectID because they created it. It is
+// consulted only after the project-level scheduled_event.update/delete
+// decision refused them (authorizeScheduledEventRowOr), so the normal path
+// (and its audit) is unchanged and decided once. Project members can
+// create recurring schedules but hold neither permission, so without this
+// they could not stop their own.
 //
 // Pause and delete only stop future runs, so this grants nothing new. It
 // applies only to a user's interactive session (a scoped access token keeps
@@ -29,10 +31,8 @@ import "net/http"
 // (CreatedBy, written by the hub from the authenticated identity at create)
 // is that user and whose current authority (its initiator attribution) is
 // still that user: after an owner edits or resumes it, it runs under the
-// owner and the creator path no longer applies. It returns false when the
-// normal gate would allow the
-// request, so that path (and its audit) is unchanged.
-func (s *Server) scheduleCreatorMayStop(r *http.Request, projectID, scheduleID string, action Action) bool {
+// owner and the creator path no longer applies.
+func (s *Server) scheduleCreatorMayStop(r *http.Request, projectID, scheduleID string) bool {
 	ctx := r.Context()
 	identity := GetIdentityFromContext(ctx)
 	if isNilIdentity(identity) || identity.ID() == "" {
@@ -42,9 +42,6 @@ func (s *Server) scheduleCreatorMayStop(r *http.Request, projectID, scheduleID s
 		return false
 	}
 	if !sessionCredentialAllowed(ctx) {
-		return false
-	}
-	if s.scheduledEventAccessDecision(ctx, projectID, action, nil).allowed {
 		return false
 	}
 	if !s.scheduledEventAccessDecision(ctx, projectID, ActionRead, nil).allowed {
