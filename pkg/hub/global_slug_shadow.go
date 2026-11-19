@@ -28,10 +28,14 @@ import (
 // first and globally second (resolveTemplateRef, resolveHarnessConfigBySlug,
 // and the CLI's own lookup), so a project-scope record whose slug equals a
 // global record's replaces the global one for every agent in that project.
+// The CLI's lookup (cmd/template_resolution.go, cmd/harness_config.go) lists
+// records whose name or slug equals the name typed and takes the first whose
+// name or slug matches, so a record's name shadows as well as its slug.
 // Project members may create project templates and harness configs, and their
 // contents run inside the agents that use them, with the secrets of each
-// agent's creator. A project- or user-scope record may therefore not take the
-// slug of a global record: create, rename, clone and import refuse it.
+// agent's creator. A project- or user-scope record may therefore not use a
+// global record's slug or name as its own slug or name, as written or
+// slugified: create, rename, clone and import refuse it.
 //
 // Resolution order is unchanged. Project-first is what the CLI, the
 // "project:" and "global:" name prefixes and existing projects rely on, and
@@ -40,83 +44,117 @@ import (
 // existing project record is a hub administrator's decision and is not
 // refused.
 
-// errShadowsGlobalSlug is returned when a project- or user-scope template or
-// harness config would take the slug of a global one.
-var errShadowsGlobalSlug = errors.New("slug is used by a global resource")
+// errShadowsGlobalSlug is returned (wrapped in a globalShadowError) when a
+// project- or user-scope template or harness config would take the slug or
+// name of a global one.
+var errShadowsGlobalSlug = errors.New("slug or name is used by a global resource")
 
-// slugShadowCandidates returns the slugs to check for slug: the value as
-// stored and its normalized form (a PATCH stores a caller's slug as given).
-func slugShadowCandidates(slug string) []string {
-	out := []string{slug}
-	if n := api.Slugify(slug); n != "" && n != slug {
-		out = append(out, n)
+// globalShadowError is a shadow check refusal: Field ("slug" or "name") of
+// the record, read as Value, is a global record's slug or name.
+type globalShadowError struct {
+	Kind  string
+	Field string
+	Value string
+}
+
+func (e *globalShadowError) Error() string {
+	return fmt.Sprintf("%s %s %q: %v", e.Kind, e.Field, e.Value, errShadowsGlobalSlug)
+}
+
+func (e *globalShadowError) Unwrap() error { return errShadowsGlobalSlug }
+
+// shadowCandidate is one value a record could be found by.
+type shadowCandidate struct {
+	field, value string
+}
+
+// shadowCandidates returns the values a record with name and slug could be
+// found by: each as stored (a PATCH stores a caller's slug as given) and
+// slugified, slug first, without empty or repeated values.
+func shadowCandidates(name, slug string) []shadowCandidate {
+	var out []shadowCandidate
+	seen := map[string]bool{}
+	add := func(field, v string) {
+		if v == "" || seen[v] {
+			return
+		}
+		seen[v] = true
+		out = append(out, shadowCandidate{field, v})
 	}
+	add("slug", slug)
+	add("slug", api.Slugify(slug))
+	add("name", name)
+	add("name", api.Slugify(name))
 	return out
 }
 
-// templateSlugShadowsGlobal reports, as errShadowsGlobalSlug, whether a
-// template of scope with slug would shadow a global template. Global scope
-// and an empty slug never do. A lookup failure other than not-found is
+// templateShadowsGlobal reports, as a globalShadowError, whether a template
+// of scope with name and slug would shadow a global template: whether any
+// of its shadowCandidates is a global template's name or slug (the store's
+// Name filter matches either). Global scope never does. A lookup failure is
 // returned as is.
-func (s *Server) templateSlugShadowsGlobal(ctx context.Context, scope, slug string) error {
-	if slug == "" || scope == "" || scope == store.TemplateScopeGlobal {
+func (s *Server) templateShadowsGlobal(ctx context.Context, scope, name, slug string) error {
+	if scope == "" || scope == store.TemplateScopeGlobal {
 		return nil
 	}
-	for _, candidate := range slugShadowCandidates(slug) {
-		existing, err := s.store.GetTemplateBySlug(ctx, candidate, store.TemplateScopeGlobal, "")
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
+	for _, c := range shadowCandidates(name, slug) {
+		found, err := s.store.ListTemplates(ctx, store.TemplateFilter{Name: c.value, Scope: store.TemplateScopeGlobal},
+			store.ListOptions{Limit: 1, SkipTotalCount: true})
+		if err != nil {
 			return err
 		}
-		if existing != nil {
-			return fmt.Errorf("template %q: %w", candidate, errShadowsGlobalSlug)
+		if len(found.Items) > 0 {
+			return &globalShadowError{Kind: "template", Field: c.field, Value: c.value}
 		}
 	}
 	return nil
 }
 
-// harnessConfigSlugShadowsGlobal is templateSlugShadowsGlobal for harness
-// configs.
-func (s *Server) harnessConfigSlugShadowsGlobal(ctx context.Context, scope, slug string) error {
-	if slug == "" || scope == "" || scope == store.HarnessConfigScopeGlobal {
+// harnessConfigShadowsGlobal is templateShadowsGlobal for harness configs.
+func (s *Server) harnessConfigShadowsGlobal(ctx context.Context, scope, name, slug string) error {
+	if scope == "" || scope == store.HarnessConfigScopeGlobal {
 		return nil
 	}
-	for _, candidate := range slugShadowCandidates(slug) {
-		existing, err := s.store.GetHarnessConfigBySlug(ctx, candidate, store.HarnessConfigScopeGlobal, "")
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
+	for _, c := range shadowCandidates(name, slug) {
+		found, err := s.store.ListHarnessConfigs(ctx, store.HarnessConfigFilter{Name: c.value, Scope: store.HarnessConfigScopeGlobal},
+			store.ListOptions{Limit: 1, SkipTotalCount: true})
+		if err != nil {
 			return err
 		}
-		if existing != nil {
-			return fmt.Errorf("harness config %q: %w", candidate, errShadowsGlobalSlug)
+		if len(found.Items) > 0 {
+			return &globalShadowError{Kind: "harness config", Field: c.field, Value: c.value}
 		}
 	}
 	return nil
 }
 
 // writeGlobalSlugShadowError writes the response for a shadow check error:
-// 409 for errShadowsGlobalSlug, the store error otherwise. It reports
+// 409 for a globalShadowError, the store error otherwise. It reports
 // whether err was non-nil (and so a response was written).
-func writeGlobalSlugShadowError(w http.ResponseWriter, kind, slug string, err error) bool {
+func writeGlobalSlugShadowError(w http.ResponseWriter, err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, errShadowsGlobalSlug) {
+	var shadow *globalShadowError
+	if errors.As(err, &shadow) {
 		writeError(w, http.StatusConflict, ErrCodeConflict,
-			fmt.Sprintf("a global %s named %q already exists; a project or user %s cannot use the same name, because it would replace the global one. Choose a different name.", kind, slug, kind),
-			map[string]interface{}{"field": "slug", "reason": "shadows_global"})
+			fmt.Sprintf("a global %s named %q already exists; a project or user %s cannot use the same name or slug, because it would replace the global one. Choose a different name.", shadow.Kind, shadow.Value, shadow.Kind),
+			map[string]interface{}{"field": shadow.Field, "reason": "shadows_global"})
 		return true
 	}
 	writeErrorFromErr(w, err, "")
 	return true
 }
 
-// refuseTemplateGlobalShadow checks a template's scope and slug and writes
-// the response when it must not be stored. It reports whether it wrote one.
-func (s *Server) refuseTemplateGlobalShadow(w http.ResponseWriter, ctx context.Context, scope, slug string) bool {
-	return writeGlobalSlugShadowError(w, "template", slug, s.templateSlugShadowsGlobal(ctx, scope, slug))
+// refuseTemplateGlobalShadow checks a template's scope, name and slug and
+// writes the response when it must not be stored. It reports whether it
+// wrote one.
+func (s *Server) refuseTemplateGlobalShadow(w http.ResponseWriter, ctx context.Context, scope, name, slug string) bool {
+	return writeGlobalSlugShadowError(w, s.templateShadowsGlobal(ctx, scope, name, slug))
 }
 
 // refuseHarnessConfigGlobalShadow is refuseTemplateGlobalShadow for harness
 // configs.
-func (s *Server) refuseHarnessConfigGlobalShadow(w http.ResponseWriter, ctx context.Context, scope, slug string) bool {
-	return writeGlobalSlugShadowError(w, "harness config", slug, s.harnessConfigSlugShadowsGlobal(ctx, scope, slug))
+func (s *Server) refuseHarnessConfigGlobalShadow(w http.ResponseWriter, ctx context.Context, scope, name, slug string) bool {
+	return writeGlobalSlugShadowError(w, s.harnessConfigShadowsGlobal(ctx, scope, name, slug))
 }

@@ -287,7 +287,7 @@ User Templates  >  Project Templates  >  Global Templates
 ```
 Visual separators clearly segment these categories, ensuring your personal, customized templates are always at the top of the dropdown for fast access.
 
-A name is looked up in the project first and globally second, so a project template with the name of a global one would replace it for every agent in the project. The Hub therefore refuses to create, rename, clone or import a project- or user-scoped template or harness config whose slug is already used by a global one (`409`, `details.reason` `shadows_global`); choose another name. A global record created later with the name of an existing project record is not refused.
+A name is looked up in the project first and globally second, so a project template with the name of a global one would replace it for every agent in the project. The CLI also finds a template or harness config by its name, not only its slug. The Hub therefore refuses to create, rename, clone or import a project- or user-scoped template or harness config whose slug or name, as written or slugified, is a global one's slug or name (`409`, `details.reason` `shadows_global`, `details.field` `slug` or `name`); choose another name. A rename is checked whenever the name or the slug changes. A global record created later with the name of an existing project record is not refused.
 
 ## The `scion templates` CLI
 

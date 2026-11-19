@@ -132,6 +132,36 @@ func TestHubMember_CannotRegisterBroker(t *testing.T) {
 	}
 }
 
+// Re-registering or re-minting a broker the caller already owns goes
+// through the same broker.create gate as a first registration: a plain hub
+// member who registered a broker before hub-member lost broker.create needs
+// an admin to grant it before re-registering.
+func TestHubMemberBrokerOwner_CannotReregisterOrRemint(t *testing.T) {
+	srv, s := testServer(t)
+	ctx := context.Background()
+	owner := newHubMemberUser(t, s, "rh-broker-owner")
+	broker := createReregistrationTestBroker(t, s, "rh-owned-broker", owner.ID)
+
+	// Re-mint a join token for the owned broker (PreserveSettings).
+	rec := mintJoinToken(t, srv, owner, broker.Name, 600)
+	assert.Equal(t, http.StatusForbidden, rec.Code, "a hub-member owner may not re-mint: %s", rec.Body.String())
+	// Re-register the owned broker by ID.
+	rec = doRequestAsUserLoopback(t, srv, owner, http.MethodPost, "/api/v1/brokers", CreateBrokerRegistrationRequest{
+		Name: broker.Name, BrokerID: broker.ID,
+	})
+	assert.Equal(t, http.StatusForbidden, rec.Code, "a hub-member owner may not re-register: %s", rec.Body.String())
+	stored, err := s.GetRuntimeBroker(ctx, broker.ID)
+	require.NoError(t, err)
+	assert.Equal(t, owner.ID, stored.CreatedBy)
+	assert.Equal(t, broker.Labels, stored.Labels, "the refused requests changed nothing")
+
+	// With broker.create granted, the same owner re-mints.
+	grantBrokerCreate(t, s, owner.ID, nil)
+	rec = mintJoinToken(t, srv, owner, broker.Name, 600)
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	assert.Equal(t, broker.ID, decodeRegistration(t, rec).BrokerID)
+}
+
 // =============================================================================
 // Name shadowing: a project or user template or harness config may not take
 // the slug of a global one.
@@ -210,6 +240,96 @@ func TestResourceImport_ProjectSlugShadowingGlobalRefused(t *testing.T) {
 	assert.ErrorIs(t, err, errShadowsGlobalSlug, "template import into a project may not shadow a global template")
 	err = (&harnessConfigPersistence{s: srv}).Create(ctx, rec, nil)
 	assert.ErrorIs(t, err, errShadowsGlobalSlug, "harness config import into a project may not shadow a global one")
+}
+
+// The CLI finds a template or harness config by name as well as by slug
+// (cmd/template_resolution.go, cmd/harness_config.go), project scope first,
+// so a project or user record whose name (or the slug of its name) is a
+// global record's slug or name shadows it however its own slug differs.
+func TestTemplate_NameShadowingGlobalRefused(t *testing.T) {
+	srv, s, alice, _, project := setupDemoPolicyTest(t)
+	ctx := context.Background()
+	require.NoError(t, s.CreateTemplate(ctx, &store.Template{
+		ID: tid("rhn-global-tmpl"), Name: "rhn-claude", Slug: "rhn-claude",
+		Scope: store.TemplateScopeGlobal, Status: store.TemplateStatusActive,
+	}))
+	require.NoError(t, s.CreateTemplate(ctx, &store.Template{
+		ID: tid("rhn-global-tmpl2"), Name: "RHN Display", Slug: "rhn-display-v2",
+		Scope: store.TemplateScopeGlobal, Status: store.TemplateStatusActive,
+	}))
+
+	for name, req := range map[string]CreateTemplateRequest{
+		"project name is a global slug":   {Name: "rhn-claude", Slug: "x-rhn-claude", Scope: store.TemplateScopeProject, ScopeID: project.ID},
+		"slugified name is a global slug": {Name: "RHN-Claude", Slug: "y-rhn-claude", Scope: store.TemplateScopeProject, ScopeID: project.ID},
+		"project name is a global name":   {Name: "RHN Display", Slug: "z-rhn-display", Scope: store.TemplateScopeProject, ScopeID: project.ID},
+		"user name is a global slug":      {Name: "rhn-claude", Slug: "u-rhn-claude", Scope: store.TemplateScopeUser},
+	} {
+		req.Harness = "claude"
+		rec := doRequestAsUser(t, srv, alice, http.MethodPost, "/api/v1/templates", req)
+		assert.Equal(t, http.StatusConflict, rec.Code, "%s: %s", name, rec.Body.String())
+		assert.Contains(t, rec.Body.String(), "shadows_global", name)
+	}
+	rec := doRequestAsUser(t, srv, alice, http.MethodPost, "/api/v1/users/me/templates", CreateTemplateRequest{
+		Name: "rhn-claude", Slug: "me-rhn-claude", Harness: "claude",
+	})
+	assert.Equal(t, http.StatusConflict, rec.Code, "user template route: %s", rec.Body.String())
+
+	// A distinct name is created; renaming it onto a global name, with
+	// its own slug unchanged, is refused by PATCH and PUT.
+	rec = doRequestAsUser(t, srv, alice, http.MethodPost, "/api/v1/templates", CreateTemplateRequest{
+		Name: "rhn-own", Slug: "rhn-own", Harness: "claude", Scope: store.TemplateScopeProject, ScopeID: project.ID,
+	})
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	var created CreateTemplateResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+	require.NotNil(t, created.Template)
+	path := "/api/v1/templates/" + created.Template.ID
+	rec = doRequestAsUser(t, srv, alice, http.MethodPatch, path, map[string]string{"name": "rhn-claude"})
+	assert.Equal(t, http.StatusConflict, rec.Code, "PATCH name onto a global slug: %s", rec.Body.String())
+	rec = doRequestAsUser(t, srv, alice, http.MethodPut, path, UpdateTemplateRequest{Name: "RHN Display", Slug: "rhn-own"})
+	assert.Equal(t, http.StatusConflict, rec.Code, "PUT name onto a global name: %s", rec.Body.String())
+	stored, err := s.GetTemplate(ctx, created.Template.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "rhn-own", stored.Name)
+
+	// An unrelated rename still works.
+	rec = doRequestAsUser(t, srv, alice, http.MethodPatch, path, map[string]string{"name": "rhn-own-2"})
+	assert.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	// Import and sync.
+	err = (&templatePersistence{s: srv}).Create(ctx, &ResourceRecord{Name: "rhn-claude", Slug: "imp-rhn", Scope: store.TemplateScopeProject, ScopeID: project.ID}, nil)
+	assert.ErrorIs(t, err, errShadowsGlobalSlug, "import of a project template named as a global one")
+}
+
+func TestHarnessConfig_NameShadowingGlobalRefused(t *testing.T) {
+	srv, s, alice, _, project := setupDemoPolicyTest(t)
+	ctx := context.Background()
+	require.NoError(t, s.CreateHarnessConfig(ctx, &store.HarnessConfig{
+		ID: tid("rhn-global-hc"), Name: "rhn-hc", Slug: "rhn-hc", Harness: "claude",
+		Scope: store.HarnessConfigScopeGlobal, Status: store.HarnessConfigStatusActive,
+	}))
+
+	rec := doRequestAsUser(t, srv, alice, http.MethodPost, "/api/v1/harness-configs", CreateHarnessConfigRequest{
+		Name: "rhn-hc", Slug: "x-rhn-hc", Harness: "claude", Scope: store.HarnessConfigScopeProject, ScopeID: project.ID,
+	})
+	assert.Equal(t, http.StatusConflict, rec.Code, "a project harness config named as a global one: %s", rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "shadows_global")
+
+	rec = doRequestAsUser(t, srv, alice, http.MethodPost, "/api/v1/harness-configs", CreateHarnessConfigRequest{
+		Name: "rhn-hc-own", Slug: "rhn-hc-own", Harness: "claude", Scope: store.HarnessConfigScopeProject, ScopeID: project.ID,
+	})
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	var created CreateHarnessConfigResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+	require.NotNil(t, created.HarnessConfig)
+	path := "/api/v1/harness-configs/" + created.HarnessConfig.ID
+	rec = doRequestAsUser(t, srv, alice, http.MethodPatch, path, map[string]string{"name": "rhn-hc"})
+	assert.Equal(t, http.StatusConflict, rec.Code, "PATCH name onto a global slug: %s", rec.Body.String())
+	rec = doRequestAsUser(t, srv, alice, http.MethodPut, path, UpdateHarnessConfigRequest{Name: "rhn-hc", Slug: "rhn-hc-own"})
+	assert.Equal(t, http.StatusConflict, rec.Code, "PUT name onto a global slug: %s", rec.Body.String())
+
+	err := (&harnessConfigPersistence{s: srv}).Create(ctx, &ResourceRecord{Name: "rhn-hc", Slug: "imp-rhn-hc", Scope: store.HarnessConfigScopeProject, ScopeID: project.ID}, nil)
+	assert.ErrorIs(t, err, errShadowsGlobalSlug, "import of a project harness config named as a global one")
 }
 
 // =============================================================================
@@ -291,6 +411,39 @@ func TestCreateGCPServiceAccount_RefusesHubAndBrokerHostSA(t *testing.T) {
 	assert.Empty(t, list, "no reserved account was registered")
 
 	rec := doRequest(t, srv, http.MethodPost, path, map[string]string{"email": "agent@my-project.iam.gserviceaccount.com"})
+	assert.Equal(t, http.StatusCreated, rec.Code, "an ordinary account is still registered: %s", rec.Body.String())
+}
+
+// The hub-scope bring-your-own route refuses the same reserved accounts as
+// the project route.
+func TestCreateHubScopedGCPServiceAccount_RefusesHubAndBrokerHostSA(t *testing.T) {
+	srv, s := testServer(t)
+	ctx := context.Background()
+	srv.gcpTokenGenerator = &mockGCPTokenGenerator{email: "hub-sa@hub-project.iam.gserviceaccount.com"}
+	require.NoError(t, s.CreateRuntimeBroker(ctx, &store.RuntimeBroker{
+		ID: tid("rh-hubsa-broker"), Name: "rh-hubsa-broker", Slug: "rh-hubsa-broker",
+		GCPHostServiceAccountEmail: "broker-host@host-project.iam.gserviceaccount.com",
+		Status:                     store.BrokerStatusOnline, Created: time.Now(), Updated: time.Now(),
+	}))
+	member := newHubMemberUser(t, s, "rh-hubsa-member")
+	const path = "/api/v1/gcp-service-accounts?scope=hub"
+
+	for _, email := range []string{
+		"hub-sa@hub-project.iam.gserviceaccount.com",
+		"HUB-SA@hub-project.iam.gserviceaccount.com",
+		"broker-host@host-project.iam.gserviceaccount.com",
+	} {
+		rec := doRequestAsUser(t, srv, member, http.MethodPost, path, map[string]string{"email": email})
+		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code, "member: %s must be refused: %s", email, rec.Body.String())
+		assert.Contains(t, rec.Body.String(), "reserved_service_account")
+		rec = doRequest(t, srv, http.MethodPost, path, map[string]string{"email": email})
+		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code, "admin: %s must be refused: %s", email, rec.Body.String())
+	}
+	list, err := s.ListGCPServiceAccounts(ctx, store.GCPServiceAccountFilter{Scope: store.ScopeHub})
+	require.NoError(t, err)
+	assert.Empty(t, list, "no reserved account was registered")
+
+	rec := doRequestAsUser(t, srv, member, http.MethodPost, path, map[string]string{"email": "agent@my-project.iam.gserviceaccount.com"})
 	assert.Equal(t, http.StatusCreated, rec.Code, "an ordinary account is still registered: %s", rec.Body.String())
 }
 

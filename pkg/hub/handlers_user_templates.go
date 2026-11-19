@@ -204,7 +204,7 @@ func (s *Server) createUserTemplate(w http.ResponseWriter, r *http.Request) {
 		BadRequest(w, "invalid slug: name cannot be slugified")
 		return
 	}
-	if s.refuseTemplateGlobalShadow(w, ctx, store.TemplateScopeUser, slug) {
+	if s.refuseTemplateGlobalShadow(w, ctx, store.TemplateScopeUser, req.Name, slug) {
 		return
 	}
 
@@ -348,7 +348,8 @@ func (s *Server) updateUserTemplate(w http.ResponseWriter, r *http.Request, id s
 	if template.Slug == "" {
 		template.Slug = api.Slugify(template.Name)
 	}
-	if template.Slug != existing.Slug && s.refuseTemplateGlobalShadow(w, ctx, template.Scope, template.Slug) {
+	if (template.Slug != existing.Slug || template.Name != existing.Name) &&
+		s.refuseTemplateGlobalShadow(w, ctx, template.Scope, template.Name, template.Slug) {
 		return
 	}
 

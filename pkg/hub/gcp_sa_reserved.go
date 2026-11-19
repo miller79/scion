@@ -163,11 +163,12 @@ func (s *Server) ScanReservedGCPServiceAccounts(ctx context.Context) (int, error
 const reservedSAListPageSize = 200
 
 // reservedServiceAccountUse reports why email may not be registered as a
-// project-scoped service account, or "" when it may. The Hub's own service
-// account and the host service account of any Runtime Broker (configured or
-// observed) are reserved: a project-scoped account is assignable to agents by
-// the project's members, so registering one of these would hand the Hub's or
-// a broker host's cloud identity to agents. They are refused even when the
+// project- or hub-scoped service account, or "" when it may. The Hub's own
+// service account and the host service account of any Runtime Broker
+// (configured or observed) are reserved: a registered account is assignable
+// to agents (a project-scoped one by the project's members, a hub-scoped one
+// subject to the assignment gate), so registering one of these would hand
+// the Hub's or a broker host's cloud identity to agents. They are refused even when the
 // Hub can impersonate them, because that is exactly when assignment works.
 func (s *Server) reservedServiceAccountUse(ctx context.Context, email string) (string, error) {
 	email = strings.TrimSpace(email)

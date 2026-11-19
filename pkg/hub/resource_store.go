@@ -547,7 +547,7 @@ func (p *templatePersistence) GetBySlug(ctx context.Context, slug, scope, scopeI
 func (p *templatePersistence) Create(ctx context.Context, rec *ResourceRecord, _ *collectedDir) error {
 	// Import and sync may not create a project or user template that
 	// shadows a global one (global_slug_shadow.go).
-	if err := p.s.templateSlugShadowsGlobal(ctx, rec.Scope, rec.Slug); err != nil {
+	if err := p.s.templateShadowsGlobal(ctx, rec.Scope, rec.Name, rec.Slug); err != nil {
 		return err
 	}
 	t := &store.Template{
@@ -957,7 +957,7 @@ func (p *harnessConfigPersistence) Create(ctx context.Context, rec *ResourceReco
 	// Import and sync, including a template's bundled harness configs, may
 	// not create a project or user harness config that shadows a global one
 	// (global_slug_shadow.go).
-	if err := p.s.harnessConfigSlugShadowsGlobal(ctx, rec.Scope, rec.Slug); err != nil {
+	if err := p.s.harnessConfigShadowsGlobal(ctx, rec.Scope, rec.Name, rec.Slug); err != nil {
 		return err
 	}
 	harnessType := p.harness

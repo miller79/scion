@@ -358,7 +358,7 @@ func (s *Server) createHarnessConfig(w http.ResponseWriter, r *http.Request) {
 	if s.refuseGlobalHarnessConfigSlug(ctx, w, createScope, slug) {
 		return
 	}
-	if s.refuseHarnessConfigGlobalShadow(w, ctx, createScope, slug) {
+	if s.refuseHarnessConfigGlobalShadow(w, ctx, createScope, req.Name, slug) {
 		return
 	}
 
@@ -748,7 +748,8 @@ func (s *Server) updateHarnessConfig(w http.ResponseWriter, r *http.Request, exi
 	if hc.Slug != existing.Slug && s.refuseGlobalHarnessConfigSlug(ctx, w, hc.Scope, hc.Slug) {
 		return
 	}
-	if hc.Slug != existing.Slug && s.refuseHarnessConfigGlobalShadow(w, ctx, hc.Scope, hc.Slug) {
+	if (hc.Slug != existing.Slug || hc.Name != existing.Name) &&
+		s.refuseHarnessConfigGlobalShadow(w, ctx, hc.Scope, hc.Name, hc.Slug) {
 		return
 	}
 
@@ -763,7 +764,7 @@ func (s *Server) updateHarnessConfig(w http.ResponseWriter, r *http.Request, exi
 func (s *Server) patchHarnessConfig(w http.ResponseWriter, r *http.Request, existing *store.HarnessConfig) {
 	ctx := r.Context()
 
-	prevSlug := existing.Slug
+	prevSlug, prevName := existing.Slug, existing.Name
 	if !applyResourceMetadataPatch(w, r, resourceMetadataFields{
 		Name:        &existing.Name,
 		Slug:        &existing.Slug,
@@ -781,7 +782,8 @@ func (s *Server) patchHarnessConfig(w http.ResponseWriter, r *http.Request, exis
 	if existing.Slug != prevSlug && s.refuseGlobalHarnessConfigSlug(ctx, w, existing.Scope, existing.Slug) {
 		return
 	}
-	if existing.Slug != prevSlug && s.refuseHarnessConfigGlobalShadow(w, ctx, existing.Scope, existing.Slug) {
+	if (existing.Slug != prevSlug || existing.Name != prevName) &&
+		s.refuseHarnessConfigGlobalShadow(w, ctx, existing.Scope, existing.Name, existing.Slug) {
 		return
 	}
 
@@ -1419,7 +1421,7 @@ func (s *Server) handleHarnessConfigClone(w http.ResponseWriter, r *http.Request
 	if s.refuseGlobalHarnessConfigSlug(ctx, w, clone.Scope, clone.Slug) {
 		return
 	}
-	if s.refuseHarnessConfigGlobalShadow(w, ctx, clone.Scope, clone.Slug) {
+	if s.refuseHarnessConfigGlobalShadow(w, ctx, clone.Scope, clone.Name, clone.Slug) {
 		return
 	}
 
