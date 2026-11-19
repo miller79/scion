@@ -1927,9 +1927,6 @@ type V1ServerHubConfig struct {
 	// create request, its template nor its parent agent sets one ("" =
 	// "project"; one of none, lineage, branch, project). Read at startup.
 	DefaultMessageMode string `json:"default_message_mode,omitempty" yaml:"default_message_mode,omitempty" koanf:"default_message_mode"`
-	// UserAccessTokens holds the user access token issuance policy
-	// (server.hub.user_access_tokens). Read at startup.
-	UserAccessTokens *V1ServerHubUserAccessTokensConfig `json:"user_access_tokens,omitempty" yaml:"user_access_tokens,omitempty" koanf:"user_access_tokens"`
 	// Schedules holds the limits on recurring schedules
 	// (server.hub.schedules). Read at startup.
 	Schedules *V1ServerHubSchedulesConfig `json:"schedules,omitempty" yaml:"schedules,omitempty" koanf:"schedules"`
@@ -1944,16 +1941,6 @@ type V1ServerHubSchedulesConfig struct {
 	// MaxActivePerProject caps the active recurring schedules of one
 	// project (default 50; 0 = no cap).
 	MaxActivePerProject *int `json:"max_active_per_project,omitempty" yaml:"max_active_per_project,omitempty" koanf:"max_active_per_project"`
-}
-
-// V1ServerHubUserAccessTokensConfig holds the user access token issuance
-// policy (server.hub.user_access_tokens).
-type V1ServerHubUserAccessTokensConfig struct {
-	// MaxLifetime is the longest lifetime of a new token (e.g. "720h";
-	// default one year, between "1h" and "8760h").
-	MaxLifetime string `json:"max_lifetime,omitempty" yaml:"max_lifetime,omitempty" koanf:"max_lifetime"`
-	// CreationDisabled refuses the creation of new tokens.
-	CreationDisabled *bool `json:"creation_disabled,omitempty" yaml:"creation_disabled,omitempty" koanf:"creation_disabled"`
 }
 
 // V1ServerHubSystemOneConfig holds Hub-wide System One rule evaluation
@@ -4785,12 +4772,6 @@ func ConvertV1ServerToGlobalConfig(v1 *V1ServerConfig) *GlobalConfig {
 			gc.Hub.SystemOne = HubSystemOneConfig{MaxEvalTime: so.MaxEvalTime}
 		}
 		gc.Hub.DefaultMessageMode = v1.Hub.DefaultMessageMode
-		if ut := v1.Hub.UserAccessTokens; ut != nil {
-			gc.Hub.UserAccessTokens = HubUserAccessTokensConfig{MaxLifetime: ut.MaxLifetime}
-			if ut.CreationDisabled != nil {
-				gc.Hub.UserAccessTokens.CreationDisabled = *ut.CreationDisabled
-			}
-		}
 		if sc := v1.Hub.Schedules; sc != nil {
 			gc.Hub.Schedules = HubSchedulesConfig{MinInterval: sc.MinInterval}
 			if sc.MaxActivePerProject != nil {
@@ -5230,13 +5211,6 @@ func ConvertGlobalToV1ServerConfig(gc *GlobalConfig) *V1ServerConfig {
 		v1Hub.SystemOne = &V1ServerHubSystemOneConfig{MaxEvalTime: so.MaxEvalTime}
 	}
 	v1Hub.DefaultMessageMode = gc.Hub.DefaultMessageMode
-	if ut := gc.Hub.UserAccessTokens; !ut.IsZero() {
-		v1Hub.UserAccessTokens = &V1ServerHubUserAccessTokensConfig{MaxLifetime: ut.MaxLifetime}
-		if ut.CreationDisabled {
-			disabled := true
-			v1Hub.UserAccessTokens.CreationDisabled = &disabled
-		}
-	}
 	if sc := gc.Hub.Schedules; !sc.IsZero() {
 		v1Hub.Schedules = &V1ServerHubSchedulesConfig{MinInterval: sc.MinInterval}
 		if sc.MaxActivePerProject != nil {

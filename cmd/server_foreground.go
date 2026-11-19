@@ -1685,16 +1685,6 @@ func validateTestLogin(hosted, enabled bool, hubClass string) error {
 	return nil
 }
 
-// userAccessTokenMaxLifetime resolves server.hub.user_access_tokens.max_lifetime
-// (validated by validateServerPreflight; the one-year default otherwise).
-func userAccessTokenMaxLifetime(cfg *config.GlobalConfig) time.Duration {
-	d, err := cfg.Hub.UserAccessTokens.MaxLifetimeDuration()
-	if err != nil {
-		return config.UserAccessTokenMaxLifetimeLimit
-	}
-	return d
-}
-
 // scheduleMinIntervalSetting resolves server.hub.schedules.min_interval
 // (validated by validateServerPreflight; the default otherwise).
 func scheduleMinIntervalSetting(cfg *config.GlobalConfig) time.Duration {
@@ -1865,9 +1855,6 @@ func validateServerPreflight(cfg *config.GlobalConfig) error {
 		return err
 	}
 	if err := config.ValidateDefaultMessageMode(cfg.Hub.DefaultMessageMode); err != nil {
-		return err
-	}
-	if err := cfg.Hub.UserAccessTokens.Validate(); err != nil {
 		return err
 	}
 	if err := cfg.Hub.Schedules.Validate(); err != nil {
@@ -3010,8 +2997,6 @@ func buildHubServerConfig(cfg *config.GlobalConfig, hubEndpoint, devAuthToken st
 		CSPReportRawSamples:          cfg.Hub.CSPReportRawSamples,
 		MembershipSweepReportOnly:    cfg.Hub.MembershipSweepReportOnly,
 		DefaultMessageMode:           cfg.Hub.DefaultMessageMode,
-		UserAccessTokenMaxLifetime:   userAccessTokenMaxLifetime(cfg),
-		UserAccessTokenCreationOff:   cfg.Hub.UserAccessTokens.CreationDisabled,
 		ScheduleMinInterval:          scheduleMinIntervalSetting(cfg),
 		ScheduleMaxActivePerProject:  scheduleMaxActivePerProjectSetting(cfg),
 		LaunchTimeout:                cfg.Hub.LaunchTimeout,

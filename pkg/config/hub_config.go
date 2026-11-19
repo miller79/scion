@@ -261,10 +261,6 @@ type HubServerConfig struct {
 	// default. See ValidateDefaultMessageMode for the accepted values.
 	DefaultMessageMode string `json:"defaultMessageMode,omitempty" yaml:"defaultMessageMode,omitempty" koanf:"defaultMessageMode"`
 
-	// UserAccessTokens holds the user access token issuance policy
-	// (server.hub.user_access_tokens). Read at startup.
-	UserAccessTokens HubUserAccessTokensConfig `json:"userAccessTokens" yaml:"userAccessTokens" koanf:"userAccessTokens"`
-
 	// Schedules holds the limits on recurring schedules
 	// (server.hub.schedules). Read at startup.
 	Schedules HubSchedulesConfig `json:"schedules" yaml:"schedules" koanf:"schedules"`

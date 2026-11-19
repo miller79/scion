@@ -81,8 +81,6 @@ var dbFileOnlyRequestPaths = [][]string{
 	{"server", "hub", "system_one"},
 	// Default message mode of new agents: Layer 0, read at startup.
 	{"server", "hub", "default_message_mode"},
-	// User access token issuance policy: Layer 0, read at startup.
-	{"server", "hub", "user_access_tokens"},
 	// Recurring schedule limits: Layer 0, read at startup.
 	{"server", "hub", "schedules"},
 	{"server", "hub", "disable_legacy_storage_fallback"},
