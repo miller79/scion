@@ -1,0 +1,9 @@
+# Skipped by name: a fork's release-build/** branch push must run on the fork.
+on:
+  push:
+    branches: ['release-build/**']
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok

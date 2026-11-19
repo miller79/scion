@@ -18,7 +18,7 @@
 # "&&": "(<GATE>) && (a) || (b)" is rejected (it runs whenever b holds). The
 # if: must be on one line (a block scalar is rejected); a trailing comment is
 # ignored. It fails closed ("unrecognised layout", exit 1) in every workflow
-# except build-release.yml on what it does not parse: an on: value that is
+# except the skipped ones (SKIP_FILES) on what it does not parse: an on: value that is
 # not a bare event or a one-line list of bare events (a flow map, a list over
 # several lines), any line under a block on: that is not a 2-space "- event"
 # entry, a 2-space "event:" key or 4+-space settings of such a key (so
@@ -27,9 +27,12 @@
 # (e.g. quoted "jobs":), an inline jobs: value, a job key that is not an
 # unquoted 2-space key, and a jobs: with no job.
 # Push triggers that only filter tags (tags/tags-ignore without
-# branches/branches-ignore) are skipped. build-release.yml is skipped by name,
-# layout rules included: its tag pushes are not gated yet (its jobs carry the
-# upstream-only guard instead).
+# branches/branches-ignore) are skipped. SKIP_FILES are skipped by name,
+# layout rules included: build-release.yml, whose tag pushes are not gated yet
+# (its jobs carry the upstream-only guard instead), and release-binary.yml,
+# which builds a fork's own release binary on pushes to its release-build/**
+# branches and so must run on the fork (read-only token, uploads only a
+# workflow artifact; upstream has no such branches).
 #
 # Usage: hack/check-fork-ci-gate.sh [WORKFLOW_DIR]   (default .github/workflows)
 #        hack/check-fork-ci-gate.sh --selftest       (runs the fixtures in
@@ -42,7 +45,7 @@ set -euo pipefail
 
 GATE="(github.event_name != 'push' && github.event_name != 'schedule') || github.repository == 'GoogleCloudPlatform/scion'"
 REPO_GUARD="github.repository == 'GoogleCloudPlatform/scion'"
-SKIP_FILES="build-release.yml"
+SKIP_FILES="build-release.yml release-binary.yml"
 
 # One private temp dir for gated()'s probe files, created here in the main
 # shell (an EXIT trap is not inherited by $(...) subshells, so a dir made
@@ -267,7 +270,7 @@ selftest() {
     echo "selftest FAILED: good fixtures reported:"; printf '%s\n' "$out"; fail=1
   fi
   # The good fixtures must exercise both sides of the scope rule: these are
-  # in scope, the rest (tag-only push, pull_request only, build-release.yml)
+  # in scope, the rest (tag-only push, pull_request only, the SKIP_FILES)
   # are not.
   local f
   for f in push.yml schedule.yml push-all.yml; do
@@ -277,7 +280,7 @@ selftest() {
       echo "selftest FAILED: good/$f is missing or not in scope"; fail=1
     fi
   done
-  for f in tags-only.yml pr-only.yml build-release.yml; do
+  for f in tags-only.yml pr-only.yml build-release.yml release-binary.yml; do
     if [ -r "$td/good/$f" ] && ! gated "$td/good/$f"; then
       echo "selftest ok: good/$f is out of scope"
     else
