@@ -109,7 +109,9 @@ func TestFetchRemoteTemplateWithOptions_ZipBoundedBeforeParse(t *testing.T) {
 		archive := rawZipDirectory(65536+10, 10)
 		_, zerr := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
 		require.NoError(t, zerr, "the crafted directory must parse")
-		err := fetch(t, archive, 2000)
+		// A limit whose directory-size bound (3000 records) admits this
+		// directory, so only the record walk refuses it.
+		err := fetch(t, archive, 3000)
 		require.ErrorIs(t, err, ErrRemoteFetchLimit)
 	})
 
@@ -170,9 +172,27 @@ func TestFetchRemoteTemplateWithOptions_ZipBoundedBeforeParse(t *testing.T) {
 		assert.Contains(t, err.Error(), "entry name is longer")
 	})
 
+	t.Run("records with large comments", func(t *testing.T) {
+		// About 4 KB per record: more than a real zip carries, and over
+		// the directory-size bound for 10 entries.
+		archive := zipOf(t, func(w *zip.Writer) {
+			for i := 0; i < 5; i++ {
+				fw, err := w.CreateHeader(&zip.FileHeader{
+					Name: fmt.Sprintf("root/f%d", i), Comment: strings.Repeat("c", 4000),
+				})
+				require.NoError(t, err)
+				_, _ = fw.Write([]byte("x"))
+			}
+		})
+		require.ErrorIs(t, fetch(t, archive, 10), ErrRemoteFetchLimit)
+	})
+
 	t.Run("a zip within the limits still extracts", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
+		// An archive comment (as on GitHub's zips) and data descriptors
+		// (zip.Writer.Create writes them) are accepted.
 		archive := zipOf(t, func(w *zip.Writer) {
+			require.NoError(t, w.SetComment(strings.Repeat("c", 40)))
 			for _, n := range []string{"root/scion-agent.yaml", "root/a/b.txt"} {
 				fw, err := w.Create(n)
 				require.NoError(t, err)
@@ -251,6 +271,26 @@ func TestFetchRemoteTemplateWithOptions_GitHubTagAndCommitRefs(t *testing.T) {
 		assert.Equal(t, []string{
 			base + "refs/heads/nope.tar.gz", base + "refs/tags/nope.tar.gz", base + "nope.tar.gz",
 		}, asked)
+	})
+
+	t.Run("a download limit or timeout stops the fallback", func(t *testing.T) {
+		for _, failure := range []error{
+			fmt.Errorf("%w (the download is larger than 64 MiB)", ErrRemoteFetchLimit),
+			ErrRemoteDownloadTimeout,
+		} {
+			t.Setenv("HOME", t.TempDir())
+			var asked []string
+			download := func(_ context.Context, rawURL, _ string) ([]byte, error) {
+				asked = append(asked, rawURL)
+				return nil, failure
+			}
+			_, err := FetchRemoteTemplateWithOptions(context.Background(),
+				"https://github.com/acme/repo/tree/v1.2.0/templates",
+				RemoteFetchOptions{Download: download, MaxFiles: 100, PrivateCacheDir: true})
+			require.ErrorIs(t, err, failure)
+			assert.NotContains(t, err.Error(), "was not found")
+			assert.Equal(t, []string{base + "refs/heads/v1.2.0.tar.gz"}, asked)
+		}
 	})
 
 	t.Run("whole repository over the limit", func(t *testing.T) {

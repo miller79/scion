@@ -167,7 +167,7 @@ func importDownloadError(err error) error {
 		case remotefetch.ReasonTooLarge:
 			return fmt.Errorf("%w (the download is larger than %d MiB)", config.ErrRemoteFetchLimit, importMaxDownloadBytes>>20)
 		case remotefetch.ReasonTimeout:
-			return errors.New("the source download timed out")
+			return config.ErrRemoteDownloadTimeout
 		}
 	}
 	return errImportDownloadFailed
