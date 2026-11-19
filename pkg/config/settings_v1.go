@@ -1868,6 +1868,8 @@ type V1ServerHubConfig struct {
 	SoftDeleteRetainFiles *bool `json:"soft_delete_retain_files,omitempty" yaml:"soft_delete_retain_files,omitempty" koanf:"soft_delete_retain_files"`
 	// Chat holds web chat server limits (server.hub.chat).
 	Chat *V1ServerHubChatConfig `json:"chat,omitempty" yaml:"chat,omitempty" koanf:"chat"`
+	// Uploads holds web upload limits (server.hub.uploads).
+	Uploads *V1ServerHubUploadsConfig `json:"uploads,omitempty" yaml:"uploads,omitempty" koanf:"uploads"`
 	// GCPIAMCheckMode controls whether IAM actAs permission is checked when
 	// binding a GCP service account to an agent.
 	// "off" (default) or "enforce".
@@ -2951,6 +2953,24 @@ type V1ServerHubChatSearchConfig struct {
 	// means the default, 2. On Postgres the hub clamps it to a quarter of the
 	// main pool (at least 1).
 	MaxConcurrent *int `json:"max_concurrent,omitempty" yaml:"max_concurrent,omitempty" koanf:"max_concurrent"`
+}
+
+// V1ServerHubUploadsConfig holds web upload limits (server.hub.uploads), in
+// bytes. Zero or unset means the default. Read at startup.
+type V1ServerHubUploadsConfig struct {
+	// MaxAttachmentSize is the per-file limit of a chat attachment stored by
+	// the hub's attachment store (default 10 MiB).
+	MaxAttachmentSize int64 `json:"max_attachment_size,omitempty" yaml:"max_attachment_size,omitempty" koanf:"max_attachment_size"`
+	// MaxWorkspaceFileSize is the per-file limit of a project workspace or
+	// shared directory upload (default 50 MiB).
+	MaxWorkspaceFileSize int64 `json:"max_workspace_file_size,omitempty" yaml:"max_workspace_file_size,omitempty" koanf:"max_workspace_file_size"`
+	// ChunkSize is the request body size of one chunk of a chunked upload
+	// (default 8 MiB).
+	ChunkSize int64 `json:"chunk_size,omitempty" yaml:"chunk_size,omitempty" koanf:"chunk_size"`
+	// MaxPendingSize caps the declared sizes of all chunked uploads in
+	// progress on one hub instance (default four times the larger per-file
+	// limit, at least 1 GiB).
+	MaxPendingSize int64 `json:"max_pending_size,omitempty" yaml:"max_pending_size,omitempty" koanf:"max_pending_size"`
 }
 
 // V1CORSConfig holds CORS settings for server endpoints.
@@ -4679,6 +4699,14 @@ func ConvertV1ServerToGlobalConfig(v1 *V1ServerConfig) *GlobalConfig {
 				gc.Hub.Chat.Search.MaxConcurrent = *cs.MaxConcurrent
 			}
 		}
+		if u := v1.Hub.Uploads; u != nil {
+			gc.Hub.Uploads = HubUploadsConfig{
+				MaxAttachmentSize:    u.MaxAttachmentSize,
+				MaxWorkspaceFileSize: u.MaxWorkspaceFileSize,
+				ChunkSize:            u.ChunkSize,
+				MaxPendingSize:       u.MaxPendingSize,
+			}
+		}
 		if v1.Hub.GCPIAMCheckMode != "" {
 			gc.Hub.GCPIAMCheckMode = v1.Hub.GCPIAMCheckMode
 		}
@@ -5167,6 +5195,14 @@ func ConvertGlobalToV1ServerConfig(gc *GlobalConfig) *V1ServerConfig {
 			cs.MaxConcurrent = &n
 		}
 		v1Hub.Chat = &V1ServerHubChatConfig{Search: cs}
+	}
+	if u := gc.Hub.Uploads; !u.IsZero() {
+		v1Hub.Uploads = &V1ServerHubUploadsConfig{
+			MaxAttachmentSize:    u.MaxAttachmentSize,
+			MaxWorkspaceFileSize: u.MaxWorkspaceFileSize,
+			ChunkSize:            u.ChunkSize,
+			MaxPendingSize:       u.MaxPendingSize,
+		}
 	}
 	if gc.Hub.StalledThreshold > 0 {
 		v1Hub.StalledThreshold = gc.Hub.StalledThreshold.String()

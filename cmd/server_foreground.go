@@ -1865,6 +1865,9 @@ func validateServerPreflight(cfg *config.GlobalConfig) error {
 	if err := cfg.Hub.Schedules.Validate(); err != nil {
 		return err
 	}
+	if err := cfg.Hub.Uploads.Validate(); err != nil {
+		return err
+	}
 	if err := validateLongLivedRequestSettings(cfg); err != nil {
 		return err
 	}
@@ -2998,6 +3001,7 @@ func buildHubServerConfig(cfg *config.GlobalConfig, hubEndpoint, devAuthToken st
 		SoftDeleteRetainFiles:        cfg.Hub.SoftDeleteRetainFiles,
 		ChatSearchTimeout:            chatSearchTimeout(cfg),
 		ChatSearchMaxConcurrent:      cfg.Hub.Chat.Search.MaxConcurrent,
+		Uploads:                      cfg.Hub.Uploads,
 		DatabaseMaxOpenConns:         cfg.Database.MaxOpenConns,
 		PerfTrace:                    cfg.Hub.PerfTrace,
 		CSPReportRawSamples:          cfg.Hub.CSPReportRawSamples,

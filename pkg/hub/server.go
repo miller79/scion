@@ -343,6 +343,10 @@ type ServerConfig struct {
 	// DefaultChatSearchMaxConcurrent. On Postgres the effective cap is
 	// clamped to a quarter of DatabaseMaxOpenConns (EffectiveChatSearchCap).
 	ChatSearchMaxConcurrent int
+	// Uploads holds the web upload limits (server config
+	// hub.uploads): per-file maximums, chunk size and the cap on chunked
+	// uploads in progress. Zero fields mean the defaults.
+	Uploads config.HubUploadsConfig
 	// DatabaseMaxOpenConns is the hub's main pool size (server config
 	// database.max_open_conns after the driver defaults). It bounds the
 	// Postgres chat search cap. Zero means unknown (read as the default pool).
@@ -1989,6 +1993,10 @@ type Server struct {
 	// uploadFormMemoryForTest, when positive, replaces maxUploadTotalSize as
 	// the in-memory multipart limit (uploadFormMaxMemory). Set by tests only.
 	uploadFormMemoryForTest int64
+
+	// chunkedUploads holds the chunked web uploads in progress on this
+	// instance (chunked_upload.go).
+	chunkedUploads chunkedUploads
 
 	// workspaceBodyLimitForTest, when positive, replaces maxUploadTotalSize as
 	// the workspace file write and upload body cap (workspaceBodyLimit). Set
@@ -7343,6 +7351,11 @@ func (s *Server) registerSchedulerHandlers() {
 	// brokers it personally holds a live local control-channel socket for
 	// (see brokerProviderSelfHealHandler), so every instance must run it.
 	s.scheduler.RegisterRecurring("broker-provider-selfheal", 1, s.brokerProviderSelfHealHandler())
+	// Not a singleton: chunked uploads live in this instance's memory and
+	// temporary directory, so every instance removes its own idle ones.
+	s.scheduler.RegisterRecurring("chunked-upload-sweep", 5, func(context.Context) {
+		s.chunkedUploads.sweep(time.Now())
+	})
 	s.scheduler.RegisterRecurringSingleton("broker-message-sweep", 5, store.LockBrokerMessageSweep, s.brokerMessageSweepHandler())
 	s.scheduler.RegisterRecurringSingleton("failed-message-retention", 60, store.LockFailedMessageRetention, s.failedMessageRetentionHandler())
 	// Chat message retention (hub.chat_retention): checked every minute;

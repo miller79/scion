@@ -88,6 +88,7 @@ Controls the central Hub API server.
 | `chat` | object | | Web chat limits (see [Chat search](#chat-search-serverhubchatsearch)). |
 | `default_message_mode` | string | `"project"` | [Message mode](/scion/reference/messaging-authorization/) of a new agent when neither the create request, its template nor its parent agent sets one: `none`, `lineage`, `branch` or `project`. `hub` is refused: hub mode is granted per agent. Existing agents keep their mode. Startup-only: restart required to change. Env: `SCION_SERVER_HUB_DEFAULTMESSAGEMODE`. |
 | `schedules` | object | | Limits on recurring schedules (see [Recurring schedules](#recurring-schedules-serverhubschedules)). |
+| `uploads` | object | | Web upload limits (see [Uploads](#uploads-serverhubuploads)). |
 
 #### Recurring schedules (`server.hub.schedules`)
 
@@ -210,6 +211,17 @@ Bounds on web chat search, so one search cannot stall the hub. Each search runs 
 | :--- | :--- | :--- | :--- |
 | `timeout` | duration | `"3s"` | Time limit of one search; a positive Go duration. The admin settings update refuses an invalid value with `422`; at startup an invalid value is logged and the default used. Env: `SCION_SERVER_HUB_CHAT_SEARCH_TIMEOUT`. |
 | `max_concurrent` | int | `2` | Searches running hub-wide at once. `0` means the default. On SQLite it is also the size of the read-only search connection pool. On Postgres, where search shares the main connection pool, the hub lowers it to a quarter of `database.max_open_conns` (at least 1; 1 with the default pool of 5) and logs one startup line with the configured and effective values. Env: `SCION_SERVER_HUB_CHAT_SEARCH_MAXCONCURRENT`. |
+
+#### Uploads (`server.hub.uploads`)
+
+Limits of the files users upload from the web UI: chat attachments, and project workspace and shared directory files (the **Files** tab and terminal drag and drop). The web UI reads them from `GET /api/v1/settings/public` (`uploads`), refuses a file over the per-file limit before sending it, and uploads a file larger than `chunk_size` in chunks of `chunk_size` bytes through the same upload route (`?upload=start`, `chunk`, `finish`, `abort`). Each request is then at most one chunk, so a reverse proxy or load balancer in front of the Hub only has to accept a request of `chunk_size` bytes plus a little overhead; only the per-file limit bounds the file. Chunks are written to a temporary file under the system temporary directory (`TMPDIR`), never held in memory; each call is authorized like a one-request upload, an upload is bound to the caller and to its project and directory, and an upload idle for an hour is removed. A caller can have 4 chunked uploads in progress at once, holding at most a quarter of `max_pending_size` (at least the per-file limit). A repeated `finish` (for example after a proxy timed out while the Hub stored a large file) gets the first one's response for 15 minutes. Several files are uploaded one after the other, so a failure part way leaves the earlier files stored. Chunked uploads live in one Hub instance, so every request of one upload must reach the same instance. Where the temporary directory is memory-backed (for example tmpfs, or Cloud Run without a mounted volume), point `TMPDIR` at disk or keep `max_pending_size` within the instance memory. Read at startup; restart required to change. All sizes are in bytes; `0` means the default.
+
+| Field | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `max_attachment_size` | int | `10485760` (10 MiB) | Per-file limit of a chat attachment stored by the Hub's attachment store. Attachments stored in the artifact service keep that service's file size limit. At most 64 GiB. Env: `SCION_SERVER_HUB_UPLOADS_MAXATTACHMENTSIZE`. |
+| `max_workspace_file_size` | int | `52428800` (50 MiB) | Per-file limit of an upload to a project workspace or shared directory. At most 64 GiB. Env: `SCION_SERVER_HUB_UPLOADS_MAXWORKSPACEFILESIZE`. |
+| `chunk_size` | int | `8388608` (8 MiB) | Request body size of one chunk of a chunked upload. Between 256 KiB and 64 MiB. Env: `SCION_SERVER_HUB_UPLOADS_CHUNKSIZE`. |
+| `max_pending_size` | int | 4 × the larger per-file limit, at least 1 GiB | Cap on the declared sizes of all chunked uploads in progress on one Hub instance (their temporary files); a new upload over it is answered with `503`. Must be at least the larger per-file limit. Env: `SCION_SERVER_HUB_UPLOADS_MAXPENDINGSIZE`. |
 
 #### Observability export (`server.hub.observability`)
 

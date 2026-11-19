@@ -187,6 +187,7 @@
     "server.hub.system_one",
     "server.hub.default_message_mode",
     "server.hub.schedules",
+    "server.hub.uploads",
     "server.relay"
   ],
   "file_keys": [

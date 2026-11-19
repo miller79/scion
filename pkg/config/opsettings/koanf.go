@@ -125,6 +125,9 @@ var layer0Prefixes = []string{
 	"server.hub.default_message_mode",
 	// Recurring schedule limits — read into ServerConfig at startup.
 	"server.hub.schedules",
+	// Web upload limits (per-file maximums, chunk size, pending cap) — read
+	// into ServerConfig at startup.
+	"server.hub.uploads",
 	// Separate relay process settings (scion server --role relay) — read
 	// at startup.
 	"server.relay",
