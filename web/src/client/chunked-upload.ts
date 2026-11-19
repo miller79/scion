@@ -122,9 +122,22 @@ export function _setOneRequestLimitsForTest(
   oneRequestLimits = { ...ONE_REQUEST_LIMITS, ...(limits ?? {}) };
 }
 
-/** Whether a workspace or shared directory upload of files fits one request. */
-export function fitsOneWorkspaceRequest(files: ArrayLike<Blob>): boolean {
-  return fitsOneRequest(files, oneRequestLimits.workspaceBody);
+const utf8 = new TextEncoder();
+
+/**
+ * Whether a workspace or shared directory upload of entries fits one
+ * request. Each part names its path twice (field name and file name), so
+ * the path's bytes are counted on top of the framing, three times over for
+ * characters the browser escapes.
+ */
+export function fitsOneWorkspaceRequest(
+  entries: ReadonlyArray<{ path: string; file: Blob }>
+): boolean {
+  let total = 0;
+  for (const e of entries) {
+    total += e.file.size + MULTIPART_OVERHEAD_PER_FILE + 6 * utf8.encode(e.path).length;
+  }
+  return total <= oneRequestLimits.workspaceBody;
 }
 
 /**
@@ -358,7 +371,7 @@ export async function uploadWorkspaceFiles(
   }
   const total = entries.reduce((sum, e) => sum + e.file.size, 0);
 
-  if (fitsOneWorkspaceRequest(entries.map((e) => e.file))) {
+  if (fitsOneWorkspaceRequest(entries)) {
     const formData = new FormData();
     for (const e of entries) formData.append(e.path, e.file);
     const res = await apiFetch(url, { method: 'POST', body: formData });
