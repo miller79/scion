@@ -322,8 +322,9 @@ var Registry = []Permission{
 	{ID: "policy.list", Resource: ResourcePolicy, Action: ActionList, CapabilityKind: CapabilityScope, Description: "List policies", Enforcement: []string{"pkg/hub/handlers_policies.go", "pkg/hub/route_metadata.go:requireAdmin"}},
 
 	// broker.create is a hub-level permission: registration is gated by an
-	// explicit hub-member role grant (seed.go hubMemberPermissionIDs), not by
-	// mere authentication. Its UAT selector "broker:create" is mintable only
+	// explicit grant, not by mere authentication. The built-in hub-admin and
+	// super-admin roles hold it; hub-member does not (its revision 6), so an
+	// ordinary user needs a role an administrator grants. Its UAT selector "broker:create" is mintable only
 	// on a hub-boundary token (PermissionAllowedBoundaries). Registration is
 	// admitted for interactive sessions, dev credentials and hub-boundary
 	// UATs carrying broker:create, through the bearer gate

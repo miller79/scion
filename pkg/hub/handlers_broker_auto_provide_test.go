@@ -45,7 +45,7 @@ func getBrokerAutoProvide(t *testing.T, s store.Store, brokerID string) bool {
 func TestBrokerAutoProvide_HubMemberSessionDeniedForNewBroker(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
-	member := newHubMemberUser(t, s, "autoprovide-member-new")
+	member := newBrokerRegistrarUser(t, s, "autoprovide-member-new")
 
 	const name = "autoprovide-member-new-broker"
 	rec := doRequestAsUserLoopback(t, srv, member, http.MethodPost, "/api/v1/brokers", CreateBrokerRegistrationRequest{
@@ -67,7 +67,7 @@ func TestBrokerAutoProvide_HubMemberSessionDeniedForNewBroker(t *testing.T) {
 func TestBrokerAutoProvide_HubMemberOwnerDeniedTurningOnForOwnBroker(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
-	owner := newHubMemberUser(t, s, "autoprovide-owner-turnon")
+	owner := newBrokerRegistrarUser(t, s, "autoprovide-owner-turnon")
 	broker := createReregistrationTestBroker(t, s, "autoprovide-owner-turnon-broker", owner.ID)
 
 	rec := doRequestAsUserLoopback(t, srv, owner, http.MethodPost, "/api/v1/brokers", CreateBrokerRegistrationRequest{
@@ -88,7 +88,7 @@ func TestBrokerAutoProvide_HubMemberOwnerDeniedTurningOnForOwnBroker(t *testing.
 func TestBrokerAutoProvide_PreserveSettingsOwnerReissueLeavesSettingOff(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
-	owner := newHubMemberUser(t, s, "autoprovide-owner-preserve")
+	owner := newBrokerRegistrarUser(t, s, "autoprovide-owner-preserve")
 	broker := createReregistrationTestBroker(t, s, "autoprovide-owner-preserve-broker", owner.ID)
 
 	rec := doRequestAsUserLoopback(t, srv, owner, http.MethodPost, "/api/v1/brokers", CreateBrokerRegistrationRequest{
@@ -110,8 +110,8 @@ func TestBrokerAutoProvide_PreserveSettingsNonOwnerDeniedForOthersBroker(t *test
 	t.Parallel()
 	srv, s := testServer(t)
 	ctx := context.Background()
-	owner := newHubMemberUser(t, s, "autoprovide-preserve-owner")
-	member := newHubMemberUser(t, s, "autoprovide-preserve-nonowner")
+	owner := newBrokerRegistrarUser(t, s, "autoprovide-preserve-owner")
+	member := newBrokerRegistrarUser(t, s, "autoprovide-preserve-nonowner")
 	broker := createReregistrationTestBroker(t, s, "autoprovide-preserve-others-broker", owner.ID)
 
 	ownerRec := mintJoinToken(t, srv, owner, broker.Name, 600)
@@ -160,7 +160,7 @@ func TestBrokerAutoProvide_SuperAdminSessionAllowed(t *testing.T) {
 func TestBrokerAutoProvide_OwnerKeepsExistingSetting(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
-	owner := newHubMemberUser(t, s, "autoprovide-owner-keep")
+	owner := newBrokerRegistrarUser(t, s, "autoprovide-owner-keep")
 	broker := createReregistrationTestBroker(t, s, "autoprovide-owner-keep-broker", owner.ID)
 	setBrokerAutoProvide(t, s, broker.ID, true)
 
@@ -177,7 +177,7 @@ func TestBrokerAutoProvide_OwnerKeepsExistingSetting(t *testing.T) {
 func TestBrokerAutoProvide_OwnerTurnsOff(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
-	owner := newHubMemberUser(t, s, "autoprovide-owner-off")
+	owner := newBrokerRegistrarUser(t, s, "autoprovide-owner-off")
 	broker := createReregistrationTestBroker(t, s, "autoprovide-owner-off-broker", owner.ID)
 	setBrokerAutoProvide(t, s, broker.ID, true)
 
@@ -309,7 +309,7 @@ func TestBrokerAutoProvide_SeedReconcileGrantsSuperAdmin(t *testing.T) {
 	d = srv.authzService.CheckAccess(ctx, adminIdent, resource, ActionAutoProvide)
 	assert.True(t, d.Allowed, "a super-admin holds broker.auto_provide after reconciliation: %s", d.Reason)
 
-	member := newHubMemberUser(t, s, "autoprovide-reconcile-member")
+	member := newBrokerRegistrarUser(t, s, "autoprovide-reconcile-member")
 	memberIdent := NewAuthenticatedUser(member.ID, member.Email, member.DisplayName, "member", "api")
 	d = srv.authzService.CheckAccess(ctx, memberIdent, resource, ActionAutoProvide)
 	assert.False(t, d.Allowed, "a hub member does not hold broker.auto_provide: %s", d.Reason)

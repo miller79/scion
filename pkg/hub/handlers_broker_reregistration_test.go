@@ -172,7 +172,7 @@ func TestBrokerReregistration_OwnerAllowed(t *testing.T) {
 	// denied on a match too (see
 	// TestBrokerReregistration_OwnerWithoutBrokerCreateDenied), so this owner
 	// must be a hub member to hold broker.create.
-	owner := newHubMemberUser(t, s, "reregistration-owner-c")
+	owner := newBrokerRegistrarUser(t, s, "reregistration-owner-c")
 	broker := createReregistrationTestBroker(t, s, "reregistration-broker-owner-c", owner.ID)
 
 	rec := doRequestAsUserLoopback(t, srv, owner, http.MethodPost, "/api/v1/brokers", CreateBrokerRegistrationRequest{
@@ -264,14 +264,14 @@ func TestBrokerReregistration_SuperAdminAllowed(t *testing.T) {
 func TestBrokerRegistration_NewRegistrationRequiresBrokerCreate(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
-	requester := newHubMemberUser(t, s, "reregistration-newuser-e")
+	requester := newBrokerRegistrarUser(t, s, "reregistration-newuser-e")
 
 	rec := doRequestAsUserLoopback(t, srv, requester, http.MethodPost, "/api/v1/brokers", CreateBrokerRegistrationRequest{
 		Name: "a brand new broker name never seen before",
 	})
 
 	require.Equal(t, http.StatusCreated, rec.Code,
-		"first-time registration by a hub member holding broker.create should succeed; got: %s", rec.Body.String())
+		"first-time registration by a user holding broker.create should succeed; got: %s", rec.Body.String())
 
 	var resp CreateBrokerRegistrationResponse
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))

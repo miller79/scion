@@ -364,6 +364,7 @@ func TestBrokerAuthz_AutoProvideRegistration_StatusSeesProviderImmediately(t *te
 	}
 	require.NoError(t, s.CreateUser(ctx, operator))
 	ensureHubMembership(ctx, s, operator.ID)
+	grantBrokerCreate(t, s, operator.ID, nil)
 
 	// Phase 1: POST /api/v1/brokers — create the broker registration, then
 	// turn auto-provide on in the store.
@@ -483,6 +484,7 @@ func TestBrokerAuthz_GetBrokerProjects_HidesUnreadableProjects(t *testing.T) {
 	}
 	require.NoError(t, s.CreateUser(ctx, owner))
 	ensureHubMembership(ctx, s, owner.ID)
+	grantBrokerCreate(t, s, owner.ID, nil)
 
 	outsider := &store.User{
 		ID:          tid("user-provider-filter-outsider"),
@@ -543,6 +545,7 @@ func TestBrokerAuthz_GetBrokerProjects_AdminSeesAll(t *testing.T) {
 	}
 	require.NoError(t, s.CreateUser(ctx, owner))
 	ensureHubMembership(ctx, s, owner.ID)
+	grantBrokerCreate(t, s, owner.ID, nil)
 
 	adminID := tid("user-provider-filter-admin")
 	createTestUserWithRole(t, s, adminID, "provider-filter-admin@test.com", "admin", store.SystemRoleSuperAdmin)
@@ -581,6 +584,7 @@ func TestGetBrokerProjects_IsDefault(t *testing.T) {
 	}
 	require.NoError(t, s.CreateUser(ctx, owner))
 	ensureHubMembership(ctx, s, owner.ID)
+	grantBrokerCreate(t, s, owner.ID, nil)
 
 	outsider := &store.User{
 		ID:          tid("user-isdefault-outsider"),
@@ -674,6 +678,7 @@ func TestBrokerAuthz_GetBrokerProjects_ToleratesNotFoundProject(t *testing.T) {
 	}
 	require.NoError(t, s.CreateUser(ctx, owner))
 	ensureHubMembership(ctx, s, owner.ID)
+	grantBrokerCreate(t, s, owner.ID, nil)
 
 	brokerID, project := autoProvideBrokerWithProject(t, srv, owner,
 		"notfound-project-broker", "StaleProj", "https://github.com/acme/stale-repo.git")
@@ -728,6 +733,7 @@ func TestBrokerAuthz_GetBrokerProjects_PropagatesOtherProjectErrors(t *testing.T
 	}
 	require.NoError(t, s.CreateUser(ctx, owner))
 	ensureHubMembership(ctx, s, owner.ID)
+	grantBrokerCreate(t, s, owner.ID, nil)
 
 	brokerID, project := autoProvideBrokerWithProject(t, srv, owner,
 		"getproject-error-broker", "ErrProj", "https://github.com/acme/err-repo.git")
