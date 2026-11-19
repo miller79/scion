@@ -205,3 +205,26 @@ func TestValidReimportSourceURL(t *testing.T) {
 	// The shorthand allowance is reimport-only; finalize does not accept it.
 	assert.False(t, validRecordedSourceURL("github.com/myorg/scion-harnesses/tree/main/hermes"))
 }
+
+// TestReimportSourceURL_GCSOverride: a gs:// source, which an allowlist may
+// let the Hub import from, passes the override and finalize validation
+// (the allowlist is checked when it is fetched), and the validation message
+// lists only the forms the Hub imports from.
+func TestReimportSourceURL_GCSOverride(t *testing.T) {
+	assert.True(t, validReimportSourceURL("gs://team-bucket/hc/claude"))
+	assert.True(t, validRecordedSourceURL("gs://team-bucket/hc/claude"))
+	assert.False(t, validReimportSourceURL("gs://team-bucket/hc/\nclaude"))
+
+	assert.Contains(t, invalidSourceURLMessage, "gs://")
+	assert.NotContains(t, invalidSourceURLMessage, "http://")
+	assert.NotContains(t, invalidSourceURLMessage, "rclone")
+
+	srv, s := testInstallSourceServer(t)
+	hc := installClaudeViaHub(t, srv, s, installPinnedClaudeURL)
+	// No allowlist: validation passes and the import source policy refuses
+	// it, before any fetch.
+	rec := doRequest(t, srv, http.MethodPost, "/api/v1/harness-configs/"+hc.ID+"/reimport",
+		map[string]interface{}{"sourceUrl": "gs://team-bucket/hc/claude"})
+	assert.NotEqual(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.NotEqual(t, "validation_error", reimportErrorCode(t, rec.Body.Bytes()), rec.Body.String())
+}
