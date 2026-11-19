@@ -107,3 +107,85 @@ func TestSchedule_CreatorMayPauseAndDelete(t *testing.T) {
 	srv.handleSchedules(rec, req.WithContext(noCred), projectID, others.ID+"/pause")
 	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
 }
+
+// reauthorizeOnFirstReadStore re-authorizes schedule id to ownerID (a new
+// initiator and authorization revision) right after the first GetSchedule
+// of it returns, as an owner edit or resume landing between the creator
+// check and the handler that acts on it.
+type reauthorizeOnFirstReadStore struct {
+	store.Store
+	t       *testing.T
+	id      string
+	ownerID string
+	reads   *int
+}
+
+func (s reauthorizeOnFirstReadStore) GetSchedule(ctx context.Context, id string) (*store.Schedule, error) {
+	sc, err := s.Store.GetSchedule(ctx, id)
+	if err != nil || id != s.id {
+		return sc, err
+	}
+	*s.reads++
+	if *s.reads == 1 {
+		next := *sc
+		attr := sc.InitiatorAttribution
+		attr.InitiatorPrincipalID = s.ownerID
+		attr.AuthorizationRevision = sc.AuthorizationRevision + 1
+		require.NoError(s.t, s.Store.UpdateSchedule(ctx, &next, store.ScheduleFieldMask{Status: true},
+			sc.AuthorizationRevision, true, &attr))
+	}
+	return sc, nil
+}
+
+// TestSchedule_CreatorStopRefusedWhenReauthorizedMeanwhile: when an owner
+// re-authorizes a schedule between the creator check and the pause or
+// delete that follows it, the creator's request is refused with 409 and the
+// schedule, now running under the owner, is left unchanged.
+func TestSchedule_CreatorStopRefusedWhenReauthorizedMeanwhile(t *testing.T) {
+	srv, s, projectID := setupScheduleTest(t)
+	ctx := context.Background()
+
+	memberID := tid("sched-race-member")
+	createTestUserWithProjectRole(t, s, memberID, "schedrace@test.com", projectID, store.ProjectRoleMember)
+	member := NewAuthenticatedUser(memberID, "schedrace@test.com", "Creator", "member", "web")
+	ownerID := tid("sched-race-owner")
+
+	mk := func(name string) *store.Schedule {
+		next := time.Now().Add(time.Hour).UTC()
+		sc := &store.Schedule{
+			ID: tid("sched-race-" + name), ProjectID: projectID, Name: name, CronExpr: "0 * * * *",
+			EventType: "message", Payload: `{"agentName":"all","message":"hi"}`,
+			Status: store.ScheduleStatusActive, NextRunAt: &next, CreatedBy: memberID,
+			InitiatorAttribution: store.InitiatorAttribution{
+				InitiatorPrincipalKind: member.Type(), InitiatorPrincipalID: memberID,
+				InitiatorCredentialKind: store.InitiatorCredentialKindSession,
+				AttributionVersion:      1, AuthorizationRevision: 1,
+			},
+		}
+		require.NoError(t, s.CreateSchedule(ctx, sc))
+		return sc
+	}
+	base := srv.store
+	t.Cleanup(func() { srv.store = base })
+
+	for _, tc := range []struct{ name, method, suffix string }{
+		{"delete", http.MethodDelete, ""},
+		{"pause", http.MethodPost, "/pause"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := mk(tc.name)
+			reads := 0
+			srv.store = reauthorizeOnFirstReadStore{Store: base, t: t, id: sc.ID, ownerID: ownerID, reads: &reads}
+			defer func() { srv.store = base }()
+
+			rec := doScheduleSessionRequest(t, srv, member, tc.method, projectID, sc.ID+tc.suffix)
+			assert.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+			assert.Equal(t, 2, reads, "the creator check and the handler each read the schedule once")
+
+			got, err := s.GetSchedule(ctx, sc.ID)
+			require.NoError(t, err, "the schedule must not be deleted")
+			assert.Equal(t, store.ScheduleStatusActive, got.Status, "the schedule must not be paused")
+			assert.Equal(t, ownerID, got.InitiatorPrincipalID)
+		})
+	}
+}
