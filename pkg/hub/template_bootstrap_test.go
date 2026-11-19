@@ -1342,10 +1342,11 @@ func TestImportHarnessConfigsFromRemote_WithProjectGithubToken(t *testing.T) {
 }
 
 // TestImportTemplatesFromRemote_NoSparseCheckoutFallback: when the GitHub
-// tarball download fails, a Hub import fails instead of falling back to a
-// git sparse checkout (a checkout fetches every blob of the commit, which
-// the Hub's fetch limits cannot bound). Branch resolution still uses the
-// project GITHUB_TOKEN, and the checkout seam is never reached.
+// archive downloads fail (the branch, tag and commit archives of the ref),
+// a Hub import fails instead of falling back to a git sparse checkout (a
+// checkout fetches every blob of the commit, which the Hub's fetch limits
+// cannot bound). Branch resolution still uses the project GITHUB_TOKEN, and
+// the checkout seam is never reached.
 func TestImportTemplatesFromRemote_NoSparseCheckoutFallback(t *testing.T) {
 	srv, s, stor := testTemplateBootstrapServer(t)
 	ctx := context.Background()
@@ -1379,13 +1380,13 @@ func TestImportTemplatesFromRemote_NoSparseCheckoutFallback(t *testing.T) {
 	// parallel.
 	oldTransport := http.DefaultClient.Transport
 	defer func() { http.DefaultClient.Transport = oldTransport }()
-	tarballRequests := 0
+	var tarballRequests []string
 	http.DefaultClient.Transport = &mockRoundTripper{
 		roundTrip: func(req *http.Request) (*http.Response, error) {
 			if req.URL.Host != "github.com" {
 				return nil, fmt.Errorf("unexpected request to host: %s", req.URL.Host)
 			}
-			tarballRequests++
+			tarballRequests = append(tarballRequests, req.URL.Path)
 			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(bytes.NewReader(nil)), Request: req}, nil
 		},
 	}
@@ -1394,8 +1395,13 @@ func TestImportTemplatesFromRemote_NoSparseCheckoutFallback(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the import to fail when the tarball download fails")
 	}
-	if tarballRequests != 1 {
-		t.Errorf("expected exactly one tarball request, got %d", tarballRequests)
+	wantRequests := []string{
+		"/chiefkarlin/scion-experiments/archive/refs/heads/main.tar.gz",
+		"/chiefkarlin/scion-experiments/archive/refs/tags/main.tar.gz",
+		"/chiefkarlin/scion-experiments/archive/main.tar.gz",
+	}
+	if !reflect.DeepEqual(tarballRequests, wantRequests) {
+		t.Errorf("expected the branch, tag and commit archive requests %v, got %v", wantRequests, tarballRequests)
 	}
 	assertLsRemoteCalledWithToken(t, lsRemote)
 	if calls := checkout.Calls(); len(calls) != 0 {
