@@ -99,6 +99,11 @@ type RemoteFetchOptions struct {
 	PrivateCacheDir bool
 }
 
+// ErrRemoteDownloadTimeout is returned (wrapped) by a download hook when a
+// download took too long; a GitHub fetch does not try other archives after
+// it.
+var ErrRemoteDownloadTimeout = errors.New("the source download timed out")
+
 // ErrRemoteFetchLimit is returned (wrapped) when a fetch exceeds a limit
 // set in RemoteFetchOptions.
 var ErrRemoteFetchLimit = errors.New("remote template source exceeds the size or file-count limit")
@@ -737,7 +742,7 @@ func (f *remoteFetcher) fetchGitHubTarball(ctx context.Context, parts *GitHubURL
 		archive + branch + ".tar.gz",
 	} {
 		body, err = f.get(ctx, tarballURL, authorization, "tarball")
-		if err == nil || errors.Is(err, ErrRemoteFetchLimit) || ctx.Err() != nil {
+		if err == nil || errors.Is(err, ErrRemoteFetchLimit) || errors.Is(err, ErrRemoteDownloadTimeout) || ctx.Err() != nil {
 			break
 		}
 	}
@@ -745,7 +750,7 @@ func (f *remoteFetcher) fetchGitHubTarball(ctx context.Context, parts *GitHubURL
 		if errors.Is(err, ErrRemoteFetchLimit) {
 			return gitHubLimitHint(err)
 		}
-		if ctx.Err() == nil {
+		if ctx.Err() == nil && !errors.Is(err, ErrRemoteDownloadTimeout) {
 			err = fmt.Errorf("GitHub branch, tag or commit %q was not found in %s/%s: %w", branch, parts.Owner, parts.Repo, err)
 		}
 		return err
@@ -1299,7 +1304,7 @@ const (
 	zipDirLen           = 46         // central directory record, without variable fields
 	zipDirSignature     = 0x02014b50 // central directory record
 	zipMaxCommentLen    = 0xffff
-	zipMaxRecordExtra   = 4096 // extra field and comment bytes allowed per record on average
+	zipMaxRecordExtra   = 256 // extra field and comment bytes allowed per record on average
 	zipMaxRecordAverage = zipDirLen + maxFetchEntryName + zipMaxRecordExtra
 )
 
