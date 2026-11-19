@@ -52,7 +52,9 @@ const errWorkspaceWritesUnavailable = "Workspace writes are not available in thi
 // maxUploadTotalSize is the maximum total request body size for file uploads (100MB).
 const maxUploadTotalSize = 100 * 1024 * 1024
 
-// maxUploadFileSize is the maximum size for a single uploaded file (50MB).
+// maxUploadFileSize is the maximum size for a single uploaded template or
+// harness-config file (50MB). Project workspace and shared directory uploads
+// use server.hub.uploads.max_workspace_file_size instead.
 const maxUploadFileSize = 50 * 1024 * 1024
 
 // maxEditableFileSize is the maximum file size the editor will serve for inline editing (1MB).
@@ -639,7 +641,7 @@ func (s *Server) handleProjectWorkspace(w http.ResponseWriter, r *http.Request, 
 	case r.Method == http.MethodGet && filePath != "":
 		s.handleProjectWorkspaceDownload(w, r, root, filePath)
 	case r.Method == http.MethodPost && filePath == "":
-		s.handleProjectWorkspaceUpload(w, r, root, gate)
+		s.handleProjectWorkspaceUpload(w, r, root, gate, "workspace:"+project.ID)
 	case r.Method == http.MethodPut && filePath != "":
 		s.handleProjectWorkspaceWrite(w, r, root, filePath, gate)
 	case r.Method == http.MethodDelete && filePath != "":
@@ -698,11 +700,30 @@ func (s *Server) handleSharedDirFileList(w http.ResponseWriter, r *http.Request,
 	})
 }
 
-// handleProjectWorkspaceUpload handles file uploads to a project workspace.
-func (s *Server) handleProjectWorkspaceUpload(w http.ResponseWriter, r *http.Request, root *os.Root, gate writeGate) {
+// handleProjectWorkspaceUpload handles file uploads to a project workspace
+// or shared directory. scope names the target (kind, project and directory);
+// a chunked upload is bound to it, so it cannot be finished into another.
+func (s *Server) handleProjectWorkspaceUpload(w http.ResponseWriter, r *http.Request, root *os.Root, gate writeGate, scope string) {
 	// Phase 0 safety gate: reject writes on Cloud Run to storage that is not
 	// durable for this target (the caller's gate).
 	if gate.refuse(w) {
+		return
+	}
+
+	maxFile := s.config.Uploads.EffectiveMaxWorkspaceFileSize()
+
+	// A chunked upload (?upload=start|chunk|finish|abort): every call has
+	// passed the same route authorization and write gate as a one-request
+	// upload, and the finished file is written as one is.
+	if op := r.URL.Query().Get(chunkedUploadOpParam); op != "" {
+		s.serveChunkedUpload(w, r, op, chunkedUploadTarget{
+			scope:        scope,
+			maxSize:      maxFile,
+			validateName: validateWorkspaceWritePath,
+			finish: func(w http.ResponseWriter, _ *http.Request, f chunkedUploadFile) {
+				finishWorkspaceUpload(w, root, f)
+			},
+		})
 		return
 	}
 
@@ -733,8 +754,8 @@ func (s *Server) handleProjectWorkspaceUpload(w http.ResponseWriter, r *http.Req
 			return
 		}
 		for _, fh := range fileHeaders {
-			if fh.Size > maxUploadFileSize {
-				BadRequest(w, fmt.Sprintf("File %q exceeds 50MB limit", relPath))
+			if fh.Size > maxFile {
+				writeFileTooLarge(w, relPath, maxFile)
 				return
 			}
 		}
@@ -776,6 +797,38 @@ func (s *Server) handleProjectWorkspaceUpload(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, ProjectWorkspaceUploadResponse{
 		Files: uploaded,
 	})
+}
+
+// finishWorkspaceUpload writes the assembled file of a chunked upload to
+// root, through the same walk as a one-request upload, and answers with the
+// same response.
+func finishWorkspaceUpload(w http.ResponseWriter, root *os.Root, f chunkedUploadFile) {
+	src, err := os.Open(f.path)
+	if err != nil {
+		InternalError(w)
+		return
+	}
+	defer func() { _ = src.Close() }()
+	written, info, err := writeWorkspaceFile(root, f.name, src)
+	if err != nil {
+		writeWorkspaceFileError(w, "upload", f.name, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ProjectWorkspaceUploadResponse{
+		Files: []ProjectWorkspaceFile{{
+			Path:    f.name,
+			Size:    written,
+			ModTime: info.ModTime(),
+			Mode:    info.Mode().String(),
+		}},
+	})
+}
+
+// writeFileTooLarge answers 413 for a file above the per-file upload limit.
+func writeFileTooLarge(w http.ResponseWriter, name string, limit int64) {
+	writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large",
+		fmt.Sprintf("File %q exceeds the maximum size of %s (%d bytes)", name, formatByteSize(limit), limit),
+		map[string]interface{}{"maxSize": limit})
 }
 
 // handleProjectWorkspaceDownload serves a single file from a project workspace.
@@ -1288,7 +1341,7 @@ func (s *Server) handleSharedDirFiles(w http.ResponseWriter, r *http.Request, pr
 	case r.Method == http.MethodGet && filePath != "":
 		s.handleProjectWorkspaceDownload(w, r, root, filePath)
 	case r.Method == http.MethodPost && filePath == "":
-		s.handleProjectWorkspaceUpload(w, r, root, s.sharedDirWriteGate(resolution))
+		s.handleProjectWorkspaceUpload(w, r, root, s.sharedDirWriteGate(resolution), "shared-dir:"+projectID+"/"+dirName)
 	case r.Method == http.MethodPut && filePath != "":
 		s.handleProjectWorkspaceWrite(w, r, root, filePath, s.sharedDirWriteGate(resolution))
 	case r.Method == http.MethodDelete && filePath != "":

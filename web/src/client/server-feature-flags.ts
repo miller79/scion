@@ -52,6 +52,12 @@ export interface PublicSettings {
   defaultTemplate?: string;
   defaultModel?: string;
   agentSecretsUserScopeOnly?: boolean;
+  /** Upload limits in bytes (`PublicUploadLimits`); read through getUploadLimits(). */
+  uploads?: {
+    chunkSize?: number;
+    maxAttachmentSize?: number;
+    maxWorkspaceFileSize?: number;
+  };
 }
 
 /** Successful result, kept until invalidatePublicSettings(). */

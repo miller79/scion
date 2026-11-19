@@ -140,6 +140,11 @@ server:
     # auto_suspend_stalled: true       # Layer 1 (section: lifecycle)
     # soft_delete_retention: "72h"     # Layer 1 (section: lifecycle)
     # soft_delete_retain_files: false  # Layer 1 (section: lifecycle)
+    # uploads:                        # Layer 0 (restart required). Web upload
+    #   max_attachment_size: 10485760  # limits in bytes; files larger than
+    #   max_workspace_file_size: 52428800 # chunk_size are uploaded in chunks.
+    #   chunk_size: 8388608
+    #   max_pending_size: 0            # 0 = 4 x the larger per-file limit (>= 1 GiB)
     # public_url: ""                   # Layer 1 (section: endpoints)
     # launch_timeout: "5m"             # Layer 0 (restart required). Reserved: not
     #                                   # yet read by any create path. Once live:

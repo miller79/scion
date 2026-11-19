@@ -155,6 +155,14 @@ func TestWorkstation_PutServerConfig_StartupBlockInvalidRejected(t *testing.T) {
 			`"system_one":{"max_eval_time":"45s"}`,
 			"server.hub.system_one.max_eval_time",
 			config.HubSystemOneConfig{MaxEvalTime: "45s"}.Validate().Error()},
+		{"uploads chunk_size below minimum",
+			`"uploads":{"chunk_size":1024}`,
+			"server.hub.uploads.chunk_size",
+			config.HubUploadsConfig{ChunkSize: 1024}.Validate().Error()},
+		{"uploads max_pending_size below the per-file limit",
+			`"uploads":{"max_pending_size":1048576}`,
+			"server.hub.uploads.max_pending_size",
+			config.HubUploadsConfig{MaxPendingSize: 1048576}.Validate().Error()},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
