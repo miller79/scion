@@ -306,6 +306,10 @@ type ServerConfig struct {
 	// not a public endpoint and is not in hubEndpointUses. Empty means
 	// plugins receive the public endpoint as hub_url.
 	InternalURL string
+	// ImportSourceAllowlist is server.hub.import_source_allowlist, normalized
+	// (config.NormalizeImportSourceAllowlist): the sources beyond
+	// https://github.com that template and harness-config imports may fetch.
+	ImportSourceAllowlist []string
 	// SlowRequestThreshold is the duration after which an HTTP request is
 	// logged as slow. Zero uses logging.DefaultSlowRequestThreshold.
 	SlowRequestThreshold time.Duration
