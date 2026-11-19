@@ -349,7 +349,7 @@ func (s *Server) createHarnessConfig(w http.ResponseWriter, r *http.Request) {
 		ValidationError(w, "slug is empty after normalization", nil)
 		return
 	}
-	if s.refuseHarnessConfigGlobalShadow(w, ctx, createScope, slug) {
+	if s.refuseHarnessConfigGlobalShadow(w, ctx, createScope, req.Name, slug) {
 		return
 	}
 
@@ -660,7 +660,8 @@ func (s *Server) updateHarnessConfig(w http.ResponseWriter, r *http.Request, exi
 	if hc.Slug == "" {
 		hc.Slug = api.Slugify(hc.Name)
 	}
-	if hc.Slug != existing.Slug && s.refuseHarnessConfigGlobalShadow(w, ctx, hc.Scope, hc.Slug) {
+	if (hc.Slug != existing.Slug || hc.Name != existing.Name) &&
+		s.refuseHarnessConfigGlobalShadow(w, ctx, hc.Scope, hc.Name, hc.Slug) {
 		return
 	}
 
@@ -675,7 +676,7 @@ func (s *Server) updateHarnessConfig(w http.ResponseWriter, r *http.Request, exi
 func (s *Server) patchHarnessConfig(w http.ResponseWriter, r *http.Request, existing *store.HarnessConfig) {
 	ctx := r.Context()
 
-	priorSlug := existing.Slug
+	priorSlug, priorName := existing.Slug, existing.Name
 	if !applyResourceMetadataPatch(w, r, resourceMetadataFields{
 		Name:        &existing.Name,
 		Slug:        &existing.Slug,
@@ -684,7 +685,8 @@ func (s *Server) patchHarnessConfig(w http.ResponseWriter, r *http.Request, exis
 	}) {
 		return
 	}
-	if existing.Slug != priorSlug && s.refuseHarnessConfigGlobalShadow(w, ctx, existing.Scope, existing.Slug) {
+	if (existing.Slug != priorSlug || existing.Name != priorName) &&
+		s.refuseHarnessConfigGlobalShadow(w, ctx, existing.Scope, existing.Name, existing.Slug) {
 		return
 	}
 
@@ -1306,7 +1308,7 @@ func (s *Server) handleHarnessConfigClone(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusConflict, "conflict", "A resource with this slug already exists in the target scope. Choose a different name.", nil)
 		return
 	}
-	if s.refuseHarnessConfigGlobalShadow(w, ctx, clone.Scope, clone.Slug) {
+	if s.refuseHarnessConfigGlobalShadow(w, ctx, clone.Scope, clone.Name, clone.Slug) {
 		return
 	}
 

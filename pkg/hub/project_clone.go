@@ -573,8 +573,8 @@ func (s *Server) cloneProjectHarnessConfigs(ctx context.Context, srcProjectID st
 
 	for _, srcHC := range result.Items {
 		// A source config that shadows a global one (created before such
-		// slugs were refused) is not carried into the clone.
-		if err := s.harnessConfigSlugShadowsGlobal(ctx, store.HarnessConfigScopeProject, srcHC.Slug); err != nil {
+		// slugs and names were refused) is not carried into the clone.
+		if err := s.harnessConfigShadowsGlobal(ctx, store.HarnessConfigScopeProject, srcHC.Name, srcHC.Slug); err != nil {
 			if !errors.Is(err, errShadowsGlobalSlug) {
 				return err
 			}
@@ -672,8 +672,8 @@ func (s *Server) cloneProjectTemplates(ctx context.Context, srcProjectID string,
 
 	for _, srcTmpl := range result.Items {
 		// A source template that shadows a global one (created before such
-		// slugs were refused) is not carried into the clone.
-		if err := s.templateSlugShadowsGlobal(ctx, store.TemplateScopeProject, srcTmpl.Slug); err != nil {
+		// slugs and names were refused) is not carried into the clone.
+		if err := s.templateShadowsGlobal(ctx, store.TemplateScopeProject, srcTmpl.Name, srcTmpl.Slug); err != nil {
 			if !errors.Is(err, errShadowsGlobalSlug) {
 				return err
 			}

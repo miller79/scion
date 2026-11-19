@@ -528,7 +528,7 @@ func (s *Server) createTemplateV2(w http.ResponseWriter, r *http.Request) {
 		BadRequest(w, "invalid slug: name cannot be slugified")
 		return
 	}
-	if s.refuseTemplateGlobalShadow(w, ctx, createScope, slug) {
+	if s.refuseTemplateGlobalShadow(w, ctx, createScope, req.Name, slug) {
 		return
 	}
 
@@ -756,7 +756,8 @@ func (s *Server) updateTemplateV2(w http.ResponseWriter, r *http.Request, id str
 	if template.Slug == "" {
 		template.Slug = api.Slugify(template.Name)
 	}
-	if template.Slug != existing.Slug && s.refuseTemplateGlobalShadow(w, ctx, template.Scope, template.Slug) {
+	if (template.Slug != existing.Slug || template.Name != existing.Name) &&
+		s.refuseTemplateGlobalShadow(w, ctx, template.Scope, template.Name, template.Slug) {
 		return
 	}
 
@@ -786,7 +787,7 @@ func (s *Server) patchTemplateV2(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 
-	priorSlug := existing.Slug
+	priorSlug, priorName := existing.Slug, existing.Name
 	if !applyResourceMetadataPatch(w, r, resourceMetadataFields{
 		Name:        &existing.Name,
 		Slug:        &existing.Slug,
@@ -795,7 +796,8 @@ func (s *Server) patchTemplateV2(w http.ResponseWriter, r *http.Request, id stri
 	}) {
 		return
 	}
-	if existing.Slug != priorSlug && s.refuseTemplateGlobalShadow(w, ctx, existing.Scope, existing.Slug) {
+	if (existing.Slug != priorSlug || existing.Name != priorName) &&
+		s.refuseTemplateGlobalShadow(w, ctx, existing.Scope, existing.Name, existing.Slug) {
 		return
 	}
 
@@ -1307,7 +1309,7 @@ func (s *Server) handleTemplateClone(w http.ResponseWriter, r *http.Request, id 
 		writeError(w, http.StatusConflict, "conflict", "A resource with this slug already exists in the target scope. Choose a different name.", nil)
 		return
 	}
-	if s.refuseTemplateGlobalShadow(w, ctx, clone.Scope, clone.Slug) {
+	if s.refuseTemplateGlobalShadow(w, ctx, clone.Scope, clone.Name, clone.Slug) {
 		return
 	}
 
