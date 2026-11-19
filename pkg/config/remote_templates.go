@@ -17,10 +17,12 @@ package config
 import (
 	"archive/tar"
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -720,15 +722,32 @@ func (f *remoteFetcher) fetchGitHubTarball(ctx context.Context, parts *GitHubURL
 		branch = "main"
 	}
 
-	tarballURL := fmt.Sprintf("https://github.com/%s/%s/archive/refs/heads/%s.tar.gz",
-		parts.Owner, parts.Repo, branch)
-
 	authorization := ""
 	if token != "" {
 		authorization = "Bearer " + token
 	}
-	body, err := f.get(ctx, tarballURL, authorization, "tarball")
+	// The ref may be a branch, a tag or a commit SHA; try the archive of
+	// each in turn.
+	archive := fmt.Sprintf("https://github.com/%s/%s/archive/", parts.Owner, parts.Repo)
+	var body io.ReadCloser
+	var err error
+	for _, tarballURL := range []string{
+		archive + "refs/heads/" + branch + ".tar.gz",
+		archive + "refs/tags/" + branch + ".tar.gz",
+		archive + branch + ".tar.gz",
+	} {
+		body, err = f.get(ctx, tarballURL, authorization, "tarball")
+		if err == nil || errors.Is(err, ErrRemoteFetchLimit) || ctx.Err() != nil {
+			break
+		}
+	}
 	if err != nil {
+		if errors.Is(err, ErrRemoteFetchLimit) {
+			return gitHubLimitHint(err)
+		}
+		if ctx.Err() == nil {
+			err = fmt.Errorf("GitHub branch, tag or commit %q was not found in %s/%s: %w", branch, parts.Owner, parts.Repo, err)
+		}
 		return err
 	}
 	defer func() { _ = body.Close() }()
@@ -750,7 +769,7 @@ func (f *remoteFetcher) fetchGitHubTarball(ctx context.Context, parts *GitHubURL
 	// If no sub-path, extract directly to destPath
 	subPath := strings.TrimRight(parts.Path, "/")
 	if subPath == "" {
-		return f.extractTarGz(tmpPath, destPath)
+		return gitHubLimitHint(f.extractTarGz(tmpPath, destPath))
 	}
 
 	// Extract to a temp directory, then copy the desired sub-path
@@ -761,10 +780,20 @@ func (f *remoteFetcher) fetchGitHubTarball(ctx context.Context, parts *GitHubURL
 	defer func() { _ = os.RemoveAll(tmpExtract) }()
 
 	if err := f.extractTarGz(tmpPath, tmpExtract); err != nil {
-		return err
+		return gitHubLimitHint(err)
 	}
 
-	return f.copyDirExcludingGit(tmpExtract, subPath, destPath)
+	return gitHubLimitHint(f.copyDirExcludingGit(tmpExtract, subPath, destPath))
+}
+
+// gitHubLimitHint adds to a limit error of a GitHub folder fetch that the
+// whole repository counts toward the limits; other errors are unchanged.
+func gitHubLimitHint(err error) error {
+	if err == nil || !errors.Is(err, ErrRemoteFetchLimit) {
+		return err
+	}
+	return fmt.Errorf("%w; a GitHub folder import downloads and unpacks the whole repository, "+
+		"so use a smaller repository or a release archive (.tar.gz or .zip URL) of the folder", err)
 }
 
 // GitHubURLParts contains parsed parts of a GitHub URL.
@@ -1184,6 +1213,13 @@ func extractZip(zipPath, destPath string) error {
 }
 
 func (f *remoteFetcher) extractZip(zipPath, destPath string) error {
+	if f.budget != nil {
+		// zip.OpenReader parses the whole central directory into memory,
+		// so bound it first.
+		if err := checkZipDirectory(zipPath, f.budget.maxFiles); err != nil {
+			return err
+		}
+	}
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return fmt.Errorf("failed to open zip: %w", err)
@@ -1252,6 +1288,114 @@ func (f *remoteFetcher) extractZip(zipPath, destPath string) error {
 	}
 
 	return nil
+}
+
+// Zip record layout used by checkZipDirectory.
+const (
+	zipEndLen           = 22         // end of central directory record, without comment
+	zipEndSignature     = 0x06054b50 // end of central directory record
+	zip64LocatorLen     = 20         // ZIP64 end of central directory locator
+	zip64LocatorSig     = 0x07064b50 // ZIP64 end of central directory locator
+	zipDirLen           = 46         // central directory record, without variable fields
+	zipDirSignature     = 0x02014b50 // central directory record
+	zipMaxCommentLen    = 0xffff
+	zipMaxRecordExtra   = 4096 // extra field and comment bytes allowed per record on average
+	zipMaxRecordAverage = zipDirLen + maxFetchEntryName + zipMaxRecordExtra
+)
+
+// checkZipDirectory bounds the central directory of the zip at path before
+// it is parsed: zip.OpenReader holds every record in memory, and the
+// per-entry budget checks run only after that. It refuses, with
+// ErrRemoteFetchLimit, a ZIP64 archive (not needed within a fetch budget),
+// an end record declaring more than maxFiles entries or a directory too
+// large for that many, a directory that does not end where the end record
+// begins, and a directory holding more than maxFiles records or a name
+// longer than maxFetchEntryName. The record walk is needed because the Go
+// reader checks the declared count only modulo 65536 and reads records
+// until it meets another signature. maxFiles <= 0 leaves the count
+// unbounded.
+func checkZipDirectory(path string, maxFiles int) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("failed to open zip: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to open zip: %w", err)
+	}
+	size := info.Size()
+	tailLen := int64(zipEndLen + zipMaxCommentLen)
+	if tailLen > size {
+		tailLen = size
+	}
+	tail := make([]byte, tailLen)
+	if _, err := file.ReadAt(tail, size-tailLen); err != nil {
+		return fmt.Errorf("failed to read zip: %w", err)
+	}
+	// The last end-record signature, as the Go reader finds it.
+	at := -1
+	for i := len(tail) - zipEndLen; i >= 0; i-- {
+		if binary.LittleEndian.Uint32(tail[i:]) == zipEndSignature {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		return errors.New("failed to open zip: no end of central directory record")
+	}
+	end := tail[at : at+zipEndLen]
+	endOffset := size - tailLen + int64(at)
+	count := binary.LittleEndian.Uint16(end[10:])
+	dirSize := binary.LittleEndian.Uint32(end[12:])
+	dirOffset := binary.LittleEndian.Uint32(end[16:])
+	zip64 := count == 0xffff || binary.LittleEndian.Uint16(end[8:]) == 0xffff ||
+		dirSize == 0xffffffff || dirOffset == 0xffffffff
+	if !zip64 && endOffset >= zip64LocatorLen {
+		// The Go reader takes the ZIP64 record's values whenever this
+		// locator is present.
+		var sig [4]byte
+		if _, err := file.ReadAt(sig[:], endOffset-zip64LocatorLen); err == nil {
+			zip64 = binary.LittleEndian.Uint32(sig[:]) == zip64LocatorSig
+		}
+	}
+	if zip64 {
+		return fmt.Errorf("%w (ZIP64 archives are not supported)", ErrRemoteFetchLimit)
+	}
+	if maxFiles > 0 {
+		if int(count) > maxFiles {
+			return fmt.Errorf("%w (more than %d archive entries)", ErrRemoteFetchLimit, maxFiles)
+		}
+		if int64(dirSize) > int64(maxFiles)*zipMaxRecordAverage {
+			return fmt.Errorf("%w (the zip central directory is too large for %d entries)", ErrRemoteFetchLimit, maxFiles)
+		}
+	}
+	if int64(dirOffset)+int64(dirSize) != endOffset {
+		// Prepended data, or records between the directory and the end
+		// record; the Go reader would guess where the directory starts.
+		return fmt.Errorf("%w (the zip central directory is not where its end record says)", ErrRemoteFetchLimit)
+	}
+	// Walk the records as the Go reader will: from the directory offset
+	// until a record is short or has another signature. The Go reader may
+	// stop sooner (on a malformed extra field), never later.
+	br := bufio.NewReader(io.NewSectionReader(file, int64(dirOffset), size-int64(dirOffset)))
+	hdr := make([]byte, zipDirLen)
+	for records := 0; ; records++ {
+		if _, err := io.ReadFull(br, hdr); err != nil || binary.LittleEndian.Uint32(hdr) != zipDirSignature {
+			return nil
+		}
+		if maxFiles > 0 && records >= maxFiles {
+			return fmt.Errorf("%w (more than %d archive entries)", ErrRemoteFetchLimit, maxFiles)
+		}
+		nameLen := int(binary.LittleEndian.Uint16(hdr[28:]))
+		if nameLen > maxFetchEntryName {
+			return fmt.Errorf("%w (an entry name is longer than %d bytes)", ErrRemoteFetchLimit, maxFetchEntryName)
+		}
+		rest := nameLen + int(binary.LittleEndian.Uint16(hdr[30:])) + int(binary.LittleEndian.Uint16(hdr[32:]))
+		if n, _ := br.Discard(rest); n < rest {
+			return nil
+		}
+	}
 }
 
 // extractTarGz extracts a .tar.gz or .tgz archive to the destination path.
