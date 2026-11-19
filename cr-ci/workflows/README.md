@@ -280,7 +280,8 @@ fixtures in `hack/testdata/fork-ci-gate/`) fails when such a job lacks the
 gate. It also fails when the gate is weakened, for example by an `||` outside the
 job's own condition. It skips push triggers that filter only tags. It has no
 YAML parser and reads only the 2-space block style used here. In every
-workflow except `build-release.yml` (skipped by name, layout rules included),
+workflow except `build-release.yml` and `release-binary.yml` (skipped by name,
+layout rules included),
 it reports `unrecognised layout` (exit 1) for:
 
 - an inline `on:` value that is not a bare event or a one-line list of bare
@@ -301,6 +302,11 @@ comment with no quotes in it is ignored.
 
 `build-release.yml` (tag pushes) is not gated yet; its jobs carry the
 upstream-only repository guard instead.
+
+`release-binary.yml` is not gated on purpose: it builds a fork's own release
+binary when the fork pushes a `release-build/**` branch, so it has to run on
+the fork. It has a read-only token and only uploads a workflow artifact.
+Upstream has no `release-build/**` branches, so it never runs there.
 
 ## PoC success criteria
 
