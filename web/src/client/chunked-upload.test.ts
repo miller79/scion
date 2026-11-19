@@ -178,10 +178,18 @@ describe('chunked-upload', () => {
     const blobs = (...sizes: number[]): Blob[] => sizes.map((size) => ({ size }) as Blob);
     const MiB = 1024 * 1024;
     // Workspace: a 100 MiB body (maxUploadTotalSize), whatever the per-file limit.
-    expect(fitsOneWorkspaceRequest(blobs(50 * MiB, 49 * MiB))).toBe(true);
-    expect(fitsOneWorkspaceRequest(blobs(60 * MiB))).toBe(true);
-    expect(fitsOneWorkspaceRequest(blobs(50 * MiB, 50 * MiB))).toBe(false);
-    expect(fitsOneWorkspaceRequest(blobs(101 * MiB))).toBe(false);
+    const entries = (...sizes: number[]) =>
+      blobs(...sizes).map((file, i) => ({ path: `f${i}`, file }));
+    expect(fitsOneWorkspaceRequest(entries(50 * MiB, 49 * MiB))).toBe(true);
+    expect(fitsOneWorkspaceRequest(entries(60 * MiB))).toBe(true);
+    expect(fitsOneWorkspaceRequest(entries(50 * MiB, 50 * MiB))).toBe(false);
+    expect(fitsOneWorkspaceRequest(entries(101 * MiB))).toBe(false);
+    // The path is in each part twice: a long one counts against the body.
+    const nearLimit = blobs(100 * MiB - 2048)[0];
+    expect(fitsOneWorkspaceRequest([{ path: 'short', file: nearLimit }])).toBe(true);
+    expect(fitsOneWorkspaceRequest([{ path: 'd/'.repeat(400) + 'f', file: nearLimit }])).toBe(
+      false
+    );
     // Chat: at most 10 files, in 10 × min(per-file limit, 10 MiB) + 1 MiB.
     expect(fitsOneChatRequest(blobs(10 * MiB), 10 * MiB)).toBe(true);
     expect(fitsOneChatRequest(blobs(...Array(10).fill(10 * MiB)), 10 * MiB)).toBe(true);
@@ -294,8 +302,8 @@ describe('chunked-upload', () => {
   });
 
   it('sends small workspace files in one request and large ones in chunks', async () => {
-    // One request holds 2058 bytes: two small files and their framing fit.
-    _setOneRequestLimitsForTest({ workspaceBody: 2058 });
+    // One request holds 2070 bytes: two small files, their framing and paths fit.
+    _setOneRequestLimitsForTest({ workspaceBody: 2070 });
     const hub = fakeHub({
       chunkSize: 100,
       uploads: { maxWorkspaceFileSize: 4096, chunkSize: 100 },
