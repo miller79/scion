@@ -15,6 +15,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -605,10 +606,11 @@ func pinRunEnv(cfg *runtime.RunConfig, key, value string) {
 }
 
 // policyTelemetryDestinationEnv are the env names that decide where, and
-// whether, sciontool exports telemetry off the host (pkg/sciontool/telemetry
-// LoadConfig). Any of them set by the requester can switch export off or
-// make the pipeline refuse to start (cloud export asked for with no
-// destination, GCP with no project, an exporter that cannot be built), so
+// whether, sciontool exports telemetry off the host, or whether its pipeline
+// starts at all (pkg/sciontool/telemetry LoadConfig). Any of them set by the
+// requester can switch export off, redirect it, or make the pipeline refuse
+// to start (cloud export asked for with no destination, GCP with no
+// project, an exporter that cannot be built, a receiver port in use), so
 // under require_telemetry they come from the operator alone.
 var policyTelemetryDestinationEnv = []string{
 	policyEnvTelemetryCloudEnabled,
@@ -622,6 +624,65 @@ var policyTelemetryDestinationEnv = []string{
 	"SCION_OTEL_CERT_FILE",
 	"SCION_OTEL_KEY_FILE",
 	"SCION_GCP_PROJECT_ID",
+	"SCION_OTEL_GRPC_PORT",
+	"SCION_OTEL_HTTP_PORT",
+}
+
+// policyEnvTelemetryGCPCredentials is the telemetry service account key
+// path. A key file there switches sciontool to GCP-native export to the
+// key's project, so a requester's value is removed under require_telemetry.
+// It is removed rather than pinned: the runtimes set it themselves, after
+// this point, from the broker's provisioned telemetry credential, and on the
+// flat-env runtimes a value already in RunConfig.Env would win over theirs.
+const policyEnvTelemetryGCPCredentials = "SCION_OTEL_GCP_CREDENTIALS"
+
+// removeRunEnv drops every entry for key from cfg.Env and keeps the template
+// fallback layer from setting it.
+func removeRunEnv(cfg *runtime.RunConfig, key string) {
+	out := make([]string, 0, len(cfg.Env))
+	for _, e := range cfg.Env {
+		if k, _, _ := strings.Cut(e, "="); k != key {
+			out = append(out, e)
+		}
+	}
+	cfg.Env = out
+	if _, ok := cfg.FallbackEnv[key]; ok {
+		cfg.FallbackEnv = maps.Clone(cfg.FallbackEnv)
+		delete(cfg.FallbackEnv, key)
+	}
+	if !slices.Contains(cfg.SuppressedFallbackKeys, key) {
+		cfg.SuppressedFallbackKeys = append(slices.Clip(cfg.SuppressedFallbackKeys), key)
+	}
+}
+
+// loadOperatorTelemetrySettings loads the settings require_telemetry takes
+// the operator's telemetry from: the global settings file (plus the hub
+// settings overlay), never a project's settings file or the SCION_*
+// environment. A variable so tests can replace it.
+var loadOperatorTelemetrySettings = config.LoadGlobalSettingsWithOverlayFor
+
+// agentPolicyOperatorTelemetryEnv returns the telemetry env of the operator's
+// tiers alone: the global settings telemetry with the hub default over it,
+// as Start merges them, without the project settings or the agent's own
+// config. A global settings file that cannot be loaded contributes nothing
+// (the agent then keeps local telemetry unless the hub default sets a
+// destination).
+func agentPolicyOperatorTelemetryEnv(ctx context.Context, agentName string) map[string]string {
+	var op *api.ScionConfig
+	if hub := cloneTelemetryConfig(api.HubAgentDefaultsFromContext(ctx).TelemetryDefault()); hub != nil {
+		op = &api.ScionConfig{Telemetry: hub}
+	}
+	gs, _, err := loadOperatorTelemetrySettings(ctx)
+	if err != nil {
+		slog.Warn("Agent policy could not load the global telemetry settings; using the hub default only",
+			"agent", agentName, "setting", "agent_policy.require_telemetry", "error", err)
+	} else if gs != nil && gs.Telemetry != nil {
+		op = config.MergeScionConfig(&api.ScionConfig{Telemetry: config.ConvertV1TelemetryToAPI(gs.Telemetry)}, op)
+	}
+	if op == nil {
+		return nil
+	}
+	return config.TelemetryConfigToEnv(op.Telemetry)
 }
 
 // applyAgentPolicyTelemetry forces telemetry on: the runtime's harness
@@ -629,9 +690,11 @@ var policyTelemetryDestinationEnv = []string{
 //
 // The export destination is left to the operator: every
 // policyTelemetryDestinationEnv name is pinned to its value in operatorEnv
-// (the broker settings telemetry and the hub default, never the agent's own
-// config or env), or to empty, which sciontool reads as unset, when the
-// operator sets none; the pin also keeps an env-type secret from setting it.
+// (agentPolicyOperatorTelemetryEnv: the global settings telemetry and the
+// hub default, never a project's settings or the agent's own config or env),
+// or to empty, which sciontool reads as unset, when the operator sets none;
+// the pin also keeps an env-type secret from setting it. A requested
+// SCION_OTEL_GCP_CREDENTIALS is removed (policyEnvTelemetryGCPCredentials).
 // SCION_TELEMETRY_CLOUD_ENABLED is never pinned to true, even when the
 // operator config says so: sciontool refuses to start the pipeline when
 // cloud export is asked for explicitly with no destination, while left unset
@@ -649,15 +712,24 @@ func applyAgentPolicyTelemetry(p *config.V1AgentPolicy, agentName string, cfg *r
 	pinRunEnv(cfg, policyEnvTelemetryEnabled, "true")
 	for _, key := range policyTelemetryDestinationEnv {
 		value := operatorEnv[key]
+		// The operator's own value already in the env (merged from the
+		// operator tiers) is not a request: no warning for it.
+		cur, set := envEntryValue(cfg.Env, key)
+		requested := set && cur != value
 		if key == policyEnvTelemetryCloudEnabled && value != "false" {
 			value = ""
 		}
-		if cur, set := envEntryValue(cfg.Env, key); set && cur != value {
+		if requested {
 			slog.Warn("Agent policy replaced a requested telemetry destination setting with the operator's",
 				"agent", agentName, "setting", "agent_policy.require_telemetry", "env", key)
 		}
 		pinRunEnv(cfg, key, value)
 	}
+	if _, set := envEntryValue(cfg.Env, policyEnvTelemetryGCPCredentials); set {
+		slog.Warn("Agent policy removed a requested telemetry credential setting",
+			"agent", agentName, "setting", "agent_policy.require_telemetry", "env", policyEnvTelemetryGCPCredentials)
+	}
+	removeRunEnv(cfg, policyEnvTelemetryGCPCredentials)
 }
 
 // applyAgentPolicyLimits lowers the agent's run limits to max_limits: a
