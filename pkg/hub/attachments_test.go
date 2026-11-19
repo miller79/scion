@@ -366,11 +366,31 @@ func TestLocalDiskAttachmentStore_OversizedFile(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	// Create content larger than MaxAttachmentSize.
+	// Content longer than MaxAttachmentSize whose declared size is within it:
+	// the store refuses the overrun and leaves no file behind.
 	big := make([]byte, MaxAttachmentSize+1)
-	_, err = store.Save(ctx, "proj-1", "big.bin", bytes.NewReader(big), int64(len(big)), "application/octet-stream")
+	_, err = store.Save(ctx, "proj-1", "big.bin", bytes.NewReader(big), MaxAttachmentSize, "application/octet-stream")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds maximum size")
+	entries, _ := os.ReadDir(filepath.Join(dir, "proj-1"))
+	for _, e := range entries {
+		sub, _ := os.ReadDir(filepath.Join(dir, "proj-1", e.Name()))
+		assert.Empty(t, sub, "the refused file is removed")
+	}
+
+	// A declared size above MaxAttachmentSize (the handler already checked it
+	// against the configured limit) is the cap: content longer than the
+	// declared size is refused, and content of exactly that size is stored.
+	declared := int64(MaxAttachmentSize + 1024)
+	over := make([]byte, declared+1)
+	_, err = store.Save(ctx, "proj-1", "over.bin", bytes.NewReader(over), declared, "application/octet-stream")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum size")
+
+	exact := make([]byte, declared)
+	meta, err := store.Save(ctx, "proj-1", "exact.bin", bytes.NewReader(exact), declared, "application/octet-stream")
+	require.NoError(t, err)
+	assert.Equal(t, declared, meta.Size)
 }
 
 func TestLocalDiskAttachmentStore_FilePath(t *testing.T) {
