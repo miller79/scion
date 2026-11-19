@@ -100,7 +100,7 @@ func TestBrokerRegistration_PlaintextNetworkPeerGetsNoJoinToken(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			srv, s := testServer(t)
 			srv.transportTrustedNets = nil // server.trusted_proxies: []
-			user := newHubMemberUser(t, s, "tp-reg-refused")
+			user := newBrokerRegistrarUser(t, s, "tp-reg-refused")
 			assertNoRegistrationIssued(t, registerFromHost(t, srv, user, tc.remote, tc.headers, tc.host, false, "tp-reg-refused"))
 			existing, err := srv.brokerAuthService.FindExistingBroker(context.Background(), "tp-reg-refused", "", nil)
 			require.NoError(t, err)
@@ -139,7 +139,7 @@ func TestBrokerRegistration_ConfidentialArrivalGetsJoinToken(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			srv, s := testServer(t)
 			srv.transportTrustedNets = mustTrustedNets(t, tc.trusted...)
-			user := newHubMemberUser(t, s, "tp-reg-ok")
+			user := newBrokerRegistrarUser(t, s, "tp-reg-ok")
 			rec := registerFrom(t, srv, user, tc.remote, tc.headers, tc.tls, "tp-reg-ok")
 			require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
 			assert.NotEmpty(t, decodeRegistration(t, rec).JoinToken)

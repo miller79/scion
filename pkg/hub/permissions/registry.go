@@ -250,6 +250,11 @@ var Registry = []Permission{
 	{ID: "project.register", Resource: ResourceProject, Action: ActionRegister, CapabilityKind: CapabilityResource, Description: "Register projects", Reserved: "no route checks project.register; project register checks project.create"},
 	{ID: "project.set_messaging_policy", Resource: ResourceProject, Action: "set_messaging_policy", CapabilityKind: CapabilityResource, UATScope: "project:set_messaging_policy", Description: "Set project cross-project messaging policy (owner/admin only)", Enforcement: []string{"pkg/hub/project_messaging_policy.go"}},
 	{ID: "project.manage_visitors", Resource: ResourceProject, Action: "manage_visitors", CapabilityKind: CapabilityResource, Description: "Grant and revoke project visitor access for federated accounts (project owner/admin, hub admin)", Enforcement: []string{"pkg/hub/handlers_project_visitors.go"}},
+	// project.manage_pre_start_hooks gates writing a project's pre-start
+	// hooks. A hook runs inside every agent of the project, with each
+	// agent's creator's secrets, so no built-in project role holds it: only
+	// hub admins (and a custom role a hub admin grants) write hooks.
+	{ID: "project.manage_pre_start_hooks", Resource: ResourceProject, Action: "manage_pre_start_hooks", CapabilityKind: CapabilityResource, Description: "Create, update, activate or delete a project's pre-start hooks, which run inside every agent of the project (hub admin; no built-in project role holds it)", Enforcement: []string{"pkg/hub/project_pre_start_hook_handlers.go"}},
 	// project.chat_post covers chat thread sends, scheduled sends, DM
 	// promotion, project attachment uploads and thread posts a user sends
 	// through the agent message endpoint's thread key, all decided by the
@@ -313,8 +318,9 @@ var Registry = []Permission{
 	{ID: "policy.list", Resource: ResourcePolicy, Action: ActionList, CapabilityKind: CapabilityScope, Description: "List policies", Enforcement: []string{"pkg/hub/handlers_policies.go", "pkg/hub/route_metadata.go:requireAdmin"}},
 
 	// broker.create is a hub-level permission: registration is gated by an
-	// explicit hub-member role grant (seed.go hubMemberPermissionIDs), not by
-	// mere authentication. Its UAT selector "broker:create" is mintable only
+	// explicit grant, not by mere authentication. The built-in hub-admin and
+	// super-admin roles hold it; hub-member does not (its revision 6), so an
+	// ordinary user needs a role an administrator grants. Its UAT selector "broker:create" is mintable only
 	// on a hub-boundary token (PermissionAllowedBoundaries). Registration is
 	// admitted for interactive sessions, dev credentials and hub-boundary
 	// UATs carrying broker:create, through the bearer gate

@@ -391,7 +391,7 @@ These built-in roles bundle common permissions for human users:
 |------|-------------|
 | `super-admin` | Full platform administrator with all permissions (System Role). |
 | `hub-admin` | Hub administrator with scopeable admin permissions (System Role). |
-| `hub-member` | Standard user; read access to directory resources, can create their own projects and register Runtime Brokers (`broker.create`) (System Role). |
+| `hub-member` | Standard user; read access to directory resources, can create their own projects. Does not register Runtime Brokers (`broker.create` is held by `hub-admin` and `super-admin`) (System Role). |
 | `hub-viewer` | Read-only access to directory resources (System Role). |
 | `global-catalog-author` | Creates and maintains global catalog skills and templates. Grants exactly the six global catalog permissions (`skill.create_global`, `skill.update_global`, `skill.delete_global`, `template.create_global`, `template.update_global`, `template.delete_global`) and nothing on project- or user-scoped records. Seeded without a binding; an operator grants it deliberately (System Role). See [Global catalog authoring](#global-catalog-authoring). |
 | `project-owner` | Full project permissions, including agent lifecycle, messaging and forwarded-port access. Does not include `agent.attach` on other members' agents. |

@@ -130,16 +130,27 @@ func setupBrokerAuthzTest(t *testing.T) (srv *Server, s store.Store, alice, bob,
 // Broker Registration Authorization Tests
 // ============================================================================
 
-func TestBrokerAuthz_Registration_MemberCanRegister(t *testing.T) {
+// An ordinary hub member does not hold broker.create (hub-member R6), so it
+// cannot register a broker; a member an administrator granted broker.create
+// can.
+func TestBrokerAuthz_Registration_MemberDeniedUnlessGranted(t *testing.T) {
 	t.Parallel()
-	srv, _, alice, _, _, _, _ := setupBrokerAuthzTest(t)
+	srv, s, alice, _, _, _, _ := setupBrokerAuthzTest(t)
 
-	// Non-admin member should be able to register a broker
 	rec := doRequestAsUserLoopback(t, srv, alice, http.MethodPost, "/api/v1/brokers",
 		CreateBrokerRegistrationRequest{Name: "Alice New Broker"})
+	assert.Equal(t, http.StatusForbidden, rec.Code,
+		"an ordinary member must not register a broker; got: %s", rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `"denied_action":"create"`)
+	assert.NotContains(t, rec.Body.String(), "joinToken")
+	_, err := s.GetRuntimeBrokerByName(context.Background(), "Alice New Broker")
+	assert.ErrorIs(t, err, store.ErrNotFound, "a denied registration must not create a broker record")
 
+	grantBrokerCreate(t, s, alice.ID, nil)
+	rec = doRequestAsUserLoopback(t, srv, alice, http.MethodPost, "/api/v1/brokers",
+		CreateBrokerRegistrationRequest{Name: "Alice New Broker"})
 	assert.Equal(t, http.StatusCreated, rec.Code,
-		"member should be able to register a broker; got: %s", rec.Body.String())
+		"a member granted broker.create registers a broker; got: %s", rec.Body.String())
 
 	var resp CreateBrokerRegistrationResponse
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))

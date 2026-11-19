@@ -114,8 +114,10 @@ var testAdminPermissionPolicy = map[string]testAdminPolicy{
 	"project.manage":               testAdminPolicyAllow,
 	"project.register":             testAdminPolicyAllow,
 	"project.set_messaging_policy": testAdminPolicyAllow,
-	"project.clone":                testAdminPolicyAllow,
-	"project.list":                 testAdminPolicyAllow,
+	// Pre-start hook writes, held by hub admins only.
+	"project.manage_pre_start_hooks": testAdminPolicyAllow,
+	"project.clone":                  testAdminPolicyAllow,
+	"project.list":                   testAdminPolicyAllow,
 	// Posting into a project's chat threads, held by the built-in
 	// project roles.
 	"project.chat_post": testAdminPolicyAllow,
