@@ -23,7 +23,7 @@
  * away both halves of it.
  */
 
-import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, onTestFinished } from 'vitest';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -101,7 +101,27 @@ describe('composer — upload limits from the hub', () => {
     ]);
   });
 
-  it('uploads a file larger than one chunk in chunks, with progress', async () => {
+  it('sends files the one-request limit takes in one request, even above the chunk size', async () => {
+    // A chunked upload must reach one hub instance throughout, so it is
+    // used only for what one request cannot take.
+    publicUploads = { maxAttachmentSize: 1 << 30, chunkSize: 4 };
+    const el = createComposer();
+    respondWith(201, { attachments: [STORED], failures: [] });
+
+    await el.uploadFiles([new File(['0123456789'], 'compose.yaml')]);
+
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+    const [url, init] = apiFetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/api/v1/chat/attachments');
+    expect(init.body).toBeInstanceOf(FormData);
+    expect(el.pendingFiles).toEqual([STORED]);
+  });
+
+  it('uploads files one request cannot take in chunks, with progress', async () => {
+    // One request takes at most 10 bytes here, less than the file.
+    const { _setOneRequestLimitsForTest } = await import('../../../client/chunked-upload.js');
+    _setOneRequestLimitsForTest({ chatFileCap: 1, chatFormRoom: 0 });
+    onTestFinished(() => _setOneRequestLimitsForTest(null));
     publicUploads = { maxAttachmentSize: 1 << 30, chunkSize: 4 };
     const el = createComposer();
     const percents: number[] = [];

@@ -240,7 +240,7 @@ describe('terminal — _handleFileDrop size validation', () => {
     expect(el.isUploading).toBe(false);
   });
 
-  it('takes the per-file limit from the hub and chunks a large file', async () => {
+  it('takes the per-file limit from the hub and sends a 51 MiB file in one request', async () => {
     const calls: Call[] = [];
     const el = await createForUploadTest(calls, {
       uploads: { maxWorkspaceFileSize: 1 << 30, chunkSize: 8 << 20 },
@@ -263,9 +263,37 @@ describe('terminal — _handleFileDrop size validation', () => {
 
     expect(el.uploadStatus).not.toContain('exceeds');
     const uploadCalls = calls.filter((c) => c.url.includes('/shared-dirs/scratchpad/files'));
+    expect(uploadCalls.length).toBe(1);
+    expect(uploadCalls[0].url).not.toContain('upload=');
+  });
+
+  it('chunks a file larger than the hub takes in one request', async () => {
+    const calls: Call[] = [];
+    const el = await createForUploadTest(calls, {
+      uploads: { maxWorkspaceFileSize: 1 << 30, chunkSize: 8 << 20 },
+    });
+    el.uploadEnabled = true;
+    el.uploadTargetDir = 'scratchpad';
+    el.uploadBasePath = '/scion-volumes/scratchpad';
+
+    // Above the 100 MiB one-request body limit.
+    const bigFile = new File(['x'], 'big.bin');
+    Object.defineProperty(bigFile, 'size', { value: 101 * 1024 * 1024 });
+    const fileList = {
+      length: 1,
+      0: bigFile,
+      [Symbol.iterator]: function* () {
+        yield bigFile;
+      },
+    } as unknown as FileList;
+
+    await (el as any)._handleFileDrop(fileList);
+
+    expect(el.uploadStatus).not.toContain('exceeds');
+    const uploadCalls = calls.filter((c) => c.url.includes('/shared-dirs/scratchpad/files'));
     expect(uploadCalls[0].url).toContain('upload=start');
     expect(uploadCalls.at(-1)?.url).toContain('upload=finish');
-    expect(uploadCalls.filter((c) => c.url.includes('upload=chunk')).length).toBe(7);
+    expect(uploadCalls.filter((c) => c.url.includes('upload=chunk')).length).toBe(13);
   });
 
   it('names the hub limit when a file exceeds it', async () => {

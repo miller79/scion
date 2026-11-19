@@ -18,10 +18,14 @@
  * Upload limits and chunked uploads (pkg/hub/chunked_upload.go).
  *
  * The hub publishes its upload limits in `GET /api/v1/settings/public`
- * (`uploads`). A file larger than the chunk size is sent in requests of at
- * most one chunk each, through the same upload route as a one-request
- * upload (`?upload=start|chunk|finish|abort`), so a reverse proxy in front
- * of the hub only has to accept one chunk per request.
+ * (`uploads`). Files the hub's one-request limits take go in one multipart
+ * request, as before chunked uploads existed. Anything larger is sent in
+ * requests of at most one chunk each, through the same upload route
+ * (`?upload=start|chunk|finish|abort`), so a reverse proxy in front of the
+ * hub only has to accept one chunk per request. A chunked upload lives in
+ * one hub instance's memory, so it is used only when one request cannot
+ * take the files: on a hub with several instances every call of it must
+ * reach the same one (session affinity).
  */
 
 import { apiFetch, parseApiError } from './api.js';
@@ -82,12 +86,57 @@ const MULTIPART_OVERHEAD_PER_FILE = 1024;
 
 /**
  * Whether the files can go in one request: all of them together, with
- * their multipart framing, within one chunk.
+ * their multipart framing, within bodyLimit bytes.
  */
-export function fitsOneRequest(files: ArrayLike<Blob>, chunkSize: number): boolean {
+export function fitsOneRequest(files: ArrayLike<Blob>, bodyLimit: number): boolean {
   let total = 0;
   for (let i = 0; i < files.length; i++) total += files[i].size + MULTIPART_OVERHEAD_PER_FILE;
-  return total <= chunkSize;
+  return total <= bodyLimit;
+}
+
+/**
+ * The hub's one-request upload limits, which it still applies to a
+ * multipart upload:
+ * - workspaceBody: a workspace or shared directory upload body is capped at
+ *   maxUploadTotalSize, 100 MiB (pkg/hub/project_workspace_handlers.go);
+ * - chat: an attachment upload takes at most MaxAttachmentsPerMessage
+ *   (chatFiles) files, in a body of chatFiles × min(per-file limit,
+ *   MaxAttachmentSize = chatFileCap) plus chatFormRoom for the form fields
+ *   (pkg/hub/handlers_chat_v2.go). The cap is larger when attachments go to
+ *   the artifact service, which the client cannot tell, so the smaller one
+ *   is used.
+ */
+const ONE_REQUEST_LIMITS = Object.freeze({
+  workspaceBody: 100 * 1024 * 1024,
+  chatFiles: 10,
+  chatFileCap: 10 * 1024 * 1024,
+  chatFormRoom: 1024 * 1024,
+});
+
+let oneRequestLimits: typeof ONE_REQUEST_LIMITS = ONE_REQUEST_LIMITS;
+
+/** For tests: lower the hub's one-request limits; null restores them. */
+export function _setOneRequestLimitsForTest(
+  limits: Partial<typeof ONE_REQUEST_LIMITS> | null
+): void {
+  oneRequestLimits = { ...ONE_REQUEST_LIMITS, ...(limits ?? {}) };
+}
+
+/** Whether a workspace or shared directory upload of files fits one request. */
+export function fitsOneWorkspaceRequest(files: ArrayLike<Blob>): boolean {
+  return fitsOneRequest(files, oneRequestLimits.workspaceBody);
+}
+
+/**
+ * Whether a chat attachment upload of files fits one request, for a hub
+ * whose per-file attachment limit is maxAttachmentSize.
+ */
+export function fitsOneChatRequest(files: ArrayLike<Blob>, maxAttachmentSize: number): boolean {
+  const { chatFiles, chatFileCap, chatFormRoom } = oneRequestLimits;
+  return (
+    files.length <= chatFiles &&
+    fitsOneRequest(files, Math.min(maxAttachmentSize, chatFileCap) * chatFiles + chatFormRoom)
+  );
 }
 
 /** An upload the hub refused; `status` is the HTTP status, `code` the hub's error code. */
@@ -291,11 +340,11 @@ export interface WorkspaceUploadEntry {
 
 /**
  * Upload files to a project workspace or shared directory upload route
- * (`.../workspace/files`, `.../shared-dirs/{dir}/files`). Files that fit in
- * one chunk together go in one multipart request, as before; otherwise each
- * file is uploaded in chunks, one after the other, so a failure part way
- * leaves the files before it stored. A file over the hub's per-file limit is
- * refused before anything is sent.
+ * (`.../workspace/files`, `.../shared-dirs/{dir}/files`). Files the hub's
+ * one-request limit takes together go in one multipart request, as before;
+ * otherwise each file is uploaded in chunks, one after the other, so a
+ * failure part way leaves the files before it stored. A file over the hub's
+ * per-file limit is refused before anything is sent.
  */
 export async function uploadWorkspaceFiles(
   url: string,
@@ -309,12 +358,7 @@ export async function uploadWorkspaceFiles(
   }
   const total = entries.reduce((sum, e) => sum + e.file.size, 0);
 
-  if (
-    fitsOneRequest(
-      entries.map((e) => e.file),
-      limits.chunkSize
-    )
-  ) {
+  if (fitsOneWorkspaceRequest(entries.map((e) => e.file))) {
     const formData = new FormData();
     for (const e of entries) formData.append(e.path, e.file);
     const res = await apiFetch(url, { method: 'POST', body: formData });
