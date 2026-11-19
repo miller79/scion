@@ -637,7 +637,7 @@ func TestReRegistered_EmbeddedFlat_RestoresRunningAgents(t *testing.T) {
 func TestReRegistered_EmbeddedProvider_RestoresRunningAgents(t *testing.T) {
 	srv, s := testServer(t)
 	ctx := context.Background()
-	user := newHubMemberUser(t, s, "rereg-provider-user")
+	user := newBrokerRegistrarUser(t, s, "rereg-provider-user")
 	id := uuid.NewString()
 	require.NoError(t, s.CreateRuntimeBroker(ctx, &store.RuntimeBroker{ID: id, Name: "provider-rereg", Slug: "provider-rereg", Status: store.BrokerStatusOnline, CreatedBy: user.ID}))
 	project := &store.Project{ID: tid("proj-provider-rereg"), Name: "Provider Rereg", Slug: "provider-rereg-agents"}

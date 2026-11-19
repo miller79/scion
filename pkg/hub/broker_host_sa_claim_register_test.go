@@ -71,7 +71,7 @@ type hostSARegFixture struct {
 func setupHostSAReg(t *testing.T, name string, checker store.CallerPermissionChecker) *hostSARegFixture {
 	t.Helper()
 	srv, s := testServer(t)
-	f := &hostSARegFixture{srv: srv, store: s, user: newHubMemberUser(t, s, name+"-user")}
+	f := &hostSARegFixture{srv: srv, store: s, user: newBrokerRegistrarUser(t, s, name+"-user")}
 	if checker != nil {
 		enforceSAAssign(srv, checker)
 	}
