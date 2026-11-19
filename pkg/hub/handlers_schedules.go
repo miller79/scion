@@ -858,11 +858,20 @@ func (s *Server) deleteSchedule(w http.ResponseWriter, r *http.Request, projectI
 	// transaction as the delete.
 	audit := newScheduleAudit(r.Context(), mutationTypeScheduleDelete, scheduleID)
 	if err := s.store.WithTx(r.Context(), func(tx store.Store) error {
+		if creatorRevision != nil {
+			if err := creatorStopGuard(r.Context(), tx, schedule, *creatorRevision); err != nil {
+				return err
+			}
+		}
 		if err := tx.DeleteSchedule(r.Context(), scheduleID); err != nil {
 			return err
 		}
 		return tx.CreateMutationAudit(r.Context(), audit)
 	}); err != nil {
+		if creatorRevision != nil && errors.Is(err, store.ErrRevisionConflict) {
+			writeCreatorStopConflict(w)
+			return
+		}
 		writeErrorFromErr(w, err, "")
 		return
 	}
@@ -897,11 +906,23 @@ func (s *Server) pauseSchedule(w http.ResponseWriter, r *http.Request, projectID
 	// transaction as the status change.
 	audit := newScheduleAudit(r.Context(), mutationTypeSchedulePause, scheduleID)
 	if err := s.store.WithTx(r.Context(), func(tx store.Store) error {
-		if err := tx.UpdateScheduleStatus(r.Context(), scheduleID, store.ScheduleStatusPaused, store.ScheduleStatusReasonNone); err != nil {
+		if creatorRevision != nil {
+			// The creator path checked this revision: pause only while it
+			// is still current, so a re-authorization since then wins.
+			paused := *schedule
+			paused.Status, paused.StatusReason = store.ScheduleStatusPaused, store.ScheduleStatusReasonNone
+			if err := tx.UpdateSchedule(r.Context(), &paused, store.ScheduleFieldMask{Status: true}, *creatorRevision, true, nil); err != nil {
+				return err
+			}
+		} else if err := tx.UpdateScheduleStatus(r.Context(), scheduleID, store.ScheduleStatusPaused, store.ScheduleStatusReasonNone); err != nil {
 			return err
 		}
 		return tx.CreateMutationAudit(r.Context(), audit)
 	}); err != nil {
+		if creatorRevision != nil && errors.Is(err, store.ErrRevisionConflict) {
+			writeCreatorStopConflict(w)
+			return
+		}
 		writeErrorFromErr(w, err, "")
 		return
 	}
