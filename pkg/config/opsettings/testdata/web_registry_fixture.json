@@ -185,6 +185,8 @@
     "server.hub.platform_request_timeout",
     "server.hub.chat",
     "server.hub.system_one",
+    "server.hub.default_message_mode",
+    "server.hub.schedules",
     "server.relay"
   ],
   "file_keys": [

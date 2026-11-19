@@ -1923,6 +1923,24 @@ type V1ServerHubConfig struct {
 	// SystemOne holds Hub-wide System One rule evaluation settings
 	// (server.hub.system_one).
 	SystemOne *V1ServerHubSystemOneConfig `json:"system_one,omitempty" yaml:"system_one,omitempty" koanf:"system_one"`
+	// DefaultMessageMode is the message mode of a new agent when neither the
+	// create request, its template nor its parent agent sets one ("" =
+	// "project"; one of none, lineage, branch, project). Read at startup.
+	DefaultMessageMode string `json:"default_message_mode,omitempty" yaml:"default_message_mode,omitempty" koanf:"default_message_mode"`
+	// Schedules holds the limits on recurring schedules
+	// (server.hub.schedules). Read at startup.
+	Schedules *V1ServerHubSchedulesConfig `json:"schedules,omitempty" yaml:"schedules,omitempty" koanf:"schedules"`
+}
+
+// V1ServerHubSchedulesConfig holds the limits on recurring schedules
+// (server.hub.schedules).
+type V1ServerHubSchedulesConfig struct {
+	// MinInterval is the shortest interval a recurring schedule may fire at
+	// (e.g. "5m"; default "5m", "0s" turns the check off, at most "24h").
+	MinInterval string `json:"min_interval,omitempty" yaml:"min_interval,omitempty" koanf:"min_interval"`
+	// MaxActivePerProject caps the active recurring schedules of one
+	// project (default 50; 0 = no cap).
+	MaxActivePerProject *int `json:"max_active_per_project,omitempty" yaml:"max_active_per_project,omitempty" koanf:"max_active_per_project"`
 }
 
 // V1ServerHubSystemOneConfig holds Hub-wide System One rule evaluation
@@ -4753,6 +4771,14 @@ func ConvertV1ServerToGlobalConfig(v1 *V1ServerConfig) *GlobalConfig {
 		if so := v1.Hub.SystemOne; so != nil {
 			gc.Hub.SystemOne = HubSystemOneConfig{MaxEvalTime: so.MaxEvalTime}
 		}
+		gc.Hub.DefaultMessageMode = v1.Hub.DefaultMessageMode
+		if sc := v1.Hub.Schedules; sc != nil {
+			gc.Hub.Schedules = HubSchedulesConfig{MinInterval: sc.MinInterval}
+			if sc.MaxActivePerProject != nil {
+				n := *sc.MaxActivePerProject
+				gc.Hub.Schedules.MaxActivePerProject = &n
+			}
+		}
 	}
 
 	if r := v1.Relay; r != nil {
@@ -5183,6 +5209,14 @@ func ConvertGlobalToV1ServerConfig(gc *GlobalConfig) *V1ServerConfig {
 	}
 	if so := gc.Hub.SystemOne; !so.IsZero() {
 		v1Hub.SystemOne = &V1ServerHubSystemOneConfig{MaxEvalTime: so.MaxEvalTime}
+	}
+	v1Hub.DefaultMessageMode = gc.Hub.DefaultMessageMode
+	if sc := gc.Hub.Schedules; !sc.IsZero() {
+		v1Hub.Schedules = &V1ServerHubSchedulesConfig{MinInterval: sc.MinInterval}
+		if sc.MaxActivePerProject != nil {
+			n := *sc.MaxActivePerProject
+			v1Hub.Schedules.MaxActivePerProject = &n
+		}
 	}
 	if gc.Hub.StartClaimLeaseTTL > 0 {
 		v1Hub.StartClaimLeaseTTL = gc.Hub.StartClaimLeaseTTL.String()

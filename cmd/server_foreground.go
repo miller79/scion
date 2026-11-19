@@ -1564,6 +1564,9 @@ func loadAndReconcileConfig(cmd *cobra.Command) (*config.GlobalConfig, error) {
 	if err := validateDebugEndpoints(hostedMode, enableDebugEndpoints); err != nil {
 		return nil, err
 	}
+	if err := validateTestLogin(hostedMode, enableTestLogin, cfg.Hub.HubClass); err != nil {
+		return nil, err
+	}
 	// Test mode: the flag-only checks (removed flags, G3, G5) run before
 	// anything else is reconciled; the full gate runs at hub construction.
 	if err := validateTestModeFlagsEarly(cmd); err != nil {
@@ -1668,6 +1671,39 @@ func validateDebugEndpoints(hosted, enabled bool) error {
 		return fmt.Errorf("--enable-debug-endpoints is not allowed in hosted mode; diagnostic endpoints are for local development only")
 	}
 	return nil
+}
+
+// validateTestLogin refuses --enable-test-login in hosted mode unless the
+// hub is declared a test hub (server.hub.class: test). The test-login
+// endpoint signs anyone in without authentication, so on a production hub it
+// is an authentication bypass. Hosted-mode test hubs (the web e2e harness,
+// the perf benchmarks) set the class to keep using it.
+func validateTestLogin(hosted, enabled bool, hubClass string) error {
+	if hosted && enabled && !config.IsTestHubClass(hubClass) {
+		return fmt.Errorf("--enable-test-login is not allowed in hosted mode unless %s is %q; the test-login endpoint bypasses authentication", config.HubClassKey, config.HubClassTest)
+	}
+	return nil
+}
+
+// scheduleMinIntervalSetting resolves server.hub.schedules.min_interval
+// (validated by validateServerPreflight; the default otherwise).
+func scheduleMinIntervalSetting(cfg *config.GlobalConfig) time.Duration {
+	d, err := cfg.Hub.Schedules.MinIntervalDuration()
+	if err != nil {
+		return config.DefaultScheduleMinInterval
+	}
+	return d
+}
+
+// scheduleMaxActivePerProjectSetting resolves
+// server.hub.schedules.max_active_per_project (validated by
+// validateServerPreflight; the default otherwise).
+func scheduleMaxActivePerProjectSetting(cfg *config.GlobalConfig) int {
+	n, err := cfg.Hub.Schedules.MaxActivePerProjectValue()
+	if err != nil {
+		return config.DefaultScheduleMaxActivePerProject
+	}
+	return n
 }
 
 // validateHostedBasic runs lightweight checks that apply to all --hosted
@@ -1816,6 +1852,12 @@ func validateServerPreflight(cfg *config.GlobalConfig) error {
 		return err
 	}
 	if err := cfg.Hub.SystemOne.Validate(); err != nil {
+		return err
+	}
+	if err := config.ValidateDefaultMessageMode(cfg.Hub.DefaultMessageMode); err != nil {
+		return err
+	}
+	if err := cfg.Hub.Schedules.Validate(); err != nil {
 		return err
 	}
 	if err := validateLongLivedRequestSettings(cfg); err != nil {
@@ -2954,6 +2996,9 @@ func buildHubServerConfig(cfg *config.GlobalConfig, hubEndpoint, devAuthToken st
 		PerfTrace:                    cfg.Hub.PerfTrace,
 		CSPReportRawSamples:          cfg.Hub.CSPReportRawSamples,
 		MembershipSweepReportOnly:    cfg.Hub.MembershipSweepReportOnly,
+		DefaultMessageMode:           cfg.Hub.DefaultMessageMode,
+		ScheduleMinInterval:          scheduleMinIntervalSetting(cfg),
+		ScheduleMaxActivePerProject:  scheduleMaxActivePerProjectSetting(cfg),
 		LaunchTimeout:                cfg.Hub.LaunchTimeout,
 		LaunchKeepaliveSeconds:       cfg.Hub.LaunchKeepaliveSeconds,
 		ConduitTCPAllowedPorts:       append([]int(nil), cfg.Hub.Conduit.TCPAllowedPorts...),
