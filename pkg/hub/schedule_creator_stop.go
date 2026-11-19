@@ -15,6 +15,7 @@
 package hub
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/GoogleCloudPlatform/scion/pkg/store"
@@ -80,12 +81,31 @@ func (s *Server) scheduleCreatorMayStop(r *http.Request, projectID, scheduleID s
 // creator path (scheduleCreatorMayStop) allowed the request, and then holds
 // the authorization revision that check saw: when the reloaded row has
 // another one, someone re-authorized the schedule in between, so it answers
-// 409 and returns false.
+// 409 and returns false. The write that follows is conditioned on the same
+// revision (creatorStopGuard), for a re-authorization landing after the
+// reload.
 func creatorStopCurrent(w http.ResponseWriter, schedule *store.Schedule, creatorRevision *int) bool {
 	if creatorRevision == nil || schedule.AuthorizationRevision == *creatorRevision {
 		return true
 	}
+	writeCreatorStopConflict(w)
+	return false
+}
+
+// creatorStopGuard, inside the transaction of a creator-path delete, writes
+// schedule's unchanged status conditioned on creatorRevision, so the delete
+// commits only while the schedule still has the revision the creator check
+// saw: the conditional update locks the row (Postgres) or runs in the
+// single writer (SQLite), and fails with store.ErrRevisionConflict once a
+// re-authorization has landed.
+func creatorStopGuard(ctx context.Context, tx store.Store, schedule *store.Schedule, creatorRevision int) error {
+	guard := *schedule
+	return tx.UpdateSchedule(ctx, &guard, store.ScheduleFieldMask{Status: true}, creatorRevision, true, nil)
+}
+
+// writeCreatorStopConflict answers 409 for a creator-path pause or delete
+// of a schedule re-authorized after the creator check.
+func writeCreatorStopConflict(w http.ResponseWriter) {
 	writeError(w, http.StatusConflict, ErrCodeRevisionConflict,
 		"schedule was re-authorized while this request was checked; refresh and retry", nil)
-	return false
 }

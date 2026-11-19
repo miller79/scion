@@ -21,6 +21,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,25 +109,27 @@ func TestSchedule_CreatorMayPauseAndDelete(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
 }
 
-// reauthorizeOnFirstReadStore re-authorizes schedule id to ownerID (a new
-// initiator and authorization revision) right after the first GetSchedule
-// of it returns, as an owner edit or resume landing between the creator
-// check and the handler that acts on it.
-type reauthorizeOnFirstReadStore struct {
+// reauthorizeOnReadStore re-authorizes schedule id to ownerID (a new
+// initiator and authorization revision) right after GetSchedule of it
+// returns for the onRead-th time, returning the row as read before: an
+// owner edit or resume landing after the creator check (onRead 1) or after
+// the handler's reload (onRead 2).
+type reauthorizeOnReadStore struct {
 	store.Store
 	t       *testing.T
 	id      string
 	ownerID string
+	onRead  int
 	reads   *int
 }
 
-func (s reauthorizeOnFirstReadStore) GetSchedule(ctx context.Context, id string) (*store.Schedule, error) {
+func (s reauthorizeOnReadStore) GetSchedule(ctx context.Context, id string) (*store.Schedule, error) {
 	sc, err := s.Store.GetSchedule(ctx, id)
 	if err != nil || id != s.id {
 		return sc, err
 	}
 	*s.reads++
-	if *s.reads == 1 {
+	if *s.reads == s.onRead {
 		next := *sc
 		attr := sc.InitiatorAttribution
 		attr.InitiatorPrincipalID = s.ownerID
@@ -138,9 +141,9 @@ func (s reauthorizeOnFirstReadStore) GetSchedule(ctx context.Context, id string)
 }
 
 // TestSchedule_CreatorStopRefusedWhenReauthorizedMeanwhile: when an owner
-// re-authorizes a schedule between the creator check and the pause or
-// delete that follows it, the creator's request is refused with 409 and the
-// schedule, now running under the owner, is left unchanged.
+// re-authorizes a schedule after the creator check, before the handler
+// reloads it or after, the creator's pause or delete is refused with 409
+// and the schedule, now running under the owner, is left unchanged.
 func TestSchedule_CreatorStopRefusedWhenReauthorizedMeanwhile(t *testing.T) {
 	srv, s, projectID := setupScheduleTest(t)
 	ctx := context.Background()
@@ -168,14 +171,19 @@ func TestSchedule_CreatorStopRefusedWhenReauthorizedMeanwhile(t *testing.T) {
 	base := srv.store
 	t.Cleanup(func() { srv.store = base })
 
-	for _, tc := range []struct{ name, method, suffix string }{
-		{"delete", http.MethodDelete, ""},
-		{"pause", http.MethodPost, "/pause"},
+	for _, tc := range []struct {
+		name, method, suffix string
+		onRead               int
+	}{
+		{"delete after the check", http.MethodDelete, "", 1},
+		{"pause after the check", http.MethodPost, "/pause", 1},
+		{"delete after the reload", http.MethodDelete, "", 2},
+		{"pause after the reload", http.MethodPost, "/pause", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sc := mk(tc.name)
+			sc := mk(strings.ReplaceAll(tc.name, " ", "-"))
 			reads := 0
-			srv.store = reauthorizeOnFirstReadStore{Store: base, t: t, id: sc.ID, ownerID: ownerID, reads: &reads}
+			srv.store = reauthorizeOnReadStore{Store: base, t: t, id: sc.ID, ownerID: ownerID, onRead: tc.onRead, reads: &reads}
 			defer func() { srv.store = base }()
 
 			rec := doScheduleSessionRequest(t, srv, member, tc.method, projectID, sc.ID+tc.suffix)
