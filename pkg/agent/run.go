@@ -967,6 +967,18 @@ func (m *AgentManager) Start(ctx context.Context, opts api.StartOptions) (*api.A
 		return nil, fmt.Errorf("no container image resolved for agent %q. Set 'image' in the harness-config config.yaml, specify --image, or configure a harness-config in settings", opts.Name)
 	}
 
+	// The operator's agent policy (global settings agent_policy) is loaded
+	// once per start. The image is checked here, before anything is pulled,
+	// and pinned to its fully qualified form; every rule is enforced on the
+	// final RunConfig just before Runtime.Run (enforceAgentPolicy).
+	agentPolicy, err := loadStartAgentPolicy(opts.Name)
+	if err != nil {
+		return nil, err
+	}
+	if resolvedImage, err = checkAgentPolicyImage(agentPolicy, opts.Name, resolvedImage); err != nil {
+		return nil, err
+	}
+
 	util.Debugf("image resolution: final image=%s", resolvedImage)
 
 	// Start-time writes into an existing agent's home (writeAgentHome)
@@ -2013,6 +2025,15 @@ authDone:
 		return nil, detectErr
 	}
 	effectiveWorkspace = resolvedWorkspace
+	// The agent policy judges an explicit workspace (opts.Workspace or the
+	// persisted explicit workspace: a requester's config.workspace, or a
+	// worktree the broker placed there) by where it lies; a workspace Scion
+	// derived from the project was validated against the project's roots
+	// above.
+	policyWorkspace := agentPolicyWorkspace{ScionRoots: agentPolicyScionRoots(projectDir)}
+	if explicitWorkspace {
+		policyWorkspace.Requested = resolvedWorkspace
+	}
 
 	// Resolve repoRoot through any symlinks so the mount layout below
 	// (ResolveContainerWorkspace and RunConfig.RepoRoot) is computed from the
@@ -2650,6 +2671,8 @@ authDone:
 	if err != nil {
 		return nil, err
 	}
+	// configVolumes is set while runCfg.Volumes is built, below.
+	var configVolumes []api.VolumeMount
 	runCfg := runtime.RunConfig{
 		Name:                   containerName(projectName, opts.Name),
 		PrivateGitConfigSource: privateGitConfigSource,
@@ -2733,6 +2756,9 @@ authDone:
 		FallbackEnv:            templateFallbackEnv,
 		SuppressedFallbackKeys: suppressedFallbackKeys,
 		Volumes: func() []api.VolumeMount {
+			// configVolumes (the volumes from the agent's merged config,
+			// judged by the agent policy) come first; Scion's own shared
+			// directory volumes are appended after them.
 			var volumes []api.VolumeMount
 			if finalScionCfg != nil {
 				// Whenever there is an effective workspace at all, buildCommonRunArgs's
@@ -2756,8 +2782,9 @@ authDone:
 					volumes = finalScionCfg.Volumes
 				}
 			}
+			configVolumes = slices.Clone(volumes)
 			// Append shared directory volumes
-			volumes = append(volumes, sharedDirVolumes...)
+			volumes = append(slices.Clip(volumes), sharedDirVolumes...)
 			return volumes
 		}(),
 		Resources: func() *api.ResourceSpec {
@@ -2897,6 +2924,16 @@ authDone:
 		// Observes every created resource (flat instance ownership
 		// records) without changing cleanup ownership.
 		ObserveResourceCreated: opts.ObserveResourceCreated,
+	}
+	// The agent policy's single choke point: the RunConfig is final here,
+	// and Runtime.Run (below) is the only call that creates an agent
+	// container on any runtime.
+	var operatorTelemetryEnv map[string]string
+	if agentPolicy != nil && agentPolicy.RequireTelemetry {
+		operatorTelemetryEnv = agentPolicyOperatorTelemetryEnv(ctx, opts.Name)
+	}
+	if err := enforceAgentPolicy(agentPolicy, opts.Name, m.Runtime.Name(), &runCfg, configVolumes, policyWorkspace, operatorTelemetryEnv); err != nil {
+		return nil, err
 	}
 	slog.Info("agent start: pre-runtime provisioning complete", "agent", opts.Name,
 		"elapsed_ms", time.Since(startEntry).Milliseconds())
