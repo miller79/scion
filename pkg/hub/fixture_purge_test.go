@@ -1077,6 +1077,9 @@ func TestTestIdentity_BrokerCreateRefused(t *testing.T) {
 	_, err := e.store.GetRuntimeBrokerByName(context.Background(), "fpp-fixture-broker")
 	assert.ErrorIs(t, err, store.ErrNotFound)
 
+	// The control: a real user allowed to register brokers (broker.create
+	// is an administrator grant) registers one with the same request.
+	grantBrokerCreate(t, e.store, e.human.ID, nil)
 	rec = doRequestWithTokenLoopback(t, e.srv, e.humanTok, http.MethodPost, "/api/v1/brokers", CreateBrokerRegistrationRequest{Name: "fpp-human-broker"})
 	assert.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 }

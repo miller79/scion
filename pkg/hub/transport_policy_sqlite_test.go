@@ -54,7 +54,7 @@ func joinFrom(t *testing.T, srv *Server, remote string, headers map[string]strin
 // mintForTransport mints a join token for a new broker named name.
 func mintForTransport(t *testing.T, srv *Server, s store.Store, name string) CreateBrokerRegistrationResponse {
 	t.Helper()
-	minter := newHubMemberUser(t, s, name+"-minter")
+	minter := newBrokerRegistrarUser(t, s, name+"-minter")
 	rec := mintJoinToken(t, srv, minter, name, 600)
 	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
 	return decodeRegistration(t, rec)
@@ -326,7 +326,7 @@ func TestNeverAPIWritable_TrustedProxies(t *testing.T) {
 func TestProjectRegisterEmbeddedBroker_SecretOnlyOnConfidentialArrival(t *testing.T) {
 	srv, s := testServer(t)
 	ctx := context.Background()
-	owner := newHubMemberUser(t, s, "tp-register-owner")
+	owner := newBrokerRegistrarUser(t, s, "tp-register-owner")
 	broker := registerBrokerTestExistingBroker(t, s, "tp-register-broker", owner.ID)
 	body := RegisterProjectRequest{
 		Name:   "tp-register-project",
