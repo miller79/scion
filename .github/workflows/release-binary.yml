@@ -1,0 +1,223 @@
+name: Release binary
+
+# Builds a Scion binary for a fork release, the way deploy/build-scion.sh does on a workstation:
+# a pinned base commit with the release stack's changes applied on top (uncommitted), so that
+# "scion version" reports the base commit. Static Linux amd64 build (CGO_ENABLED=0, -trimpath)
+# with an exact, patched Go toolchain. The binary must pass a govulncheck gate (no called
+# vulnerabilities) before it is uploaded as a workflow artifact.
+#
+# Runs only when a release-* tag is pushed (on the releases branch). The tagged commit is the
+# release stack head; .github/release-build.env in that commit describes the release:
+#
+#   RELEASE=2026-11-20.1                                   # must match the tag name release-<RELEASE>
+#   BASE_COMMIT=<40-hex sha>                               # pinned base commit (an ancestor of the tag)
+#
+# Uploads the binary, its SHA-256 and build-info.txt as a workflow artifact, then publishes the
+# same three files as a GitHub Release named after the tag. Nothing else is published.
+
+on:
+  push:
+    tags: ['release-*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-binary-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: '1.26.11'                                     # exact patched toolchain, not go.mod's
+  GOVULNCHECK_VERSION: v1.1.4
+  GOTOOLCHAIN: local                                        # never let go.mod switch the toolchain
+  RELEASE_ENV_FILE: .github/release-build.env
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read the release description
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          f="$RELEASE_ENV_FILE"
+          test -f "$f" || { echo "::error::$f is missing on $REF_NAME"; exit 1; }
+          # Parse KEY=value lines; never source the file. Comments (#...) and blank lines are ignored.
+          get() {
+            local n
+            n=$(sed -e 's/[[:space:]]*#.*$//' -e 's/[[:space:]]*$//' "$f" | grep -c "^$1=" || true)
+            test "$n" = 1 || { echo "::error::$f must set $1 exactly once (found $n)" >&2; return 1; }
+            sed -e 's/[[:space:]]*#.*$//' -e 's/[[:space:]]*$//' "$f" | grep "^$1=" | cut -d= -f2-
+          }
+          release=$(get RELEASE)
+          base=$(get BASE_COMMIT)
+          stack=$GITHUB_SHA                                 # the tagged commit is the stack head
+          unknown=$(sed -e 's/[[:space:]]*#.*$//' -e 's/[[:space:]]*$//' "$f" | grep -v '^$' | grep -vE '^(RELEASE|BASE_COMMIT)=' || true)
+          test -z "$unknown" || { echo "::error::unexpected lines in $f: $unknown"; exit 1; }
+          [[ "$release" =~ ^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$ ]] || { echo "::error::bad RELEASE '$release'"; exit 1; }
+          [[ "$base" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::BASE_COMMIT must be a full 40-hex sha"; exit 1; }
+          [[ "$stack" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::GITHUB_SHA is not a full 40-hex sha"; exit 1; }
+          test "$REF_NAME" = "release-$release" || { echo "::error::tag $REF_NAME does not match RELEASE=$release"; exit 1; }
+          {
+            echo "RELEASE=$release"
+            echo "BASE_COMMIT=$base"
+            echo "STACK_HEAD=$stack"
+          } >> "$GITHUB_ENV"
+          echo "release=$release base=$base stack=$stack"
+
+      - name: Base commit plus the release stack's changes
+        run: |
+          set -euo pipefail
+          git cat-file -e "$BASE_COMMIT^{commit}"
+          git cat-file -e "$STACK_HEAD^{commit}"
+          git merge-base --is-ancestor "$BASE_COMMIT" "$STACK_HEAD"
+          git diff --binary "$BASE_COMMIT" "$STACK_HEAD" > /tmp/stack.diff
+          git checkout --quiet --detach "$BASE_COMMIT"
+          git apply --index /tmp/stack.diff
+          # The working tree must now equal the tested stack head exactly.
+          git diff --quiet "$STACK_HEAD" -- || { echo "::error::tree differs from $STACK_HEAD"; exit 1; }
+          test "$(git rev-parse HEAD)" = "$BASE_COMMIT"
+          echo "tree matches $STACK_HEAD; HEAD is $BASE_COMMIT"
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Check the Go toolchain
+        run: |
+          set -euo pipefail
+          v=$(go env GOVERSION)
+          echo "go: $v"
+          test "$v" = "go$GO_VERSION" || { echo "::error::go is $v, expected go$GO_VERSION"; exit 1; }
+
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+
+      - name: Build (npm ci, gates, make web && make build)
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: amd64
+          GOFLAGS: -trimpath
+        run: |
+          set -euo pipefail
+          lock_before=$(sha256sum web/package-lock.json | cut -d' ' -f1)
+          npm --prefix web ci
+          go build ./...
+          npm --prefix web run typecheck
+          make web
+          make build
+          lock_after=$(sha256sum web/package-lock.json | cut -d' ' -f1)
+          test "$lock_before" = "$lock_after" || { echo "::error::make web changed web/package-lock.json"; exit 1; }
+          test -f build/scion
+          mkdir -p out
+          cp build/scion out/scion
+          chmod 755 out/scion
+          go version out/scion
+
+      - name: govulncheck gate (no called vulnerabilities)
+        run: |
+          set -euo pipefail
+          GOBIN="$RUNNER_TEMP/govulncheck-bin" go install "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION"
+          gvc="$RUNNER_TEMP/govulncheck-bin/govulncheck"
+          "$gvc" -version | tee "$RUNNER_TEMP/govulncheck-version.txt"
+          # Text mode exits 3 when the binary calls a vulnerable symbol; uncalled findings exit 0.
+          set +e
+          "$gvc" -mode=binary out/scion > "$RUNNER_TEMP/govulncheck.txt" 2>&1
+          rc=$?
+          set -e
+          cat "$RUNNER_TEMP/govulncheck.txt"
+          # The summary is the last paragraph of the report.
+          summary=$(awk 'BEGIN{RS=""} {p=$0} END{print p}' "$RUNNER_TEMP/govulncheck.txt" | grep -v "^Use '-show" | tr '\n' ' ' | sed 's/  */ /g;s/ $//')
+          echo "summary: $summary"
+          echo "rc=$rc" > "$RUNNER_TEMP/govulncheck-rc.txt"
+          echo "$summary" > "$RUNNER_TEMP/govulncheck-summary.txt"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::govulncheck exited $rc (3 = called vulnerabilities): $summary"
+            exit 1
+          fi
+          {
+            echo "### govulncheck $GOVULNCHECK_VERSION"
+            echo "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify version and record checksum
+        run: |
+          set -euo pipefail
+          HOME="$(mktemp -d)"
+          export HOME
+          vc=$(out/scion version --format json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("commit",""))')
+          echo "scion version commit: $vc"
+          test -n "$vc" || { echo "::error::scion version reports no commit"; exit 1; }
+          case "$BASE_COMMIT" in "$vc"*) ;; *) echo "::error::version commit $vc is not $BASE_COMMIT"; exit 1 ;; esac
+          sum=$(sha256sum out/scion | cut -d' ' -f1)
+          (cd out && sha256sum scion > scion.sha256)
+          gvc_ver=$(grep -iE '^Scanner:' "$RUNNER_TEMP/govulncheck-version.txt" | tr -d '\n')
+          gvc_db=$(grep -iE '^DB updated:' "$RUNNER_TEMP/govulncheck-version.txt" | tr -d '\n')
+          {
+            echo "release=$RELEASE"
+            echo "base_commit=$BASE_COMMIT"
+            echo "stack_head=$STACK_HEAD"
+            echo "build_ref=${GITHUB_REF_NAME}@${GITHUB_SHA}"
+            echo "sha256=$sum"
+            echo "size_bytes=$(stat -c %s out/scion)"
+            echo "go=$(go env GOVERSION) node=$(node --version) npm=$(npm --version) CGO_ENABLED=0 GOOS=linux GOARCH=amd64 -trimpath"
+            echo "npm_registry=$(npm config get registry)"
+            echo "govulncheck=golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION ($gvc_ver; $gvc_db) -mode=binary $(cat "$RUNNER_TEMP/govulncheck-rc.txt")"
+            echo "govulncheck_summary=$(cat "$RUNNER_TEMP/govulncheck-summary.txt")"
+            echo "runner=${RUNNER_OS}/${RUNNER_ARCH} run=${GITHUB_RUN_ID} attempt=${GITHUB_RUN_ATTEMPT}"
+            echo "version_json=$(out/scion version --format json | tr -d '\n')"
+          } > out/build-info.txt
+          cat out/build-info.txt
+          echo "### scion binary sha256: \`$sum\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scion-${{ env.RELEASE }}-linux-amd64
+          path: out/
+          if-no-files-found: error
+          retention-days: 90
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write                                       # create the GitHub Release; nothing else
+    steps:
+      - name: Download the build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Check the files
+        run: |
+          set -euo pipefail
+          cd out
+          ls -l
+          sha256sum -c scion.sha256
+          grep -q "^build_ref=${GITHUB_REF_NAME}@${GITHUB_SHA}$" build-info.txt
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd out
+          { echo "Scion hub binary, linux/amd64. Check it with: sha256sum -c scion.sha256"; echo; echo '```'; cat build-info.txt; echo '```'; } > notes.md
+          gh release create "$TAG" scion scion.sha256 build-info.txt --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --notes-file notes.md
