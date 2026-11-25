@@ -135,7 +135,7 @@ func (s *Server) handleAgentAttachmentUpload(w http.ResponseWriter, r *http.Requ
 	failures := make([]attachmentUploadFailure, 0)
 	internalError := false
 	for _, fh := range files {
-		result, err := s.storeUploadedArtifact(ctx, maxFile, fh)
+		result, err := s.storeUploadedArtifact(ctx, maxFile, partFromHeader(fh))
 		if err != nil {
 			var rejection attachmentRejection
 			if !errors.As(err, &rejection) {

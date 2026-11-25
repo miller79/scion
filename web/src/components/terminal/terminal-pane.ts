@@ -54,6 +54,11 @@ import {
 import { apiFetch, extractApiError } from '../../client/api.js';
 import { projectDisplayName } from '../../client/project-label.js';
 import { getPublicSettings, invalidatePublicSettings } from '../../client/server-feature-flags.js';
+import {
+  uploadWorkspaceFiles,
+  UploadHttpError,
+  type WorkspaceUploadEntry,
+} from '../../client/chunked-upload.js';
 import { dispatchPageTitle } from '../../client/page-title.js';
 import type { TerminalAgentMetadata } from '../../client/terminal-metadata.js';
 import '../shared/breadcrumb.js';
@@ -1761,23 +1766,6 @@ export class ScionTerminalPane extends LitElement {
   }
 
   private async _handleFileDrop(files: FileList): Promise<void> {
-    // Client-side size validation
-    const MAX_FILE = 50 * 1024 * 1024; // 50MB
-    const MAX_TOTAL = 100 * 1024 * 1024; // 100MB
-    let total = 0;
-    for (const f of files) {
-      if (f.size > MAX_FILE) {
-        this._showUploadError(`File "${f.name}" exceeds 50MB limit`);
-        return;
-      }
-      total += f.size;
-    }
-    if (total > MAX_TOTAL) {
-      this._showUploadError('Total upload exceeds 100MB limit');
-      return;
-    }
-
-    this.isUploading = true;
     // Capture identity at drop time — a late completion must not inject
     // paths into a session that has been hidden, closed or reselected. (P1.8)
     const gen = this.session?.state.generation ?? 0;
@@ -1785,33 +1773,30 @@ export class ScionTerminalPane extends LitElement {
       typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID()
         : Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
-    const formData = new FormData();
+    const entries: WorkspaceUploadEntry[] = [];
     const paths: string[] = [];
 
     for (const file of files) {
-      const relPath = `.attachments/_web/${batchId}/${file.name}`;
-      formData.append(relPath, file);
+      entries.push({ path: `.attachments/_web/${batchId}/${file.name}`, file });
       paths.push(`${this.uploadBasePath}/.attachments/_web/${batchId}/${file.name}`);
     }
 
-    this.uploadStatus = `Uploading ${files.length} file${files.length > 1 ? 's' : ''}...`;
+    this.isUploading = true;
+    const label = `Uploading ${files.length} file${files.length > 1 ? 's' : ''}`;
+    this.uploadStatus = `${label}...`;
 
     try {
-      const resp = await apiFetch(
+      // The hub's per-file limit is checked before anything is sent; large
+      // files go up in chunks (client/chunked-upload.ts).
+      await uploadWorkspaceFiles(
         `/api/v1/projects/${this.projectId}/shared-dirs/${this.uploadTargetDir}/files`,
-        { method: 'POST', body: formData }
-      );
-      if (!resp.ok) {
-        if (resp.status === 409) {
-          this._showUploadError('File upload requires a co-located runtime broker');
-          this.uploadEnabled = false;
-          this.uploadDisabledReason = 'File upload requires a co-located runtime broker';
-          return;
+        entries,
+        (sent, total) => {
+          if (this.isUploading && total > 0) {
+            this.uploadStatus = `${label}... ${Math.floor((sent / total) * 100)}%`;
+          }
         }
-        const err = await extractApiError(resp, 'Upload failed');
-        this._showUploadError(err);
-        return;
-      }
+      );
 
       // Guard: do not inject paths if pane lost focus, was hidden, disposed
       // or reconnected during the upload. (P1.8)
@@ -1827,7 +1812,19 @@ export class ScionTerminalPane extends LitElement {
       const quoted = paths.map((p) => this._quoteForShell(p));
       this.sendData(quoted.join(' ') + ' ');
       this.terminal?.focus();
-    } catch {
+    } catch (err) {
+      if (err instanceof UploadHttpError) {
+        // The shared-dir route's own 409 (no co-located broker); a chunked
+        // upload's 409s carry upload_* codes and are just errors.
+        if (err.status === 409 && !err.code.startsWith('upload_')) {
+          this._showUploadError('File upload requires a co-located runtime broker');
+          this.uploadEnabled = false;
+          this.uploadDisabledReason = 'File upload requires a co-located runtime broker';
+          return;
+        }
+        this._showUploadError(err.message);
+        return;
+      }
       this._showUploadError('Upload failed: network error');
     } finally {
       // Only clear on success — error paths use _showUploadError which manages its own state

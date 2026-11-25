@@ -94,6 +94,24 @@ var multipartUploadRoutes = []string{
 	"/api/v1/projects/*/shared-dirs/*/files", // shared-dir file upload
 }
 
+// chunkedUploadRoutes are the upload routes that take chunked uploads.
+var chunkedUploadRoutes = []string{
+	"/api/v1/chat/attachments",
+	"/api/v1/projects/*/workspace/files",
+	"/api/v1/projects/*/shared-dirs/*/files",
+}
+
+// isChunkedUploadRoute reports whether path is one of chunkedUploadRoutes.
+func isChunkedUploadRoute(path string) bool {
+	segs := strings.Split(strings.TrimRight(path, "/"), "/")
+	for _, pattern := range chunkedUploadRoutes {
+		if segmentsMatch(strings.Split(pattern, "/"), segs) {
+			return true
+		}
+	}
+	return false
+}
+
 // isMultipartUploadRoute reports whether path matches one of the upload-route
 // patterns (see multipartUploadRoutes): equal segment count, literal segments
 // equal, "*" matching any single non-empty segment.
@@ -182,7 +200,8 @@ func requestHasOriginSignal(r *http.Request) bool {
 }
 
 // acceptableWriteBody reports whether a POST request's body content type is
-// allowed: application/json, multipart/form-data on an upload route, or a
+// allowed: application/json, multipart/form-data or application/octet-stream
+// (a chunked upload chunk) on an upload route, or a
 // browser policy report type on the policy report route. A request with no
 // body is allowed. An absent, empty or unparseable content type on a request
 // that has a body is refused.
@@ -199,6 +218,10 @@ func acceptableWriteBody(r *http.Request) bool {
 		return true
 	case "multipart/form-data":
 		return isMultipartUploadRoute(r.URL.Path)
+	case "application/octet-stream":
+		// One chunk of a chunked upload (chunked_upload.go). Not a type a
+		// cross-site form can send, so it needs a CORS preflight.
+		return r.URL.Query().Get(chunkedUploadOpParam) == "chunk" && isChunkedUploadRoute(r.URL.Path)
 	case policyReportMediaType, legacyPolicyReportMediaType:
 		return isPolicyReportRoute(r.URL.Path)
 	default:

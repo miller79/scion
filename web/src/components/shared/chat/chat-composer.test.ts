@@ -23,7 +23,7 @@
  * away both halves of it.
  */
 
-import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, onTestFinished } from 'vitest';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -31,8 +31,19 @@ import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 const apiFetch = vi.fn(() => Promise.resolve(new Response('{}', { status: 200 })));
 const showToast = vi.fn();
 
-vi.mock('../../../client/api.js', () => ({ apiFetch }));
+vi.mock('../../../client/api.js', () => ({
+  apiFetch,
+  extractApiError: (_res: Response, fallback: string) => Promise.resolve(fallback),
+  parseApiError: (_res: Response, fallback: string) =>
+    Promise.resolve({ code: '', message: fallback }),
+}));
 vi.mock('../../../utils/toast.js', () => ({ showToast }));
+
+/** The hub's upload limits as GET /api/v1/settings/public publishes them. */
+let publicUploads: Record<string, number> | undefined;
+vi.mock('../../../client/server-feature-flags.js', () => ({
+  getPublicSettings: () => Promise.resolve(publicUploads ? { uploads: publicUploads } : null),
+}));
 
 let ATTACHMENT_ACCEPT: string;
 let PASTE_TO_ATTACHMENT_THRESHOLD: number;
@@ -71,7 +82,83 @@ beforeAll(async () => {
 
 afterEach(() => {
   vi.clearAllMocks();
+  publicUploads = undefined;
   document.body.innerHTML = '';
+});
+
+describe('composer — upload limits from the hub', () => {
+  it('names the hub limit for a file over it and does not send it', async () => {
+    publicUploads = { maxAttachmentSize: 1024, chunkSize: 8 << 20 };
+    const el = createComposer();
+    const big = new File(['x'], 'big.log');
+    Object.defineProperty(big, 'size', { value: 2048 });
+
+    await el.uploadFiles([big]);
+
+    expect(apiFetch).not.toHaveBeenCalled();
+    expect(el.uploadFailures).toEqual([
+      { name: 'big.log', error: 'exceeds the maximum size of 1 KiB' },
+    ]);
+  });
+
+  it('sends files the one-request limit takes in one request, even above the chunk size', async () => {
+    // A chunked upload must reach one hub instance throughout, so it is
+    // used only for what one request cannot take.
+    publicUploads = { maxAttachmentSize: 1 << 30, chunkSize: 4 };
+    const el = createComposer();
+    respondWith(201, { attachments: [STORED], failures: [] });
+
+    await el.uploadFiles([new File(['0123456789'], 'compose.yaml')]);
+
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+    const [url, init] = apiFetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/api/v1/chat/attachments');
+    expect(init.body).toBeInstanceOf(FormData);
+    expect(el.pendingFiles).toEqual([STORED]);
+  });
+
+  it('uploads files one request cannot take in chunks, with progress', async () => {
+    // One request takes at most 10 bytes here, less than the file.
+    const { _setOneRequestLimitsForTest } = await import('../../../client/chunked-upload.js');
+    _setOneRequestLimitsForTest({ chatFileCap: 1, chatFormRoom: 0 });
+    onTestFinished(() => _setOneRequestLimitsForTest(null));
+    publicUploads = { maxAttachmentSize: 1 << 30, chunkSize: 4 };
+    const el = createComposer();
+    const percents: number[] = [];
+    const urls: string[] = [];
+    apiFetch.mockImplementation(((url: string) => {
+      urls.push(url);
+      if (url.includes('upload=start')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ uploadId: 'u1', chunkSize: 4 }), { status: 201 })
+        );
+      }
+      if (url.includes('upload=chunk')) {
+        percents.push(el.uploadPercent);
+        const offset = Number(new URL(url, 'http://h').searchParams.get('offset'));
+        return Promise.resolve(
+          new Response(JSON.stringify({ received: Math.min(offset + 4, 10) }), { status: 200 })
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({ attachments: [STORED], failures: [] }), { status: 201 })
+      );
+    }) as any);
+
+    await el.uploadFiles([new File(['0123456789'], 'compose.yaml')]);
+
+    expect(urls.map((u) => new URL(u, 'http://h').searchParams.get('upload'))).toEqual([
+      'start',
+      'chunk',
+      'chunk',
+      'chunk',
+      'finish',
+    ]);
+    expect(urls.every((u) => u.includes('project_id=proj-1'))).toBe(true);
+    expect(percents).toEqual([0, 40, 80]);
+    expect(el.pendingFiles).toEqual([STORED]);
+    expect(el.uploading).toBe(false);
+  });
 });
 
 describe('composer — partial upload results', () => {

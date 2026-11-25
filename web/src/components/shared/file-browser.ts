@@ -29,6 +29,7 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { apiFetch, extractApiError } from '../../client/api.js';
+import { uploadWorkspaceFiles } from '../../client/chunked-upload.js';
 import { showConfirm } from './confirm-dialog.js';
 import { formatNumber } from '../../utils/format-number.js';
 import { formatInstant, zoneLabel } from '../../utils/time.js';
@@ -92,8 +93,11 @@ export interface FileBrowserDataSource {
   /** Delete a file by path. */
   deleteFile(path: string): Promise<void>;
 
-  /** Upload one or more files. */
-  uploadFiles(files: FileList): Promise<void>;
+  /**
+   * Upload one or more files. onProgress, when the source supports it, is
+   * called with the bytes sent so far and the total.
+   */
+  uploadFiles(files: FileList, onProgress?: (sent: number, total: number) => void): Promise<void>;
 
   /** Get the download URL for a file (opened in a new tab). */
   getDownloadUrl(path: string): string;
@@ -159,18 +163,16 @@ export class WorkspaceFileBrowserDataSource implements FileBrowserDataSource {
     }
   }
 
-  async uploadFiles(files: FileList): Promise<void> {
-    const formData = new FormData();
-    for (let i = 0; i < files.length; i++) {
-      formData.append(files[i].name, files[i]);
-    }
-    const response = await apiFetch(this.basePath, {
-      method: 'POST',
-      body: formData,
-    });
-    if (!response.ok) {
-      throw new Error(await extractApiError(response, `Upload failed: HTTP ${response.status}`));
-    }
+  async uploadFiles(
+    files: FileList,
+    onProgress?: (sent: number, total: number) => void
+  ): Promise<void> {
+    // Large files go up in chunks within the hub's per-file limit.
+    await uploadWorkspaceFiles(
+      this.basePath,
+      Array.from(files).map((file) => ({ path: file.name, file })),
+      onProgress
+    );
   }
 
   getDownloadUrl(path: string): string {
@@ -231,18 +233,16 @@ export class SharedDirFileBrowserDataSource implements FileBrowserDataSource {
     }
   }
 
-  async uploadFiles(files: FileList): Promise<void> {
-    const formData = new FormData();
-    for (let i = 0; i < files.length; i++) {
-      formData.append(files[i].name, files[i]);
-    }
-    const response = await apiFetch(this.basePath, {
-      method: 'POST',
-      body: formData,
-    });
-    if (!response.ok) {
-      throw new Error(await extractApiError(response, `Upload failed: HTTP ${response.status}`));
-    }
+  async uploadFiles(
+    files: FileList,
+    onProgress?: (sent: number, total: number) => void
+  ): Promise<void> {
+    // Large files go up in chunks within the hub's per-file limit.
+    await uploadWorkspaceFiles(
+      this.basePath,
+      Array.from(files).map((file) => ({ path: file.name, file })),
+      onProgress
+    );
   }
 
   getDownloadUrl(path: string): string {
@@ -582,6 +582,8 @@ export class ScionFileBrowser extends LitElement {
   @state() private initialHasMore = false;
   @state() private providerCount = 0;
   @state() private uploadProgress = false;
+  /** Percent of the current upload sent, or null when unknown. */
+  @state() private uploadPercent: number | null = null;
   @state() private sortField: 'name' | 'size' | 'modified' = 'name';
   @state() private sortDir: 'asc' | 'desc' = 'asc';
   @state() private filterText = '';
@@ -1229,14 +1231,18 @@ export class ScionFileBrowser extends LitElement {
     if (!fileList || fileList.length === 0 || !this.dataSource) return;
 
     this.uploadProgress = true;
+    this.uploadPercent = null;
     try {
-      await this.dataSource.uploadFiles(fileList);
+      await this.dataSource.uploadFiles(fileList, (sent, total) => {
+        this.uploadPercent = total > 0 ? Math.floor((sent / total) * 100) : 100;
+      });
       void this.loadFiles();
     } catch (err) {
       console.error('Failed to upload files:', err);
       this.error = err instanceof Error ? err.message : 'Upload failed';
     } finally {
       this.uploadProgress = false;
+      this.uploadPercent = null;
       input.value = '';
     }
   }
@@ -1464,6 +1470,11 @@ export class ScionFileBrowser extends LitElement {
                   <sl-icon slot="prefix" name="upload"></sl-icon>
                   Upload Files
                 </sl-button>
+                ${this.uploadProgress && this.uploadPercent !== null
+                  ? html`<span class="upload-percent" role="status"
+                      >Uploading ${this.uploadPercent}%</span
+                    >`
+                  : nothing}
               `
             : nothing}
         </div>
