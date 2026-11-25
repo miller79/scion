@@ -545,7 +545,10 @@ func TestStart_AgentPolicyRefusals(t *testing.T) {
 		setting string
 	}{
 		"inline image": {&api.ScionConfig{Image: "docker.io/library/postgres:18-alpine"}, "agent_policy.allowed_image_prefixes"},
-		"host bind mount": {&api.ScionConfig{Volumes: []api.VolumeMount{{Source: "/var/run/docker.sock", Target: "/x"}}},
+		// A plain host directory: container-engine sockets are now refused for
+		// every agent before the policy runs (upstream #5404), so a socket no
+		// longer exercises agent_policy.host_volumes.
+		"host bind mount": {&api.ScionConfig{Volumes: []api.VolumeMount{{Source: "/etc", Target: "/x"}}},
 			"agent_policy.host_volumes"},
 		"resources above max": {&api.ScionConfig{Resources: &api.ResourceSpec{Limits: api.ResourceList{CPU: "12", Memory: "64Gi"}}},
 			"agent_policy.max_resources.cpu"},
@@ -569,12 +572,12 @@ active_profile: local
 profiles:
   local:
     runtime: docker
-`, &api.ScionConfig{Image: "postgres:18-alpine", Volumes: []api.VolumeMount{{Source: "/var/run/docker.sock", Target: "/x"}}})
+`, &api.ScionConfig{Image: "postgres:18-alpine", Volumes: []api.VolumeMount{{Source: "/etc", Target: "/x"}}})
 	require.NoError(t, err)
 	require.Equal(t, 1, ran)
 	assert.Equal(t, "postgres:18-alpine", cfg.Image)
 	require.Len(t, cfg.Volumes, 1)
-	assert.Equal(t, "/var/run/docker.sock", cfg.Volumes[0].Source)
+	assert.Equal(t, "/etc", cfg.Volumes[0].Source)
 }
 
 func TestStart_InvalidAgentPolicyFailsClosed(t *testing.T) {
