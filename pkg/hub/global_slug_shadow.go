@@ -33,9 +33,13 @@ import (
 // name or slug matches, so a record's name shadows as well as its slug.
 // Project members may create project templates and harness configs, and their
 // contents run inside the agents that use them, with the secrets of each
-// agent's creator. A project- or user-scope record may therefore not use a
-// global record's slug or name as its own slug or name, as written or
-// slugified: create, rename, clone and import refuse it.
+// agent's creator. On a hosted hub a project-scope record may therefore not
+// use a global record's slug or name as its own slug or name, as written or
+// slugified: create, rename, clone and import refuse it. This follows the
+// scope of checkHarnessConfigSlugNotGlobal (harness_config_global_slug.go),
+// which refuses a global harness config slug on the same terms, and adds
+// names and templates: a user-scope record is resolved only for its own
+// user, and a workstation hub has a single user.
 //
 // Resolution order is unchanged. Project-first is what the CLI, the
 // "project:" and "global:" name prefixes and existing projects rely on, and
@@ -45,7 +49,7 @@ import (
 // refused.
 
 // errShadowsGlobalSlug is returned (wrapped in a globalShadowError) when a
-// project- or user-scope template or harness config would take the slug or
+// project-scope template or harness config would take the slug or
 // name of a global one.
 var errShadowsGlobalSlug = errors.New("slug or name is used by a global resource")
 
@@ -91,10 +95,10 @@ func shadowCandidates(name, slug string) []shadowCandidate {
 // templateShadowsGlobal reports, as a globalShadowError, whether a template
 // of scope with name and slug would shadow a global template: whether any
 // of its shadowCandidates is a global template's name or slug (the store's
-// Name filter matches either). Global scope never does. A lookup failure is
-// returned as is.
+// Name filter matches either). Only project scope on a hosted hub is
+// checked. A lookup failure is returned as is.
 func (s *Server) templateShadowsGlobal(ctx context.Context, scope, name, slug string) error {
-	if scope == "" || scope == store.TemplateScopeGlobal {
+	if s.workstation || scope != store.TemplateScopeProject {
 		return nil
 	}
 	for _, c := range shadowCandidates(name, slug) {
@@ -112,7 +116,7 @@ func (s *Server) templateShadowsGlobal(ctx context.Context, scope, name, slug st
 
 // harnessConfigShadowsGlobal is templateShadowsGlobal for harness configs.
 func (s *Server) harnessConfigShadowsGlobal(ctx context.Context, scope, name, slug string) error {
-	if scope == "" || scope == store.HarnessConfigScopeGlobal {
+	if s.workstation || scope != store.HarnessConfigScopeProject {
 		return nil
 	}
 	for _, c := range shadowCandidates(name, slug) {
@@ -138,7 +142,7 @@ func writeGlobalSlugShadowError(w http.ResponseWriter, err error) bool {
 	var shadow *globalShadowError
 	if errors.As(err, &shadow) {
 		writeError(w, http.StatusConflict, ErrCodeConflict,
-			fmt.Sprintf("a global %s named %q already exists; a project or user %s cannot use the same name or slug, because it would replace the global one. Choose a different name.", shadow.Kind, shadow.Value, shadow.Kind),
+			fmt.Sprintf("a global %s named %q already exists; a project %s cannot use the same name or slug, because it would replace the global one. Choose a different name.", shadow.Kind, shadow.Value, shadow.Kind),
 			map[string]interface{}{"field": shadow.Field, "reason": "shadows_global"})
 		return true
 	}

@@ -109,60 +109,6 @@ func TestBuiltInProjectRoles_NoPreStartHookWrite(t *testing.T) {
 }
 
 // =============================================================================
-// Runtime brokers: hub-member no longer holds broker.create.
-// =============================================================================
-
-func TestHubMember_CannotRegisterBroker(t *testing.T) {
-	srv, s := testServer(t)
-	member := newHubMemberUser(t, s, "rh-broker-member")
-
-	rec := mintJoinToken(t, srv, member, "rh-member-broker", 600)
-	assert.Equal(t, http.StatusForbidden, rec.Code, "an ordinary hub member must not register a broker: %s", rec.Body.String())
-	_, err := s.GetRuntimeBrokerByName(context.Background(), "rh-member-broker")
-	assert.ErrorIs(t, err, store.ErrNotFound)
-
-	hubAdmin := newHardeningHubAdmin(t, s, "rh-broker-hub-admin")
-	rec = mintJoinToken(t, srv, hubAdmin, "rh-admin-broker", 600)
-	assert.Equal(t, http.StatusCreated, rec.Code, "a hub admin registers a broker: %s", rec.Body.String())
-
-	for _, role := range BuiltInRoles() {
-		if role.Name == store.SystemRoleHubMember {
-			assert.NotContains(t, role.Permissions, "broker.create")
-		}
-	}
-}
-
-// Re-registering or re-minting a broker the caller already owns goes
-// through the same broker.create gate as a first registration: a plain hub
-// member who registered a broker before hub-member lost broker.create needs
-// an admin to grant it before re-registering.
-func TestHubMemberBrokerOwner_CannotReregisterOrRemint(t *testing.T) {
-	srv, s := testServer(t)
-	ctx := context.Background()
-	owner := newHubMemberUser(t, s, "rh-broker-owner")
-	broker := createReregistrationTestBroker(t, s, "rh-owned-broker", owner.ID)
-
-	// Re-mint a join token for the owned broker (PreserveSettings).
-	rec := mintJoinToken(t, srv, owner, broker.Name, 600)
-	assert.Equal(t, http.StatusForbidden, rec.Code, "a hub-member owner may not re-mint: %s", rec.Body.String())
-	// Re-register the owned broker by ID.
-	rec = doRequestAsUserLoopback(t, srv, owner, http.MethodPost, "/api/v1/brokers", CreateBrokerRegistrationRequest{
-		Name: broker.Name, BrokerID: broker.ID,
-	})
-	assert.Equal(t, http.StatusForbidden, rec.Code, "a hub-member owner may not re-register: %s", rec.Body.String())
-	stored, err := s.GetRuntimeBroker(ctx, broker.ID)
-	require.NoError(t, err)
-	assert.Equal(t, owner.ID, stored.CreatedBy)
-	assert.Equal(t, broker.Labels, stored.Labels, "the refused requests changed nothing")
-
-	// With broker.create granted, the same owner re-mints.
-	grantBrokerCreate(t, s, owner.ID, nil)
-	rec = mintJoinToken(t, srv, owner, broker.Name, 600)
-	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
-	assert.Equal(t, broker.ID, decodeRegistration(t, rec).BrokerID)
-}
-
-// =============================================================================
 // Name shadowing: a project or user template or harness config may not take
 // the slug of a global one.
 // =============================================================================
@@ -184,7 +130,7 @@ func TestTemplateCreate_ProjectSlugShadowingGlobalRefused(t *testing.T) {
 	rec = doRequestAsUser(t, srv, alice, http.MethodPost, "/api/v1/templates", CreateTemplateRequest{
 		Name: "rh-shadowed", Harness: "claude", Scope: store.TemplateScopeUser,
 	})
-	assert.Equal(t, http.StatusConflict, rec.Code, "a user template may not shadow a global one: %s", rec.Body.String())
+	assert.Equal(t, http.StatusCreated, rec.Code, "a user template is resolved only for its user and is not checked: %s", rec.Body.String())
 
 	// A distinct name is still created, and renaming it onto the global
 	// slug is refused.
@@ -215,7 +161,8 @@ func TestHarnessConfigCreate_ProjectSlugShadowingGlobalRefused(t *testing.T) {
 		Name: "rh-hc-shadowed", Harness: "claude", Scope: store.HarnessConfigScopeProject, ScopeID: project.ID,
 	})
 	assert.Equal(t, http.StatusConflict, rec.Code, "a project harness config may not shadow a global one: %s", rec.Body.String())
-	assert.Contains(t, rec.Body.String(), "shadows_global")
+	// Upstream's checkHarnessConfigSlugNotGlobal refuses the slug first.
+	assert.Contains(t, rec.Body.String(), "harness_config_slug_reserved")
 
 	rec = doRequestAsUser(t, srv, alice, http.MethodPost, "/api/v1/harness-configs", CreateHarnessConfigRequest{
 		Name: "rh-hc-own", Harness: "claude", Scope: store.HarnessConfigScopeProject, ScopeID: project.ID,
@@ -239,7 +186,16 @@ func TestResourceImport_ProjectSlugShadowingGlobalRefused(t *testing.T) {
 	err := (&templatePersistence{s: srv}).Create(ctx, rec, nil)
 	assert.ErrorIs(t, err, errShadowsGlobalSlug, "template import into a project may not shadow a global template")
 	err = (&harnessConfigPersistence{s: srv}).Create(ctx, rec, nil)
-	assert.ErrorIs(t, err, errShadowsGlobalSlug, "harness config import into a project may not shadow a global one")
+	var reserved *harnessConfigSlugReservedError
+	assert.ErrorAs(t, err, &reserved, "harness config import into a project may not take a global slug (upstream check)")
+	// A name-only match is ours.
+	err = (&harnessConfigPersistence{s: srv}).Create(ctx, &ResourceRecord{Name: "rh-imp", Slug: "rh-imp-own", Scope: store.HarnessConfigScopeProject, ScopeID: tid("rh-imp-proj")}, nil)
+	assert.ErrorIs(t, err, errShadowsGlobalSlug, "harness config import into a project may not take a global name")
+
+	// User scope and workstation hubs are not checked.
+	assert.NoError(t, (&templatePersistence{s: srv}).Create(ctx, &ResourceRecord{ID: tid("rh-imp-user"), Name: "rh-imp", Slug: "rh-imp", Scope: store.TemplateScopeUser, ScopeID: tid("rh-imp-user-id"), Status: store.TemplateStatusActive}, nil))
+	srv.workstation = true
+	assert.NoError(t, (&templatePersistence{s: srv}).Create(ctx, &ResourceRecord{ID: tid("rh-imp-ws"), Name: "rh-imp", Slug: "rh-imp", Scope: store.TemplateScopeProject, ScopeID: tid("rh-imp-proj"), Status: store.TemplateStatusActive}, nil))
 }
 
 // The CLI finds a template or harness config by name as well as by slug
@@ -262,7 +218,6 @@ func TestTemplate_NameShadowingGlobalRefused(t *testing.T) {
 		"project name is a global slug":   {Name: "rhn-claude", Slug: "x-rhn-claude", Scope: store.TemplateScopeProject, ScopeID: project.ID},
 		"slugified name is a global slug": {Name: "RHN-Claude", Slug: "y-rhn-claude", Scope: store.TemplateScopeProject, ScopeID: project.ID},
 		"project name is a global name":   {Name: "RHN Display", Slug: "z-rhn-display", Scope: store.TemplateScopeProject, ScopeID: project.ID},
-		"user name is a global slug":      {Name: "rhn-claude", Slug: "u-rhn-claude", Scope: store.TemplateScopeUser},
 	} {
 		req.Harness = "claude"
 		rec := doRequestAsUser(t, srv, alice, http.MethodPost, "/api/v1/templates", req)
@@ -272,7 +227,7 @@ func TestTemplate_NameShadowingGlobalRefused(t *testing.T) {
 	rec := doRequestAsUser(t, srv, alice, http.MethodPost, "/api/v1/users/me/templates", CreateTemplateRequest{
 		Name: "rhn-claude", Slug: "me-rhn-claude", Harness: "claude",
 	})
-	assert.Equal(t, http.StatusConflict, rec.Code, "user template route: %s", rec.Body.String())
+	assert.Equal(t, http.StatusCreated, rec.Code, "user template route (user scope is not checked): %s", rec.Body.String())
 
 	// A distinct name is created; renaming it onto a global name, with
 	// its own slug unchanged, is refused by PATCH and PUT.
@@ -386,6 +341,19 @@ func TestProjectClone_ReadOnlyMemberDenied(t *testing.T) {
 // reserved.
 // =============================================================================
 
+// reservedSAWants is the refusal each reserved account gets: the Hub's own
+// account is refused by upstream's gcpServiceAccountEmailRefusal (400
+// identity_reserved), a broker host's by reservedServiceAccountUse (422
+// reserved_service_account).
+var reservedSAWants = map[string]struct {
+	status int
+	code   string
+}{
+	"hub-sa@hub-project.iam.gserviceaccount.com":       {http.StatusBadRequest, "identity_reserved"},
+	"HUB-SA@hub-project.iam.gserviceaccount.com":       {http.StatusBadRequest, "identity_reserved"},
+	"broker-host@host-project.iam.gserviceaccount.com": {http.StatusUnprocessableEntity, "reserved_service_account"},
+}
+
 func TestCreateGCPServiceAccount_RefusesHubAndBrokerHostSA(t *testing.T) {
 	srv, s := testServer(t)
 	projectID := createTestProjectForSA(t, srv, s)
@@ -397,14 +365,10 @@ func TestCreateGCPServiceAccount_RefusesHubAndBrokerHostSA(t *testing.T) {
 	}))
 	path := fmt.Sprintf("/api/v1/projects/%s/gcp-service-accounts", projectID)
 
-	for _, email := range []string{
-		"hub-sa@hub-project.iam.gserviceaccount.com",
-		"HUB-SA@hub-project.iam.gserviceaccount.com",
-		"broker-host@host-project.iam.gserviceaccount.com",
-	} {
+	for email, want := range reservedSAWants {
 		rec := doRequest(t, srv, http.MethodPost, path, map[string]string{"email": email})
-		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code, "%s must be refused: %s", email, rec.Body.String())
-		assert.Contains(t, rec.Body.String(), "reserved_service_account")
+		assert.Equal(t, want.status, rec.Code, "%s must be refused: %s", email, rec.Body.String())
+		assert.Contains(t, rec.Body.String(), want.code)
 	}
 	list, err := s.ListGCPServiceAccounts(context.Background(), store.GCPServiceAccountFilter{Scope: store.ScopeProject, ScopeID: projectID})
 	require.NoError(t, err)
@@ -428,16 +392,12 @@ func TestCreateHubScopedGCPServiceAccount_RefusesHubAndBrokerHostSA(t *testing.T
 	member := newHubMemberUser(t, s, "rh-hubsa-member")
 	const path = "/api/v1/gcp-service-accounts?scope=hub"
 
-	for _, email := range []string{
-		"hub-sa@hub-project.iam.gserviceaccount.com",
-		"HUB-SA@hub-project.iam.gserviceaccount.com",
-		"broker-host@host-project.iam.gserviceaccount.com",
-	} {
+	for email, want := range reservedSAWants {
 		rec := doRequestAsUser(t, srv, member, http.MethodPost, path, map[string]string{"email": email})
-		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code, "member: %s must be refused: %s", email, rec.Body.String())
-		assert.Contains(t, rec.Body.String(), "reserved_service_account")
+		assert.Equal(t, want.status, rec.Code, "member: %s must be refused: %s", email, rec.Body.String())
+		assert.Contains(t, rec.Body.String(), want.code)
 		rec = doRequest(t, srv, http.MethodPost, path, map[string]string{"email": email})
-		assert.Equal(t, http.StatusUnprocessableEntity, rec.Code, "admin: %s must be refused: %s", email, rec.Body.String())
+		assert.Equal(t, want.status, rec.Code, "admin: %s must be refused: %s", email, rec.Body.String())
 	}
 	list, err := s.ListGCPServiceAccounts(ctx, store.GCPServiceAccountFilter{Scope: store.ScopeHub})
 	require.NoError(t, err)

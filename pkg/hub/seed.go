@@ -112,7 +112,7 @@ func BuiltInRoles() []BuiltInRole {
 			Name:        store.SystemRoleHubAdmin,
 			Description: "Hub administrator with scopeable admin permissions",
 			ScopeType:   store.RoleScopeSystem,
-			Revision:    17, // R17: project.manage_pre_start_hooks, broker.create (dropped from hub-member); R16: broker.manage (ptone/scion#7829); R15: project.manage_message_policies, project.read_message_policies (ptone/scion#8047); R14: trigger.*, webhook_endpoint.* (ptone/scion#8028); R13: system_one_instance.{read,create,delete,execute} (ptone/scion#8044); R12: template.create_global, template.update_global, template.delete_global (ptone/scion#1713); R11: skill.update_global, skill.delete_global (ptone/scion#1713); R10: agent.delegation.revoke_all (ptone/scion#2132); R9: project.chat_post (ptone/scion#5518); R8: project.manage_visitors (ptone/scion#4603); R7: agent delegation grant management (agent.delegation.revoke, .credential.revoke, .list, .read); R6: drop Reserved hub.federation.read, hub.federation.update, hub.teams_manifest.update, user.list (ptone/scion#4229); R5: hub.env_vars.read
+			Revision:    17, // R17: project.manage_pre_start_hooks; R16: broker.manage (ptone/scion#7829); R15: project.manage_message_policies, project.read_message_policies (ptone/scion#8047); R14: trigger.*, webhook_endpoint.* (ptone/scion#8028); R13: system_one_instance.{read,create,delete,execute} (ptone/scion#8044); R12: template.create_global, template.update_global, template.delete_global (ptone/scion#1713); R11: skill.update_global, skill.delete_global (ptone/scion#1713); R10: agent.delegation.revoke_all (ptone/scion#2132); R9: project.chat_post (ptone/scion#5518); R8: project.manage_visitors (ptone/scion#4603); R7: agent delegation grant management (agent.delegation.revoke, .credential.revoke, .list, .read); R6: drop Reserved hub.federation.read, hub.federation.update, hub.teams_manifest.update, user.list (ptone/scion#4229); R5: hub.env_vars.read
 			Permissions: hubAdminPermissionIDs(),
 		},
 		{
@@ -136,7 +136,7 @@ func BuiltInRoles() []BuiltInRole {
 			Name:        store.SystemRoleHubMember,
 			Description: "Hub member with read access to directory resources and project creation",
 			ScopeType:   store.RoleScopeSystem,
-			Revision:    6, // R6: drop broker.create, so ordinary users no longer register brokers; R5: drop Reserved user.list (ptone/scion#4229); R4: self-scoped inbox.read, inbox.write, user_skill_injection.update; R3: add broker.create (ptone/scion#2138)
+			Revision:    5, // R5: drop Reserved user.list (ptone/scion#4229); R4: self-scoped inbox.read, inbox.write, user_skill_injection.update; R3: add broker.create (ptone/scion#2138)
 			Permissions: hubMemberPermissionIDs(),
 		},
 		{
@@ -252,13 +252,12 @@ func hubMemberPermissionIDs() []string {
 		// Harness config catalog (read-only)
 		"harness_config.read",
 		"harness_config.list",
-		// Broker catalog (read-only). broker.create is not granted (R6): an
-		// agent on a broker its user registered runs outside the hub's
-		// runtime controls but still receives hub, project and user
-		// secrets, so registering a broker is an administrator action
-		// (hub-admin, super-admin, or a role an administrator grants).
+		// Broker catalog (read-only), plus registration (ptone/scion#2138):
+		// merely being an authenticated user is not enough to register a
+		// broker — it requires this explicit hub-member grant.
 		"broker.read",
 		"broker.list",
+		"broker.create",
 		// GCP service account catalog (read-only)
 		"gcp_service_account.read",
 		"gcp_service_account.list",
@@ -1138,8 +1137,6 @@ func hubAdminPermissionIDs() []string {
 		// Pre-start hooks run inside every agent of a project, so writing
 		// them is held here and by no built-in project role.
 		"project.manage_pre_start_hooks": true,
-		// Runtime broker registration (dropped from hub-member in its R6).
-		"broker.create": true,
 		// Skill registries
 		"skill.read":          true,
 		"skill.list":          true,

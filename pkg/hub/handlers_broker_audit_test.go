@@ -56,7 +56,7 @@ func TestBrokerAudit_HubTokenRegistrationRecordsCredential(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
 	audit := installBrokerAuditCapture(srv)
-	member := newBrokerRegistrarUser(t, s, "audit-hubtoken-member")
+	member := newHubMemberUser(t, s, "audit-hubtoken-member")
 	key, token, err := srv.uatService.CreateTokenWithParams(rs4MintContext(member.ID), CreateTokenParams{
 		UserID: member.ID, Name: "audit-hubtoken", Boundary: TokenBoundary{Kind: BoundaryKindHub}, Scopes: []string{"broker:create"},
 	})
@@ -91,7 +91,7 @@ func TestBrokerAudit_SessionReregistrationRecordsCredential(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
 	audit := installBrokerAuditCapture(srv)
-	owner := newBrokerRegistrarUser(t, s, "audit-session-owner")
+	owner := newHubMemberUser(t, s, "audit-session-owner")
 	broker := createReregistrationTestBroker(t, s, "audit-session-broker", owner.ID)
 
 	rec := doRequestAsUserLoopback(t, srv, owner, http.MethodPost, "/api/v1/brokers", CreateBrokerRegistrationRequest{
@@ -115,8 +115,8 @@ func TestBrokerAudit_DeniedRegistrationRecordsNoEvent(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
 	audit := installBrokerAuditCapture(srv)
-	owner := newBrokerRegistrarUser(t, s, "audit-denied-owner")
-	other := newBrokerRegistrarUser(t, s, "audit-denied-other")
+	owner := newHubMemberUser(t, s, "audit-denied-owner")
+	other := newHubMemberUser(t, s, "audit-denied-other")
 	broker := createReregistrationTestBroker(t, s, "audit-denied-broker", owner.ID)
 
 	rec := doRequestAsUserLoopback(t, srv, other, http.MethodPost, "/api/v1/brokers", CreateBrokerRegistrationRequest{
@@ -130,7 +130,7 @@ func TestBrokerAudit_SessionRotationRecordsCredential(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
 	audit := installBrokerAuditCapture(srv)
-	owner := newBrokerRegistrarUser(t, s, "audit-rotate-owner")
+	owner := newHubMemberUser(t, s, "audit-rotate-owner")
 	broker := createReregistrationTestBroker(t, s, "audit-rotate-broker", owner.ID)
 	originalKey := seedBrokerSecret(t, s, broker.ID)
 
@@ -301,7 +301,7 @@ func TestBrokerAudit_EmbeddedRegisterRecordsCredential(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, s := testServer(t)
 			audit := installBrokerAuditCapture(srv)
-			owner := newBrokerRegistrarUser(t, s, "audit-embedded-owner")
+			owner := newHubMemberUser(t, s, "audit-embedded-owner")
 			info := &RegisterProjectBrokerInfo{Name: "audit-embedded-new-broker", Version: "1.0.0"}
 			if tc.existing {
 				broker := registerBrokerTestExistingBroker(t, s, "audit-embedded-broker", owner.ID)
@@ -365,7 +365,7 @@ func TestBrokerAudit_BrokerDeleteUnlinkRecordsCredential(t *testing.T) {
 	srv, s := testServer(t)
 	ctx := context.Background()
 	audit := installBrokerAuditCapture(srv)
-	owner := newBrokerRegistrarUser(t, s, "audit-delete-owner")
+	owner := newHubMemberUser(t, s, "audit-delete-owner")
 	broker := createReregistrationTestBroker(t, s, "audit-delete-broker", owner.ID)
 
 	projectIDs := []string{tid("audit-delete-project-a"), tid("audit-delete-project-b")}

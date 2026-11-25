@@ -46,6 +46,12 @@ func assertNoBrokerNamed(t *testing.T, s store.Store, name string) {
 	assert.ErrorIs(t, err, store.ErrNotFound, "a denied registration must not create a broker record")
 }
 
+// removeFromHubMembers removes userID from the hub-members group.
+func removeFromHubMembers(t *testing.T, s store.Store, userID string) {
+	t.Helper()
+	require.NoError(t, removeHubMembershipTx(context.Background(), s, userID))
+}
+
 // ----------------------------------------------------------------------------
 // First registration
 // ----------------------------------------------------------------------------
@@ -54,7 +60,7 @@ func TestBrokerHubToken_NewRegistrationAdmitted(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
 	ctx := context.Background()
-	member := newBrokerRegistrarUser(t, s, "hubtoken-new-member")
+	member := newHubMemberUser(t, s, "hubtoken-new-member")
 	key := mintHubBrokerUAT(t, srv, member.ID, "broker:create")
 
 	rec := doRequestWithTokenLoopback(t, srv, key, http.MethodPost, "/api/v1/brokers", CreateBrokerRegistrationRequest{
@@ -78,7 +84,7 @@ func TestBrokerHubToken_NewRegistrationAdmitted(t *testing.T) {
 func TestBrokerHubToken_WithoutBrokerCreateScopeDenied(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
-	member := newBrokerRegistrarUser(t, s, "hubtoken-noscope-member")
+	member := newHubMemberUser(t, s, "hubtoken-noscope-member")
 	key := mintHubBrokerUAT(t, srv, member.ID, "broker:read")
 
 	const name = "hubtoken-noscope-broker"
@@ -89,30 +95,25 @@ func TestBrokerHubToken_WithoutBrokerCreateScopeDenied(t *testing.T) {
 	assertNoBrokerNamed(t, s, name)
 }
 
-// The user's broker.create (here a hub admin's grant) is checked at use, not
-// only at mint: a token minted while the user held it is denied once the
-// grant is gone.
-func TestBrokerHubToken_UserLosesBrokerCreateDenied(t *testing.T) {
+func TestBrokerHubToken_UserRemovedFromHubMembersDenied(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
 	member := newHubMemberUser(t, s, "hubtoken-removed-member")
-	binding := grantBrokerCreate(t, s, member.ID, nil)
 	key := mintHubBrokerUAT(t, srv, member.ID, "broker:create")
-	require.NoError(t, s.DeleteRoleBinding(context.Background(), binding))
+	removeFromHubMembers(t, s, member.ID)
 
 	const name = "hubtoken-removed-broker"
 	rec := doRequestWithTokenLoopback(t, srv, key, http.MethodPost, "/api/v1/brokers", CreateBrokerRegistrationRequest{Name: name})
 
 	assert.Equal(t, http.StatusForbidden, rec.Code,
 		"the token's user must currently hold broker.create; got: %s", rec.Body.String())
-	assert.Contains(t, rec.Body.String(), `"denied_action":"create"`)
 	assertNoBrokerNamed(t, s, name)
 }
 
 func TestBrokerHubToken_RevokedTokenRejected(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
-	member := newBrokerRegistrarUser(t, s, "hubtoken-revoked-member")
+	member := newHubMemberUser(t, s, "hubtoken-revoked-member")
 	key, token, err := srv.uatService.CreateTokenWithParams(rs4MintContext(member.ID), CreateTokenParams{
 		UserID: member.ID, Name: "hubtoken-revoked", Boundary: TokenBoundary{Kind: BoundaryKindHub}, Scopes: []string{"broker:create"},
 	})
@@ -129,7 +130,7 @@ func TestBrokerHubToken_RevokedTokenRejected(t *testing.T) {
 func TestBrokerHubToken_ExpiredTokenRejected(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
-	member := newBrokerRegistrarUser(t, s, "hubtoken-expired-member")
+	member := newHubMemberUser(t, s, "hubtoken-expired-member")
 
 	mintClock := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
 	expiresAt := mintClock.Add(24 * time.Hour)
@@ -152,7 +153,7 @@ func TestBrokerHubToken_SuspendedUserRejected(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
 	ctx := context.Background()
-	member := newBrokerRegistrarUser(t, s, "hubtoken-suspended-member")
+	member := newHubMemberUser(t, s, "hubtoken-suspended-member")
 	key := mintHubBrokerUAT(t, srv, member.ID, "broker:create")
 	member.Status = store.UserStatusSuspended
 	require.NoError(t, s.UpdateUser(ctx, member))
@@ -165,24 +166,6 @@ func TestBrokerHubToken_SuspendedUserRejected(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
 	assert.Equal(t, "user_suspended", errResp.Error.Code)
 	assertNoBrokerNamed(t, s, name)
-}
-
-// An ordinary hub member holds no broker.create (hub-member R6), so it
-// cannot mint a token carrying broker:create either.
-func TestBrokerHubToken_HubMemberCannotMintBrokerCreate(t *testing.T) {
-	t.Parallel()
-	srv, s := testServer(t)
-	member := newHubMemberUser(t, s, "hubtoken-member-mint")
-
-	key, token, err := srv.uatService.CreateTokenWithParams(rs4MintContext(member.ID), CreateTokenParams{
-		UserID: member.ID, Name: "hubtoken-member", Boundary: TokenBoundary{Kind: BoundaryKindHub}, Scopes: []string{"broker:create"},
-	})
-	require.Error(t, err, "a hub member without broker.create cannot mint a token carrying broker:create")
-	assert.Empty(t, key)
-	assert.Nil(t, token)
-	tokens, err := s.ListUserAccessTokens(context.Background(), member.ID)
-	require.NoError(t, err)
-	assert.Empty(t, tokens, "a refused mint stores no token")
 }
 
 func TestBrokerHubToken_PlainUserCannotMintBrokerCreate(t *testing.T) {
@@ -201,18 +184,30 @@ func TestBrokerHubToken_PlainUserCannotMintBrokerCreate(t *testing.T) {
 	assert.Empty(t, tokens, "a refused mint stores no token")
 }
 
-func TestBrokerHubToken_ExpiredBrokerCreateBindingSessionDenied(t *testing.T) {
+func TestBrokerHubToken_ExpiredHubMemberBindingSessionDenied(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
-	user := newHubMemberUser(t, s, "hubtoken-expired-binding")
+	ctx := context.Background()
+	user := newPlainUser(t, s, "hubtoken-expired-binding")
+
+	rd, err := s.GetRoleDefinitionByName(ctx, store.SystemRoleHubMember, store.RoleScopeSystem)
+	require.NoError(t, err)
 	expired := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
-	grantBrokerCreate(t, s, user.ID, &expired)
+	_, err = s.CreateRoleBinding(ctx, &store.RoleBinding{
+		RoleDefinitionID: rd.ID,
+		PrincipalType:    store.RoleBindingPrincipalUser,
+		PrincipalID:      user.ID,
+		ScopeType:        store.RoleScopeSystem,
+		ExpiresAt:        &expired,
+		CreatedBy:        "test",
+	})
+	require.NoError(t, err)
 
 	const name = "hubtoken-expired-binding-broker"
 	rec := doRequestAsUserLoopback(t, srv, user, http.MethodPost, "/api/v1/brokers", CreateBrokerRegistrationRequest{Name: name})
 
 	assert.Equal(t, http.StatusForbidden, rec.Code,
-		"a broker.create binding outside its window grants no broker.create; got: %s", rec.Body.String())
+		"a hub-member binding outside its window grants no broker.create; got: %s", rec.Body.String())
 	assertNoBrokerNamed(t, s, name)
 }
 
@@ -224,7 +219,7 @@ func TestBrokerHubToken_OwnerReregistersByName(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
 	ctx := context.Background()
-	owner := newBrokerRegistrarUser(t, s, "hubtoken-rereg-owner-name")
+	owner := newHubMemberUser(t, s, "hubtoken-rereg-owner-name")
 	broker := createReregistrationTestBroker(t, s, "hubtoken-rereg-owner-name-broker", owner.ID)
 	key := mintHubBrokerUAT(t, srv, owner.ID, "broker:create")
 
@@ -245,7 +240,7 @@ func TestBrokerHubToken_OwnerReregistersByName(t *testing.T) {
 func TestBrokerHubToken_OwnerReregistersByIDWithNewName(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
-	owner := newBrokerRegistrarUser(t, s, "hubtoken-rereg-owner-id")
+	owner := newHubMemberUser(t, s, "hubtoken-rereg-owner-id")
 	broker := createReregistrationTestBroker(t, s, "hubtoken-rereg-owner-id-broker", owner.ID)
 	key := mintHubBrokerUAT(t, srv, owner.ID, "broker:create")
 
@@ -276,7 +271,7 @@ func TestBrokerHubToken_SuperAdminTokenCannotReregisterOtherUsersBroker(t *testi
 		t.Run(tc.name, func(t *testing.T) {
 			srv, s := testServer(t)
 			audit := installBrokerAuditCapture(srv)
-			owner := newBrokerRegistrarUser(t, s, "hubtoken-rereg-admin-owner")
+			owner := newHubMemberUser(t, s, "hubtoken-rereg-admin-owner")
 			admin := newSuperAdminUser(t, s, "hubtoken-rereg-admin")
 			broker := createReregistrationTestBroker(t, s, "hubtoken-rereg-admin-broker", owner.ID)
 			key := mintHubBrokerUAT(t, srv, admin.ID, "broker:create")
@@ -333,7 +328,7 @@ func TestBrokerHubToken_SuperAdminTokenCannotReregisterOwnerlessBroker(t *testin
 func TestBrokerHubToken_SuperAdminDevCredentialReregistersOtherUsersBroker(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
-	owner := newBrokerRegistrarUser(t, s, "hubtoken-rereg-dev-owner")
+	owner := newHubMemberUser(t, s, "hubtoken-rereg-dev-owner")
 	broker := createReregistrationTestBroker(t, s, "hubtoken-rereg-dev-broker", owner.ID)
 
 	rec := doRequestLoopback(t, srv, http.MethodPost, "/api/v1/brokers", CreateBrokerRegistrationRequest{
@@ -356,7 +351,7 @@ func TestBrokerRemintTargetAuthorized_SuperAdminArmNeedsSessionCredential(t *tes
 	t.Parallel()
 	srv, s := testServer(t)
 	ctx := context.Background()
-	owner := newBrokerRegistrarUser(t, s, "remint-helper-owner")
+	owner := newHubMemberUser(t, s, "remint-helper-owner")
 	admin := newSuperAdminUser(t, s, "remint-helper-admin")
 	other := createReregistrationTestBroker(t, s, "remint-helper-other-broker", owner.ID)
 	own := createReregistrationTestBroker(t, s, "remint-helper-own-broker", admin.ID)
@@ -391,7 +386,7 @@ func TestBrokerRemintTargetAuthorized_SuperAdminArmNeedsSessionCredential(t *tes
 func TestBrokerHubToken_SuperAdminTokenWithoutBrokerCreateDenied(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
-	owner := newBrokerRegistrarUser(t, s, "hubtoken-rereg-narrow-owner")
+	owner := newHubMemberUser(t, s, "hubtoken-rereg-narrow-owner")
 	admin := newSuperAdminUser(t, s, "hubtoken-rereg-narrow-admin")
 	broker := createReregistrationTestBroker(t, s, "hubtoken-rereg-narrow-broker", owner.ID)
 	key := mintHubBrokerUAT(t, srv, admin.ID, "agent:read")
@@ -420,8 +415,8 @@ func TestBrokerHubToken_NonOwnerReregistrationDenied(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, s := testServer(t)
-			owner := newBrokerRegistrarUser(t, s, "hubtoken-nonowner-owner")
-			other := newBrokerRegistrarUser(t, s, "hubtoken-nonowner-other")
+			owner := newHubMemberUser(t, s, "hubtoken-nonowner-owner")
+			other := newHubMemberUser(t, s, "hubtoken-nonowner-other")
 			broker := createReregistrationTestBroker(t, s, "hubtoken-nonowner-broker", owner.ID)
 			key := mintHubBrokerUAT(t, srv, other.ID, "broker:create")
 
@@ -440,8 +435,8 @@ func TestBrokerHubToken_OwnNameWithOtherBrokerIDReregistersOwnBroker(t *testing.
 	t.Parallel()
 	srv, s := testServer(t)
 	ctx := context.Background()
-	owner := newBrokerRegistrarUser(t, s, "hubtoken-namewins-owner")
-	other := newBrokerRegistrarUser(t, s, "hubtoken-namewins-other")
+	owner := newHubMemberUser(t, s, "hubtoken-namewins-owner")
+	other := newHubMemberUser(t, s, "hubtoken-namewins-other")
 	own := createReregistrationTestBroker(t, s, "hubtoken-namewins-own", owner.ID)
 	target := createReregistrationTestBroker(t, s, "hubtoken-namewins-target", other.ID)
 	key := mintHubBrokerUAT(t, srv, owner.ID, "broker:create")
@@ -465,7 +460,7 @@ func TestBrokerHubToken_OwnerTokenCannotRotate(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
 	ctx := context.Background()
-	owner := newBrokerRegistrarUser(t, s, "hubtoken-rotate-owner")
+	owner := newHubMemberUser(t, s, "hubtoken-rotate-owner")
 	broker := createReregistrationTestBroker(t, s, "hubtoken-rotate-broker", owner.ID)
 	originalKey := seedBrokerSecret(t, s, broker.ID)
 	key := mintHubBrokerUAT(t, srv, owner.ID, "broker:create")
@@ -546,8 +541,8 @@ func assertNoJoinToken(t *testing.T, s store.Store, brokerID string) {
 func TestBrokerHubToken_SameNameBrokerAppearsDuringNewRegistration(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
-	member := newBrokerRegistrarUser(t, s, "hubtoken-race-new-member")
-	other := newBrokerRegistrarUser(t, s, "hubtoken-race-new-other")
+	member := newHubMemberUser(t, s, "hubtoken-race-new-member")
+	other := newHubMemberUser(t, s, "hubtoken-race-new-other")
 	key := mintHubBrokerUAT(t, srv, member.ID, "broker:create")
 
 	const name = "hubtoken-race-new-broker"
@@ -572,8 +567,8 @@ func TestBrokerHubToken_SameNameBrokerAppearsDuringNewRegistration(t *testing.T)
 func TestBrokerHubToken_NameMatchChangesDuringOwnerReregistration(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
-	owner := newBrokerRegistrarUser(t, s, "hubtoken-race-rereg-owner")
-	other := newBrokerRegistrarUser(t, s, "hubtoken-race-rereg-other")
+	owner := newHubMemberUser(t, s, "hubtoken-race-rereg-owner")
+	other := newHubMemberUser(t, s, "hubtoken-race-rereg-other")
 	own := createReregistrationTestBroker(t, s, "hubtoken-race-rereg-own", owner.ID)
 	target := createReregistrationTestBroker(t, s, "hubtoken-race-rereg-target", other.ID)
 	key := mintHubBrokerUAT(t, srv, owner.ID, "broker:create")
@@ -603,7 +598,7 @@ func TestBrokerHubToken_AutoProvideTurnedOffDuringOwnerReregistration(t *testing
 	t.Parallel()
 	srv, s := testServer(t)
 	ctx := context.Background()
-	owner := newBrokerRegistrarUser(t, s, "hubtoken-race-autoprovide-owner")
+	owner := newHubMemberUser(t, s, "hubtoken-race-autoprovide-owner")
 	broker := createReregistrationTestBroker(t, s, "hubtoken-race-autoprovide-broker", owner.ID)
 	broker.AutoProvide = true
 	require.NoError(t, s.UpdateRuntimeBroker(ctx, broker))

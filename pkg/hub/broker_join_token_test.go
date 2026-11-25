@@ -52,7 +52,7 @@ func joinWithToken(t *testing.T, srv *Server, brokerID, token string) *httptest.
 
 func TestBrokerJoinToken_TTLBounds(t *testing.T) {
 	srv, s := testServer(t)
-	minter := newBrokerRegistrarUser(t, s, "jt-ttl-minter")
+	minter := newHubMemberUser(t, s, "jt-ttl-minter")
 
 	cases := []struct {
 		name       string
@@ -97,7 +97,7 @@ func TestBrokerJoinToken_TTLBounds(t *testing.T) {
 // reports reissued, and only the newest token works.
 func TestBrokerJoinToken_RemintBeforeJoin(t *testing.T) {
 	srv, s := testServer(t)
-	minter := newBrokerRegistrarUser(t, s, "jt-remint-minter")
+	minter := newHubMemberUser(t, s, "jt-remint-minter")
 
 	rec1 := mintJoinToken(t, srv, minter, "jt-remint-broker", 0)
 	require.Equal(t, http.StatusCreated, rec1.Code, "body: %s", rec1.Body.String())
@@ -126,7 +126,7 @@ func TestBrokerJoinToken_RemintBeforeJoin(t *testing.T) {
 func TestBrokerJoinToken_MintThenJoinWithoutUserAuth(t *testing.T) {
 	srv, s := testServer(t)
 	ctx := context.Background()
-	minter := newBrokerRegistrarUser(t, s, "jt-e2e-minter")
+	minter := newHubMemberUser(t, s, "jt-e2e-minter")
 	audit := &mockAuditLogger{}
 	srv.SetAuditLogger(audit)
 
@@ -195,7 +195,7 @@ func TestBrokerJoinToken_MintThenJoinWithoutUserAuth(t *testing.T) {
 func TestBrokerJoinToken_PreserveSettingsLeavesBrokerUnchanged(t *testing.T) {
 	srv, s := testServer(t)
 	ctx := context.Background()
-	owner := newBrokerRegistrarUser(t, s, "jt-preserve-owner")
+	owner := newHubMemberUser(t, s, "jt-preserve-owner")
 
 	broker := &store.RuntimeBroker{
 		ID:                         tid("jt-preserve-broker"),
@@ -252,7 +252,7 @@ func TestBrokerJoinToken_PreserveSettingsLeavesBrokerUnchanged(t *testing.T) {
 // identity, whatever the request says.
 func TestBrokerJoinToken_PreserveSettingsNewBrokerIgnoresSettings(t *testing.T) {
 	srv, s := testServer(t)
-	minter := newBrokerRegistrarUser(t, s, "jt-preserve-new-minter")
+	minter := newHubMemberUser(t, s, "jt-preserve-new-minter")
 
 	rec := doRequestAsUserLoopback(t, srv, minter, http.MethodPost, "/api/v1/brokers", CreateBrokerRegistrationRequest{
 		Name:                       "jt-preserve-new-broker",
@@ -279,7 +279,7 @@ func TestBrokerJoinToken_PreserveSettingsNewBrokerIgnoresSettings(t *testing.T) 
 func TestBrokerJoinToken_ConcurrentJoins(t *testing.T) {
 	srv, s := testServer(t)
 	ctx := context.Background()
-	minter := newBrokerRegistrarUser(t, s, "jt-concurrent-minter")
+	minter := newHubMemberUser(t, s, "jt-concurrent-minter")
 
 	rec := mintJoinToken(t, srv, minter, "jt-concurrent-broker", 0)
 	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
@@ -349,7 +349,7 @@ func seedJoinToken(t *testing.T, s store.Store, brokerID, suffix string, expires
 func TestBrokerJoinToken_ExpiredToken(t *testing.T) {
 	srv, s := testServer(t)
 	ctx := context.Background()
-	owner := newBrokerRegistrarUser(t, s, "jt-expired-owner")
+	owner := newHubMemberUser(t, s, "jt-expired-owner")
 	broker := createReregistrationTestBroker(t, s, "jt-expired-broker", owner.ID)
 	token := seedJoinToken(t, s, broker.ID, "expired", time.Now().Add(-time.Minute))
 
@@ -367,7 +367,7 @@ func TestBrokerJoinToken_ExpiredToken(t *testing.T) {
 func TestBrokerJoinToken_WrongBrokerAndUnknownToken(t *testing.T) {
 	srv, s := testServer(t)
 	ctx := context.Background()
-	owner := newBrokerRegistrarUser(t, s, "jt-mismatch-owner")
+	owner := newHubMemberUser(t, s, "jt-mismatch-owner")
 	broker := createReregistrationTestBroker(t, s, "jt-mismatch-broker", owner.ID)
 	other := createReregistrationTestBroker(t, s, "jt-mismatch-other", owner.ID)
 	token := seedJoinToken(t, s, broker.ID, "valid", time.Now().Add(time.Hour))
@@ -414,7 +414,7 @@ func (f *failingBrokerUpdateStore) WithTx(ctx context.Context, fn func(tx store.
 func TestBrokerJoinToken_FailedJoinRollsBack(t *testing.T) {
 	srv, s := testServer(t)
 	ctx := context.Background()
-	minter := newBrokerRegistrarUser(t, s, "jt-rollback-minter")
+	minter := newHubMemberUser(t, s, "jt-rollback-minter")
 
 	rec := mintJoinToken(t, srv, minter, "jt-rollback-broker", 0)
 	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
@@ -468,7 +468,7 @@ func TestCompleteBrokerJoin_SentinelErrors(t *testing.T) {
 
 func TestBrokerJoinToken_RemintAuditRecordsReissue(t *testing.T) {
 	srv, s := testServer(t)
-	minter := newBrokerRegistrarUser(t, s, "jt-audit-remint-minter")
+	minter := newHubMemberUser(t, s, "jt-audit-remint-minter")
 	audit := &mockAuditLogger{}
 	srv.SetAuditLogger(audit)
 
@@ -510,8 +510,8 @@ func TestBrokerJoinToken_CleanupHandlerRemovesExpiredOnly(t *testing.T) {
 func TestBrokerJoinToken_MintForAnotherUsersBrokerDenied(t *testing.T) {
 	srv, s := testServer(t)
 	ctx := context.Background()
-	owner := newBrokerRegistrarUser(t, s, "jt-other-owner")
-	intruder := newBrokerRegistrarUser(t, s, "jt-other-intruder")
+	owner := newHubMemberUser(t, s, "jt-other-owner")
+	intruder := newHubMemberUser(t, s, "jt-other-intruder")
 
 	rec := mintJoinToken(t, srv, owner, "jt-other-broker", 0)
 	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
@@ -542,24 +542,12 @@ func TestBrokerJoinToken_MintRequiresBrokerCreate(t *testing.T) {
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
-	t.Run("ordinary hub member", func(t *testing.T) {
-		srv, s := testServer(t)
-		member := newHubMemberUser(t, s, "jt-member-user")
-		rec := mintJoinToken(t, srv, member, "jt-member-broker", 600)
-		assert.Equal(t, http.StatusForbidden, rec.Code, "body: %s", rec.Body.String())
-		assert.Contains(t, rec.Body.String(), `"denied_action":"create"`)
-		assert.NotContains(t, rec.Body.String(), "joinToken")
-		_, err := s.GetRuntimeBrokerByName(context.Background(), "jt-member-broker")
-		assert.ErrorIs(t, err, store.ErrNotFound)
-	})
-
 	t.Run("user access token", func(t *testing.T) {
 		srv, s := testServer(t)
 		projectID := tid("jt-uat-proj")
 		ownerID := tid("jt-uat-owner")
 		createRS1Project(t, s, projectID, ownerID)
 		ensureHubMembership(context.Background(), s, ownerID)
-		grantBrokerCreate(t, s, ownerID, nil)
 
 		// The same user can mint with a session.
 		owner, err := s.GetUser(context.Background(), ownerID)
@@ -587,8 +575,8 @@ func TestBrokerJoinToken_MintRequiresBrokerCreate(t *testing.T) {
 func TestBrokerJoinToken_HubTokenMintsOnlyForOwnBroker(t *testing.T) {
 	srv, s := testServer(t)
 	ctx := context.Background()
-	member := newBrokerRegistrarUser(t, s, "jt-hubtoken-member")
-	other := newBrokerRegistrarUser(t, s, "jt-hubtoken-other")
+	member := newHubMemberUser(t, s, "jt-hubtoken-member")
+	other := newHubMemberUser(t, s, "jt-hubtoken-other")
 	key := mintHubBrokerUAT(t, srv, member.ID, "broker:create")
 
 	mintWithToken := func(name string) *httptest.ResponseRecorder {

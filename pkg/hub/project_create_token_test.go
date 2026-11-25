@@ -401,9 +401,6 @@ func TestProjectRegisterToken_EnforcesProjectCreate(t *testing.T) {
 func TestProjectRegisterToken_EmbeddedBrokerFormIsSessionOnly(t *testing.T) {
 	f := newPCTFixture(t, "pct-emb")
 	ctx := context.Background()
-	// The holder may register brokers (broker.create is an administrator
-	// grant since hub-member R6), so every refusal below is the token rule.
-	grantBrokerCreate(t, f.s, f.holder, nil)
 	key := projectOpsMint(t, f.srv, f.holder, hubBoundary(), "project:create", "project:update", "project:read", "agent:read", "broker:create")
 	broker := func(name string) *RegisterProjectBrokerInfo {
 		return &RegisterProjectBrokerInfo{Name: name, Version: "1.0.0"}

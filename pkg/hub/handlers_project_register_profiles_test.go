@@ -55,7 +55,7 @@ func profileNames(profiles []store.BrokerProfile) []string {
 
 func TestProjectRegisterEmbeddedBroker_ReregisterWithoutProfilesKeepsStored(t *testing.T) {
 	srv, s := testServer(t)
-	owner := newBrokerRegistrarUser(t, s, "register-profiles-owner-a")
+	owner := newHubMemberUser(t, s, "register-profiles-owner-a")
 	broker := registerProfilesTestBroker(t, s, "register-profiles-name-a", owner.ID)
 
 	rec := doRequestAsUserLoopback(t, srv, owner, http.MethodPost, "/api/v1/projects/register", RegisterProjectRequest{
@@ -77,7 +77,7 @@ func TestProjectRegisterEmbeddedBroker_ReregisterWithoutProfilesKeepsStored(t *t
 
 func TestProjectRegisterEmbeddedBroker_ReregisterEmptyProfilesKeepsStored(t *testing.T) {
 	srv, s := testServer(t)
-	owner := newBrokerRegistrarUser(t, s, "register-profiles-owner-b")
+	owner := newHubMemberUser(t, s, "register-profiles-owner-b")
 	broker := registerProfilesTestBroker(t, s, "register-profiles-name-b", owner.ID)
 
 	// An explicit empty list: RegisterProjectBrokerInfo omits an empty
@@ -106,7 +106,7 @@ func TestProjectRegisterEmbeddedBroker_ReregisterEmptyProfilesKeepsStored(t *tes
 
 func TestProjectRegisterEmbeddedBroker_ReregisterWithProfilesReplaces(t *testing.T) {
 	srv, s := testServer(t)
-	owner := newBrokerRegistrarUser(t, s, "register-profiles-owner-c")
+	owner := newHubMemberUser(t, s, "register-profiles-owner-c")
 	broker := registerProfilesTestBroker(t, s, "register-profiles-name-c", owner.ID)
 
 	rec := doRequestAsUserLoopback(t, srv, owner, http.MethodPost, "/api/v1/projects/register", RegisterProjectRequest{
@@ -128,7 +128,7 @@ func TestProjectRegisterEmbeddedBroker_ReregisterWithProfilesReplaces(t *testing
 
 func TestProjectRegisterEmbeddedBroker_FirstRegisterStoresProfiles(t *testing.T) {
 	srv, s := testServer(t)
-	requester := newBrokerRegistrarUser(t, s, "register-profiles-newuser-d")
+	requester := newHubMemberUser(t, s, "register-profiles-newuser-d")
 
 	rec := doRequestAsUserLoopback(t, srv, requester, http.MethodPost, "/api/v1/projects/register", RegisterProjectRequest{
 		Name: "register-profiles-project-d",
@@ -155,7 +155,7 @@ func TestProjectRegisterEmbeddedBroker_FirstRegisterStoresProfiles(t *testing.T)
 
 func TestProjectRegisterEmbeddedBroker_ReregisterWithoutCapabilitiesKeepsStored(t *testing.T) {
 	srv, s := testServer(t)
-	owner := newBrokerRegistrarUser(t, s, "register-caps-owner-e")
+	owner := newHubMemberUser(t, s, "register-caps-owner-e")
 	broker := registerBrokerTestExistingBroker(t, s, "register-caps-name-e", owner.ID)
 	broker.Capabilities = &store.BrokerCapabilities{WebPTY: true, Sync: true, Attach: true}
 	require.NoError(t, s.UpdateRuntimeBroker(context.Background(), broker))
@@ -181,7 +181,7 @@ func TestProjectRegisterEmbeddedBroker_ReregisterWithoutCapabilitiesKeepsStored(
 
 func TestProjectRegisterEmbeddedBroker_ReregisterWithCapabilitiesReplaces(t *testing.T) {
 	srv, s := testServer(t)
-	owner := newBrokerRegistrarUser(t, s, "register-caps-owner-f")
+	owner := newHubMemberUser(t, s, "register-caps-owner-f")
 	broker := registerBrokerTestExistingBroker(t, s, "register-caps-name-f", owner.ID)
 	// Stored Sync is true and the request leaves it out (false), so a
 	// merge instead of a replace would keep it true.

@@ -1464,7 +1464,7 @@ func brokerAssocSetup(t *testing.T, name string) *brokerAssocFixture {
 	f.projectOwner, err = s.GetUser(ctx, ownerID)
 	require.NoError(t, err)
 
-	f.brokerOwner = newBrokerRegistrarUser(t, s, name+"-broker-owner")
+	f.brokerOwner = newHubMemberUser(t, s, name+"-broker-owner")
 	f.otherBroker = createReregistrationTestBroker(t, s, name+"-other-broker", f.brokerOwner.ID)
 	f.ownBroker = createReregistrationTestBroker(t, s, name+"-own-broker", f.projectOwner.ID)
 	return f
@@ -1824,49 +1824,6 @@ func newHubMemberUser(t *testing.T, s store.Store, name string) *store.User {
 	t.Helper()
 	u := newPlainUser(t, s, name)
 	ensureHubMembership(context.Background(), s, u.ID)
-	return u
-}
-
-// brokerRegistrarRoleName names a system-scoped custom role holding only
-// broker.create. The built-in hub-member role does not carry broker.create
-// (hub-member R6): registering a runtime broker is an administrator action,
-// or one an administrator grants with a role like this.
-const brokerRegistrarRoleName = "test-broker-registrar"
-
-// grantBrokerCreate binds the broker-registrar role to userID at system
-// scope, expiring at expiresAt when it is non-nil, and returns the binding ID.
-func grantBrokerCreate(t *testing.T, s store.Store, userID string, expiresAt *time.Time) string {
-	t.Helper()
-	ctx := context.Background()
-	rd, err := s.GetRoleDefinitionByName(ctx, brokerRegistrarRoleName, store.RoleScopeSystem)
-	if errors.Is(err, store.ErrNotFound) {
-		rd, err = s.CreateRoleDefinition(ctx, &store.RoleDefinition{
-			Name:        brokerRegistrarRoleName,
-			Description: "test role granting runtime broker registration",
-			ScopeType:   store.RoleScopeSystem,
-			Permissions: []string{"broker.create"},
-		})
-	}
-	require.NoError(t, err)
-	rb, err := s.CreateRoleBinding(ctx, &store.RoleBinding{
-		RoleDefinitionID: rd.ID,
-		PrincipalType:    store.RoleBindingPrincipalUser,
-		PrincipalID:      userID,
-		ScopeType:        store.RoleScopeSystem,
-		ExpiresAt:        expiresAt,
-		CreatedBy:        "test",
-	})
-	require.NoError(t, err)
-	return rb.ID
-}
-
-// newBrokerRegistrarUser creates a hub member who also holds broker.create
-// (grantBrokerCreate): a user an administrator allowed to register runtime
-// brokers.
-func newBrokerRegistrarUser(t *testing.T, s store.Store, name string) *store.User {
-	t.Helper()
-	u := newHubMemberUser(t, s, name)
-	grantBrokerCreate(t, s, u.ID, nil)
 	return u
 }
 

@@ -76,8 +76,8 @@ func newOwnedBrokerFixtureWithStore(t *testing.T, flat bool, name string, instal
 		setFlatExperiment(t, srv, true)
 		f := &flatRegFixture{
 			srv: srv, s: s,
-			operator: newBrokerRegistrarUser(t, s, "flat-reg-operator"),
-			other:    newBrokerRegistrarUser(t, s, "flat-reg-other"),
+			operator: newHubMemberUser(t, s, "flat-reg-operator"),
+			other:    newHubMemberUser(t, s, "flat-reg-other"),
 			target:   &api.RuntimeTargetDescriptor{ID: tid("flat-reg-target-" + t.Name()), Type: "docker", DisplayName: "Local Docker"},
 		}
 		id := tid("owned-" + name)
@@ -90,7 +90,7 @@ func newOwnedBrokerFixtureWithStore(t *testing.T, flat bool, name string, instal
 	if install != nil {
 		install(srv)
 	}
-	owner := newBrokerRegistrarUser(t, s, "owned-owner-"+name)
+	owner := newHubMemberUser(t, s, "owned-owner-"+name)
 	b := createReregistrationTestBroker(t, s, name, owner.ID)
 	return &ownedBrokerFixture{srv: srv, s: s, owner: owner, id: b.ID, base: CreateBrokerRegistrationRequest{Name: name}}
 }
@@ -771,7 +771,7 @@ func TestBrokerReregistration_DeniedCallerWritesNoGCPHostFields(t *testing.T) {
 			// its own store field.
 			srv.brokerAuthService.store = spy
 		})
-		other := newBrokerRegistrarUser(t, f.s, "denied-no-write-other")
+		other := newHubMemberUser(t, f.s, "denied-no-write-other")
 		fault.Arm()
 
 		rec := doRequestAsUserLoopback(t, f.srv, other, http.MethodPost, "/api/v1/brokers", f.req(withGCPHost(ownedEmailA, ownedProjectA)))
@@ -916,7 +916,7 @@ func TestBrokerRoleLabel_HubManaged(t *testing.T) {
 
 	t.Run("new legacy row", func(t *testing.T) {
 		srv, s := testServer(t)
-		member := newBrokerRegistrarUser(t, s, "role-new-legacy")
+		member := newHubMemberUser(t, s, "role-new-legacy")
 		rec := doRequestAsUserLoopback(t, srv, member, http.MethodPost, "/api/v1/brokers", CreateBrokerRegistrationRequest{Name: "role-new-legacy", Labels: embeddedLabel})
 		require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 		row, err := s.GetRuntimeBroker(context.Background(), decodeBrokerRegistration(t, rec.Body).BrokerID)

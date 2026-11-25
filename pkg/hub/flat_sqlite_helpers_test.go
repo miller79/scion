@@ -209,8 +209,8 @@ func newFlatRegFixture(t *testing.T, experimentOn bool) *flatRegFixture {
 	setFlatExperiment(t, srv, experimentOn)
 	return &flatRegFixture{
 		srv: srv, s: s,
-		operator: newBrokerRegistrarUser(t, s, "flat-reg-operator"),
-		other:    newBrokerRegistrarUser(t, s, "flat-reg-other"),
+		operator: newHubMemberUser(t, s, "flat-reg-operator"),
+		other:    newHubMemberUser(t, s, "flat-reg-other"),
 		target:   &api.RuntimeTargetDescriptor{ID: tid("flat-reg-target-" + t.Name()), Type: "docker", DisplayName: "Local Docker"},
 	}
 }

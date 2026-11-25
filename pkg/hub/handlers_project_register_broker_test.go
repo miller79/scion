@@ -62,8 +62,8 @@ import (
 
 func TestProjectRegisterEmbeddedBroker_IDMatchNonOwnerDenied(t *testing.T) {
 	srv, s := testServer(t)
-	owner := newBrokerRegistrarUser(t, s, "register-broker-owner-a")
-	nonOwner := newBrokerRegistrarUser(t, s, "register-broker-nonowner-a")
+	owner := newHubMemberUser(t, s, "register-broker-owner-a")
+	nonOwner := newHubMemberUser(t, s, "register-broker-nonowner-a")
 	broker := registerBrokerTestExistingBroker(t, s, "register-broker-name-a", owner.ID)
 
 	// Finite ceiling so the quota-unchanged assertion below actually has
@@ -107,8 +107,8 @@ func TestProjectRegisterEmbeddedBroker_IDMatchNonOwnerDenied(t *testing.T) {
 
 func TestProjectRegisterEmbeddedBroker_NameOnlyMismatchFallsThrough(t *testing.T) {
 	srv, s := testServer(t)
-	owner := newBrokerRegistrarUser(t, s, "register-broker-owner-e")
-	requester := newBrokerRegistrarUser(t, s, "register-broker-requester-e")
+	owner := newHubMemberUser(t, s, "register-broker-owner-e")
+	requester := newHubMemberUser(t, s, "register-broker-requester-e")
 	broker := registerBrokerTestExistingBroker(t, s, "register-broker-hostname-e", owner.ID)
 
 	// requester supplies no ID — only a name that happens to collide with
@@ -144,7 +144,7 @@ func TestProjectRegisterEmbeddedBroker_NameOnlyMismatchFallsThrough(t *testing.T
 
 func TestProjectRegisterEmbeddedBroker_OwnerAllowed(t *testing.T) {
 	srv, s := testServer(t)
-	owner := newBrokerRegistrarUser(t, s, "register-broker-owner-b")
+	owner := newHubMemberUser(t, s, "register-broker-owner-b")
 	broker := registerBrokerTestExistingBroker(t, s, "register-broker-name-b", owner.ID)
 
 	rec := doRequestAsUserLoopback(t, srv, owner, http.MethodPost, "/api/v1/projects/register", RegisterProjectRequest{
@@ -170,7 +170,7 @@ func TestProjectRegisterEmbeddedBroker_OwnerAllowed(t *testing.T) {
 
 func TestProjectRegisterEmbeddedBroker_SuperAdminAllowed(t *testing.T) {
 	srv, s := testServer(t)
-	owner := newBrokerRegistrarUser(t, s, "register-broker-owner-c")
+	owner := newHubMemberUser(t, s, "register-broker-owner-c")
 	admin := newSuperAdminUser(t, s, "register-broker-admin-c")
 	broker := registerBrokerTestExistingBroker(t, s, "register-broker-name-c", owner.ID)
 
@@ -213,7 +213,7 @@ func TestOwnerForNewBroker_EmptyCallerIDNotRecorded(t *testing.T) {
 
 func TestProjectRegisterEmbeddedBroker_NewBrokerSetsOwnership(t *testing.T) {
 	srv, s := testServer(t)
-	requester := newBrokerRegistrarUser(t, s, "register-broker-newuser-d")
+	requester := newHubMemberUser(t, s, "register-broker-newuser-d")
 
 	rec := doRequestAsUserLoopback(t, srv, requester, http.MethodPost, "/api/v1/projects/register", RegisterProjectRequest{
 		Name: "register-broker-project-d",
@@ -276,7 +276,7 @@ func TestProjectRegisterEmbeddedBroker_ExistingSecretNotReturned(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, s := testServer(t)
-			owner := newBrokerRegistrarUser(t, s, "register-secret-owner")
+			owner := newHubMemberUser(t, s, "register-secret-owner")
 			caller := owner
 			if tc.admin {
 				caller = newSuperAdminUser(t, s, "register-secret-admin")
@@ -324,7 +324,7 @@ func TestProjectRegisterEmbeddedBroker_ExistingSecretNotReturned(t *testing.T) {
 // receive that secret.
 func TestProjectRegisterEmbeddedBroker_LeftoverSecretNotReturned(t *testing.T) {
 	srv, s := testServer(t)
-	requester := newBrokerRegistrarUser(t, s, "register-leftover-requester")
+	requester := newHubMemberUser(t, s, "register-leftover-requester")
 	brokerID := tid("register-leftover-broker")
 	encoded, raw := storeKnownBrokerSecret(t, s, brokerID)
 
@@ -347,7 +347,7 @@ func TestProjectRegisterEmbeddedBroker_LeftoverSecretNotReturned(t *testing.T) {
 // unchanged.
 func TestProjectRegisterEmbeddedBroker_LostSecretInsertIsKeyless(t *testing.T) {
 	srv, s := testServer(t)
-	requester := newBrokerRegistrarUser(t, s, "register-lost-insert-requester")
+	requester := newHubMemberUser(t, s, "register-lost-insert-requester")
 	winnerKey := bytes.Repeat([]byte{0x6b}, 32)
 	race := &mintRaceStore{Store: s, winnerKey: winnerKey}
 	require.NotNil(t, srv.brokerAuthService)
@@ -380,8 +380,8 @@ func TestProjectRegisterEmbeddedBroker_LostSecretInsertIsKeyless(t *testing.T) {
 // fixed error that carries no key material.
 func TestProjectRegisterEmbeddedBroker_DeniedResponseIsKeyless(t *testing.T) {
 	srv, s := testServer(t)
-	owner := newBrokerRegistrarUser(t, s, "register-denied-owner")
-	nonOwner := newBrokerRegistrarUser(t, s, "register-denied-nonowner")
+	owner := newHubMemberUser(t, s, "register-denied-owner")
+	nonOwner := newHubMemberUser(t, s, "register-denied-nonowner")
 	broker := registerBrokerTestExistingBroker(t, s, "register-denied-broker", owner.ID)
 	encoded, raw := storeKnownBrokerSecret(t, s, broker.ID)
 
@@ -399,7 +399,7 @@ func TestProjectRegisterEmbeddedBroker_DeniedResponseIsKeyless(t *testing.T) {
 // and that it is the one stored for the new broker.
 func TestProjectRegisterEmbeddedBroker_FirstRegistrationReturnsStoredSecret(t *testing.T) {
 	srv, s := testServer(t)
-	requester := newBrokerRegistrarUser(t, s, "register-first-requester")
+	requester := newHubMemberUser(t, s, "register-first-requester")
 
 	rec := doRequestAsUserLoopback(t, srv, requester, http.MethodPost, "/api/v1/projects/register", RegisterProjectRequest{
 		Name:   "register-first-project",

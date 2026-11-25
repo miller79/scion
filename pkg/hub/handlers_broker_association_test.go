@@ -203,7 +203,7 @@ func TestBrokerAssociation_AgentCreateCannotLinkOtherUsersBroker(t *testing.T) {
 	t.Parallel()
 	f := brokerLinkAuthzSetup(t)
 	ctx := context.Background()
-	other := newBrokerRegistrarUser(t, f.store, "assoc-agent-broker-owner")
+	other := newHubMemberUser(t, f.store, "assoc-agent-broker-owner")
 	otherBroker := createReregistrationTestBroker(t, f.store, "assoc-agent-other-broker", other.ID)
 	otherBroker.Status = store.BrokerStatusOnline
 	require.NoError(t, f.store.UpdateRuntimeBroker(ctx, otherBroker))
@@ -268,7 +268,7 @@ func TestBrokerAssociation_RegistrationCreatesNoAssociation(t *testing.T) {
 	t.Parallel()
 	srv, s := testServer(t)
 	ctx := context.Background()
-	member := newBrokerRegistrarUser(t, s, "assoc-reg-none-member")
+	member := newHubMemberUser(t, s, "assoc-reg-none-member")
 
 	rec := doRequestAsUserLoopback(t, srv, member, http.MethodPost, "/api/v1/brokers", CreateBrokerRegistrationRequest{
 		Name: "assoc-reg-none-broker",
@@ -318,7 +318,7 @@ func TestBrokerAssociation_UnrelatedMemberCannotUnlink(t *testing.T) {
 	t.Parallel()
 	f := brokerAssocSetup(t, "assoc-unlink-member")
 	f.link(t, f.otherBroker)
-	member := newBrokerRegistrarUser(t, f.store, "assoc-unlink-member-user")
+	member := newHubMemberUser(t, f.store, "assoc-unlink-member-user")
 
 	rec := doRequestAsUser(t, f.srv, member, http.MethodDelete, f.providersPath()+"/"+f.otherBroker.ID, nil)
 

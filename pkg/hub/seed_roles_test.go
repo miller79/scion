@@ -205,9 +205,8 @@ func TestBuiltInRoles_HubAdminConstraintPermissions(t *testing.T) {
 }
 
 // TestBuiltInRoles_HubAdminRevision pins the hub-admin revision and its
-// latest additions: revision 17 adds project.manage_pre_start_hooks and
-// broker.create (dropped from hub-member in its revision 6), revision 16
-// adds broker.manage (ptone/scion#7829), revision 15 adds
+// latest additions: revision 17 adds project.manage_pre_start_hooks,
+// revision 16 adds broker.manage (ptone/scion#7829), revision 15 adds
 // project.manage_message_policies and
 // project.read_message_policies (ptone/scion#8047), revision 14 adds trigger.*
 // and webhook_endpoint.* (ptone/scion#8028), revision 13 adds
@@ -238,7 +237,6 @@ func TestBuiltInRoles_HubAdminRevision(t *testing.T) {
 	assert.Contains(t, admin.Permissions, "webhook_endpoint.create")
 	assert.Contains(t, admin.Permissions, "webhook_endpoint.delete")
 	assert.Contains(t, admin.Permissions, "project.manage_pre_start_hooks")
-	assert.Contains(t, admin.Permissions, "broker.create")
 	assert.Contains(t, admin.Permissions, "system_one_instance.read")
 	assert.Contains(t, admin.Permissions, "system_one_instance.create")
 	assert.Contains(t, admin.Permissions, "system_one_instance.delete")
@@ -577,10 +575,10 @@ func TestReconcileBuiltInRole_LegacyIntegerMarkerTriggersReconciliation(t *testi
 	reconcileBuiltInRoles(ctx, s)
 
 	// After reconciliation, marker should now have the hash and the
-	// current revision (hub-member is at revision 6 after dropping
-	// broker.create).
+	// current revision (hub-member is at revision 5 after dropping the
+	// Reserved user.list).
 	updatedMarker := getAppliedBuiltInRoleMarker(ctx, s, roleName)
-	assert.Equal(t, 6, updatedMarker.Revision)
+	assert.Equal(t, 5, updatedMarker.Revision)
 	assert.NotEmpty(t, updatedMarker.PermHash, "marker should have PermHash after reconciliation")
 	assert.Equal(t, permListHash(hubMemberPermissionIDs()), updatedMarker.PermHash)
 }

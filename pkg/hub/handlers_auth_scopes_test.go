@@ -864,10 +864,10 @@ func assertHubEligibilityShape(t *testing.T, byID map[string]AuthScopeEntry) {
 
 // TestAuthScopes_HubEligibility_OrdinaryMember pins hub-boundary
 // eligibility for an ordinary member of one project: a self selector is
-// eligible, agent:attach is eligible through the relationship path, and
-// hub_config:read, user:list and broker:create, which the user holds through
-// no role (the hub-member role no longer carries broker.create, R6), are
-// refused with authority_required.
+// eligible, agent:attach is eligible through the relationship path,
+// broker:create is eligible through the hub-member role, and hub_config:read
+// and user:list, which the user holds through no role, are refused with
+// authority_required.
 func TestAuthScopes_HubEligibility_OrdinaryMember(t *testing.T) {
 	srv, s := testServer(t)
 	ctx := context.Background()
@@ -882,14 +882,14 @@ func TestAuthScopes_HubEligibility_OrdinaryMember(t *testing.T) {
 	byID := authScopesHubByID(t, srv, member)
 	assertHubEligibilityShape(t, byID)
 
-	for _, id := range []string{"inbox:read", "agent:attach"} {
+	for _, id := range []string{"inbox:read", "agent:attach", "broker:create"} {
 		entry, ok := byID[id]
 		require.True(t, ok, "scope %s missing from response", id)
 		assert.True(t, entry.Eligibility.Eligible, "scope %s: reason %q", id, entry.Eligibility.Reason)
 	}
 	assert.Equal(t, string(permissions.MintEligibilityRelationship), byID["agent:attach"].EligibilityKind)
 
-	for _, id := range []string{"hub_config:read", "user:list", "broker:create"} {
+	for _, id := range []string{"hub_config:read", "user:list"} {
 		entry, ok := byID[id]
 		require.True(t, ok, "scope %s missing from response", id)
 		assert.False(t, entry.Eligibility.Eligible, "scope %s", id)
