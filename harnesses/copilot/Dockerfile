@@ -50,9 +50,23 @@ RUN printf '{\n  "trustedFolders": ["/workspace"]\n}\n' > /home/scion/.copilot/c
 # gets them from an .npmrc passed with --secret id=npmrc,src=<path>; the secret
 # is never written into a layer. COPILOT_CLI_VERSION=latest resolves to the
 # newest published release.
+#
+# Release-bundle pin mode (scripts/release/generate-image-bundle.py): when
+# harness-pins.env supplies COPILOT_CLI_URL, COPILOT_CLI_SHA256 and
+# COPILOT_CLI_INTEGRITY, install-pinned-npm.sh downloads that exact package
+# archive, checks both digests and installs it, refusing on any mismatch, the
+# same as the other npm harnesses.
+ARG COPILOT_CLI_URL
+ARG COPILOT_CLI_SHA256
+ARG COPILOT_CLI_INTEGRITY
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     npm cache clean --force \
-  && npm install -g "@github/copilot@${COPILOT_CLI_VERSION}" \
+  && if [ -n "${COPILOT_CLI_URL}${COPILOT_CLI_SHA256}${COPILOT_CLI_INTEGRITY}" ]; then \
+       sh /opt/scion-image-build/lib/install-pinned-npm.sh \
+         "${COPILOT_CLI_VERSION}" "${COPILOT_CLI_URL}" "${COPILOT_CLI_SHA256}" "${COPILOT_CLI_INTEGRITY}"; \
+     else \
+       npm install -g "@github/copilot@${COPILOT_CLI_VERSION}"; \
+     fi \
   && npm cache clean --force \
   && command -v copilot
 

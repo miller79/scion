@@ -90,7 +90,8 @@ class ResolverTests(unittest.TestCase):
         if "/v2/" in url:
             return Response(self.image, {"Docker-Content-Digest": "sha256:" + hashlib.sha256(self.image).hexdigest()})
         if "mirror.invalid/npm/" in url:
-            version = "1.3.0" if url.endswith("/1.3.0") else "1.2.3"
+            requested = url.rsplit("/", 1)[1]
+            version = requested if re.fullmatch(r"\d+(?:\.\d+)+", requested) else "1.2.3"
             return response_json({
                 "name": urllib.parse.unquote(url.rsplit("/", 2)[1]), "version": version,
                 "dist": {"tarball": "https://mirror.invalid/artifacts/npm.tgz",
@@ -129,7 +130,7 @@ class ResolverTests(unittest.TestCase):
         with patch.object(bundle, "fetch", self.fetch):
             manifest = self.generate(self.locks())
         output = self.root.parent / "release"
-        self.assertEqual(14, len(manifest["harness_tools"]))
+        self.assertEqual(13, len(manifest["harness_tools"]))
         self.assertTrue(all(t["status"] == "resolved" for t in manifest["harness_tools"]))
         self.assertTrue(all(t["version"] != "latest" for t in manifest["harness_tools"]))
         self.assertEqual("1.0.114", next(t["version"] for t in manifest["harness_tools"] if t["name"] == "copilot"))
@@ -146,14 +147,15 @@ class ResolverTests(unittest.TestCase):
         subprocess.run(["sha256sum", "-c", "SHA256SUMS"], cwd=output, check=True, stdout=subprocess.PIPE)
         env = dict(line.split("=", 1) for line in (output / "harness-pins.env").read_text().splitlines())
         self.assertEqual(env["HERMES_URL"], "https://mirror.invalid/artifacts/hermes.tar.gz")
-        self.assertIn("COPILOT_CLI_SHA256_ARM64", env)
+        self.assertIn("COPILOT_CLI_INTEGRITY", env)
+        self.assertNotIn("COPILOT_CLI_SHA256_ARM64", env)
         self.assertIn("GROK_CLI_URL_AMD64", env)
         core = dict(line.split("=", 1) for line in (output / "core-pins.env").read_text().splitlines())
         self.assertIn("@sha256:", core["NODE_IMAGE"])
         bom = json.loads((output / "sbom.cdx.json").read_text())
         self.assertEqual(("CycloneDX", "1.5"), (bom["bomFormat"], bom["specVersion"]))
         self.assertEqual([{"phase": "pre-build"}], bom["metadata"]["lifecycles"])
-        self.assertEqual(24, len([c for c in bom["components"] if c["type"] == "application"]))
+        self.assertEqual(23, len([c for c in bom["components"] if c["type"] == "application"]))
         library = next(c for c in bom["components"] if c["name"] == "github.com/google/uuid")
         self.assertEqual("v1.6.0", library["version"])
         self.assertTrue(any(p["value"].startswith("h1:") for p in library["properties"]))
@@ -287,6 +289,7 @@ cat >/dev/null
             "chmod": "#!/bin/sh\nexit 0\n",
             "ln": "#!/bin/sh\nexit 0\n",
             "pi": "#!/bin/sh\nexit 0\n",
+            "copilot": "#!/bin/sh\nexit 0\n",
             "node": '''#!/bin/sh
 if [ "$1" = "-p" ]; then printf '1.3.0\\n'; else exec "$TEST_NODE" "$@"; fi
 ''',
@@ -305,10 +308,8 @@ if [ "$1" = "-p" ]; then printf '1.3.0\\n'; else exec "$TEST_NODE" "$@"; fi
             while command.endswith("\\"):
                 command = command[:-1] + " " + next(lines)
             commands.append(command)
-        marker = "ARCH=$(uname" if name == "copilot" else "id=npmrc"
-        command = next(c for c in commands if marker in c)
+        command = next(c for c in commands if "id=npmrc" in c)
         command = re.sub(r"^--mount=\S+\s+", "", command.replace("\\\n", " "))
-        command = command.replace("/tmp/copilot.tar.gz", str(work / "copilot.tar.gz"))
         command = command.replace("/opt/scion-image-build/lib/install-pinned-npm.sh",
                                   str(ROOT / "image-build/lib/install-pinned-npm.sh"))
         env = {**os.environ, **inputs, "PATH": str(bin_dir) + ":" + os.environ["PATH"],
@@ -370,36 +371,6 @@ if [ "$1" = "-p" ]; then printf '1.3.0\\n'; else exec "$TEST_NODE" "$@"; fi
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("install -g opencode-ai@1.2.3\n", npm)
 
-    def test_copilot_pin_mode_fail_closed(self):
-        digest = hashlib.sha256(self.npm).hexdigest()
-        for machine, target, other in (("x86_64", "AMD64", "ARM64"), ("aarch64", "ARM64", "AMD64")):
-            valid = {"TEST_ARCH": machine, "COPILOT_CLI_VERSION": "1.0.114",
-                     "COPILOT_CLI_SHA256_" + target: digest, "COPILOT_CLI_SHA256_" + other: ""}
-            result, events, _ = self.run_consumer("copilot", valid)
-            self.assertEqual(0, result.returncode, result.stderr)
-            self.assertIn("extract", events)
-            for change in (
-                {"COPILOT_CLI_SHA256_" + target: "", "COPILOT_CLI_SHA256_" + other: digest},
-                {"COPILOT_CLI_SHA256_" + target: "malformed"},
-                {"COPILOT_CLI_SHA256_" + target: digest + "\n"},
-                {"COPILOT_CLI_VERSION": "latest"}, {"COPILOT_CLI_VERSION": ""},
-                {"COPILOT_CLI_VERSION": "1.0.114;true"},
-                {"COPILOT_CLI_VERSION": "1.0.114\n"},
-            ):
-                with self.subTest(machine=machine, change=change):
-                    result, events, _ = self.run_consumer("copilot", {**valid, **change})
-                    self.assertNotEqual(0, result.returncode, result.stderr)
-                    self.assertNotIn("download", events)
-                    self.assertNotIn("extract", events)
-            result, events, _ = self.run_consumer("copilot", valid, b"mismatch")
-            self.assertNotEqual(0, result.returncode, result.stderr)
-            self.assertIn("download", events)
-            self.assertNotIn("extract", events)
-            legacy = {**valid, "COPILOT_CLI_VERSION": "latest", "COPILOT_CLI_SHA256_" + target: ""}
-            result, events, _ = self.run_consumer("copilot", legacy)
-            self.assertEqual(0, result.returncode, result.stderr)
-            self.assertIn("extract", events)
-
     def test_redirects_require_same_https_origin(self):
         handler = bundle.RegistryRedirectHandler()
         request = urllib.request.Request("https://registry.invalid/a",
@@ -413,7 +384,7 @@ if [ "$1" = "-p" ]; then printf '1.3.0\\n'; else exec "$TEST_NODE" "$@"; fi
                 handler.redirect_request(request, None, 302, "redirect", {}, url)
 
     def test_dockerfile_shell_syntax_and_pin_inputs(self):
-        for name in (*bundle.NPM_HARNESSES, "copilot", "hermes", *bundle.OPAQUE_HARNESSES):
+        for name in (*bundle.NPM_HARNESSES, "hermes", *bundle.OPAQUE_HARNESSES):
             text = (ROOT / f"harnesses/{name}/Dockerfile").read_text()
             lines = text.splitlines()
             index = 0
@@ -432,8 +403,6 @@ if [ "$1" = "-p" ]; then printf '1.3.0\\n'; else exec "$TEST_NODE" "$@"; fi
                 prefix = bundle.OPAQUE_HARNESSES[name][0]
                 self.assertIn(f"ARG {prefix}_SHA256_ARM64", text)
                 self.assertLess(text.index("sha256sum -c"), text.index("tar -xzf"))
-            elif name == "copilot":
-                self.assertLess(text.index("sha256sum -c"), text.index("tar xzf"))
             elif name == "hermes":
                 self.assertLess(text.index("sha256sum -c"), text.index('pip install --no-cache-dir', text.index("sha256sum -c")))
         for name, (_, argument) in bundle.NPM_HARNESSES.items():

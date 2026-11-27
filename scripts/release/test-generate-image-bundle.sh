@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix="scion-bundle-test-") as temporary:
     print("PASS committed recipe/context bytes, hidden files, modes and module inputs")
     assert json.loads((output / "toolchain.json").read_text()) == manifest
     assert len(manifest["tools"]) == 10
-    assert len(manifest["harness_tools"]) == 14
+    assert len(manifest["harness_tools"]) == 13
     assert json.loads((output / "sbom.cdx.json").read_text())["specVersion"] == "1.5"
     assert "harness-pins.env" in first and "core-pins.env" in first
     assert all(t["sha256"] for t in manifest["tools"] if t["name"] == "helm")

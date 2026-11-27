@@ -22,11 +22,17 @@ Release-only builds select `SCION_BINARIES=release`. Core-base's context is
 
 ## Manifest and pin consumption
 
-Schema version 2 records ten Linux amd64/arm64 core download records, fourteen
+Schema version 2 records ten Linux amd64/arm64 core download records, thirteen
 harness records, and every recipe Dockerfile's FROM reference. npm/PyPI source
-archives have `arch: any`; Copilot and opaque binary archives have separate
-architecture records. Concrete versions, URLs and SHA256 identify downloaded
-inputs, not tags such as `latest`. npm also records and verifies `dist.integrity`.
+archives have `arch: any`; opaque binary archives have separate architecture
+records. Concrete versions, URLs and SHA256 identify downloaded inputs, not tags
+such as `latest`. npm also records and verifies `dist.integrity`.
+
+An npm pin covers the package archive itself. Several harness CLIs (Claude Code,
+Codex, Copilot, OpenCode) ship their binary in a per-platform optional
+dependency, which npm fetches from the registry during the install. npm checks
+it against the registry's integrity data, but the manifest does not record or
+pin it.
 
 `--resolve-tools` reads kubectl stable.txt, GitHub release metadata, npm package
 version metadata, PyPI JSON metadata, and registry manifests; it downloads/hashes
@@ -40,8 +46,9 @@ mirror/proxy, never put credentials in URLs or build arguments.
 
 `core-pins.env` contains the manifest-derived Go/gh/helm build args, kubectl and
 golangci-lint version/SHA256 args, and core-base FROM image overrides.
-`harness-pins.env` contains version build args, Copilot SHA256s, Hermes source
-URL/SHA256, and any explicitly locked opaque archive URL/SHA256s.
+`harness-pins.env` contains version build args, npm package URL/SHA256/integrity
+args (Copilot included), Hermes source URL/SHA256, and any explicitly locked
+opaque archive URL/SHA256s.
 They are **data, not shell scripts**: read key/value lines into `--build-arg`
 arguments; do not source/eval them. Only resolved records are emitted.
 

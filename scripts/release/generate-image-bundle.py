@@ -91,6 +91,7 @@ def download_hash(url, integrity=None):
 
 NPM_HARNESSES = {
     "claude": ("@anthropic-ai/claude-code", "CLAUDE_CLI_VERSION"),
+    "copilot": ("@github/copilot", "COPILOT_CLI_VERSION"),
     "codex": ("@openai/codex", "CODEX_CLI_VERSION"),
     "gemini-cli": ("@google/gemini-cli", "GEMINI_CLI_VERSION"),
     "opencode": ("opencode-ai", "OPENCODE_VERSION"),
@@ -129,22 +130,6 @@ def harness_inventory(harness_args, resolve, npm_registry, pypi_api, locks):
             record["sha256"] = download_hash(record["url"], record["integrity"])
             record["status"] = "resolved"
         records.append(record)
-    args = harness_args["harnesses/copilot/Dockerfile"]
-    version = args["COPILOT_CLI_VERSION"]
-    if version == "latest":
-        version = (api_json("https://api.github.com/repos/github/copilot-cli/releases/latest")[
-            "tag_name"].removeprefix("v") if resolve else None)
-    if version:
-        concrete(version)
-    for arch, upstream in (("amd64", "x64"), ("arm64", "arm64")):
-        url = (f"https://github.com/github/copilot-cli/releases/download/v{version}/"
-               f"copilot-linux-{upstream}.tar.gz") if version else None
-        records.append({
-            "name": "copilot", "os": "linux", "arch": arch, "version": version,
-            "url": url, "sha256": download_hash(url) if resolve else None,
-            "build_arg": "COPILOT_CLI_VERSION", "source": "github",
-            "status": "resolved" if resolve else "unresolved",
-        })
     declared = harness_args["harnesses/hermes/Dockerfile"].get("HERMES_VERSION", "")
     hermes = {
         "name": "hermes", "package": "hermes-agent", "os": "linux", "arch": "any",
@@ -405,8 +390,6 @@ def pin_files(manifest):
             harness[f"{prefix}_URL"] = tool["url"]
             harness[f"{prefix}_SHA256"] = tool["sha256"]
             harness[f"{prefix}_INTEGRITY"] = tool["integrity"]
-        elif tool["name"] == "copilot":
-            harness[f"{prefix}_SHA256_{tool['arch'].upper()}"] = tool["sha256"]
         elif tool["source"] == "operator-tar.gz":
             harness[f"{prefix}_URL_{tool['arch'].upper()}"] = tool["url"]
             harness[f"{prefix}_SHA256_{tool['arch'].upper()}"] = tool["sha256"]
