@@ -74,7 +74,7 @@ function makeSummary(
         count: 0,
         capped: false,
         countsTowardTotal: true,
-        href: '/artifacts?review_pending=1&owner=me',
+        href: '/artifacts?review_on_latest=1&owner=me',
         previews: [],
       },
       chat: {
@@ -175,7 +175,7 @@ describe('InboxSummaryStore', () => {
     );
     await vi.advanceTimersByTimeAsync(300);
     stateManager.dispatchEvent(
-      new CustomEvent('inbox-changed', { detail: { category: 'pending_secrets' } })
+      new CustomEvent('inbox-changed', { detail: { category: 'reviews' } })
     );
     await vi.advanceTimersByTimeAsync(300);
     window.dispatchEvent(new CustomEvent(PENDING_SECRETS_CHANGED_EVENT, { detail: {} }));
@@ -480,6 +480,28 @@ describe('InboxSummaryStore', () => {
         : INBOX_POLL_UNHEALTHY_MS;
       await vi.advanceTimersByTimeAsync(pollInterval * 2 + 50);
       expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('refreshes on chat-stars-updated SSE event (design §6.5, AC-8)', async () => {
+      setFeatureFlag(INBOX_DASHBOARD_FLAG, true);
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(
+          new Response(JSON.stringify(makeSummary(1)), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        )
+      );
+
+      store.ensureStarted('user-1');
+      await vi.advanceTimersByTimeAsync(10);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      stateManager.dispatchEvent(
+        new CustomEvent('chat-stars-updated', { detail: { action: 'changed' } })
+      );
+      await vi.advanceTimersByTimeAsync(INBOX_DEBOUNCE_MS + 20);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
   });
 });

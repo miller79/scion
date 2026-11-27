@@ -32,8 +32,13 @@ type (
 	CommandRequestRunView           = messages.CommandRequestRunView
 	CommandRequestExecContainerView = messages.CommandRequestExecContainerView
 	CommandRequestDetailResponse    = messages.CommandRequestDetailResponse
+	CommandRequestOutputResponse    = messages.CommandRequestOutputResponse
 	ApproveCommandRequestBody       = messages.ApproveCommandRequestBody
 	ApproveCommandRequestResponse   = messages.ApproveCommandRequestResponse
+	DismissCommandRequestBody       = messages.DismissCommandRequestBody
+	DismissCommandRequestResponse   = messages.DismissCommandRequestResponse
+	WithdrawCommandRequestBody      = messages.WithdrawCommandRequestBody
+	WithdrawCommandRequestResponse  = messages.WithdrawCommandRequestResponse
 	AgentCommandRequestListResponse = messages.AgentCommandRequestListResponse
 )
 
@@ -50,8 +55,15 @@ type CommandRequestService interface {
 	Get(ctx context.Context, id string) (*CommandRequestDetailResponse, error)
 	// Approve approves a pending command request (POST /api/v1/command-requests/{id}/approve).
 	Approve(ctx context.Context, id string, req *ApproveCommandRequestBody) (*ApproveCommandRequestResponse, error)
+	// GetOutput retrieves the captured output of an approved command run for the
+	// named approver (GET /api/v1/command-requests/{id}/output).
+	GetOutput(ctx context.Context, id string) (*CommandRequestOutputResponse, error)
+	// Dismiss dismisses a pending command request (POST /api/v1/command-requests/{id}/dismiss).
+	Dismiss(ctx context.Context, id string, req *DismissCommandRequestBody) (*DismissCommandRequestResponse, error)
 	// List lists command requests created by the calling agent (GET /api/v1/agent/command-requests).
 	List(ctx context.Context, opts *ListAgentCommandRequestsOptions) (*AgentCommandRequestListResponse, error)
+	// Withdraw withdraws a pending command request by key for the calling agent (POST /api/v1/agent/command-requests/withdraw).
+	Withdraw(ctx context.Context, req *WithdrawCommandRequestBody) (*WithdrawCommandRequestResponse, error)
 }
 
 type commandRequestService struct {
@@ -79,6 +91,27 @@ func (s *commandRequestService) Approve(ctx context.Context, id string, req *App
 	return apiclient.DecodeRequired[ApproveCommandRequestResponse](resp)
 }
 
+// GetOutput implements CommandRequestService.
+func (s *commandRequestService) GetOutput(ctx context.Context, id string) (*CommandRequestOutputResponse, error) {
+	resp, err := s.c.get(ctx, "/api/v1/command-requests/"+url.PathEscape(id)+"/output", nil)
+	if err != nil {
+		return nil, err
+	}
+	return apiclient.DecodeRequired[CommandRequestOutputResponse](resp)
+}
+
+// Dismiss implements CommandRequestService.
+func (s *commandRequestService) Dismiss(ctx context.Context, id string, req *DismissCommandRequestBody) (*DismissCommandRequestResponse, error) {
+	if req == nil {
+		req = &DismissCommandRequestBody{}
+	}
+	resp, err := s.c.post(ctx, "/api/v1/command-requests/"+url.PathEscape(id)+"/dismiss", req, nil)
+	if err != nil {
+		return nil, err
+	}
+	return apiclient.DecodeRequired[DismissCommandRequestResponse](resp)
+}
+
 // List implements CommandRequestService.
 func (s *commandRequestService) List(ctx context.Context, opts *ListAgentCommandRequestsOptions) (*AgentCommandRequestListResponse, error) {
 	query := url.Values{}
@@ -98,4 +131,16 @@ func (s *commandRequestService) List(ctx context.Context, opts *ListAgentCommand
 		return nil, err
 	}
 	return apiclient.DecodeRequired[AgentCommandRequestListResponse](resp)
+}
+
+// Withdraw implements CommandRequestService.
+func (s *commandRequestService) Withdraw(ctx context.Context, req *WithdrawCommandRequestBody) (*WithdrawCommandRequestResponse, error) {
+	if req == nil {
+		req = &WithdrawCommandRequestBody{}
+	}
+	resp, err := s.c.post(ctx, "/api/v1/agent/command-requests/withdraw", req, nil)
+	if err != nil {
+		return nil, err
+	}
+	return apiclient.DecodeRequired[WithdrawCommandRequestResponse](resp)
 }

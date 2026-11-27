@@ -26,6 +26,9 @@ import (
 // RefScheme prefixes an artifact reference: scion://artifact/<id>[@<seq>].
 const RefScheme = "scion://artifact/"
 
+// AttachmentRefScheme prefixes an attachment reference: scion://attachment/<id>.
+const AttachmentRefScheme = "scion://attachment/"
+
 // FormatRef returns the reference string of an artifact, pinned to version
 // seq when seq > 0.
 func FormatRef(id string, seq int) string {
@@ -35,8 +38,38 @@ func FormatRef(id string, seq int) string {
 	return RefScheme + id
 }
 
+// FormatAttachmentRef returns the canonical reference string of an attachment.
+func FormatAttachmentRef(id string) string {
+	return AttachmentRefScheme + id
+}
+
 // ErrBadRef is returned by ParseRef for a malformed reference.
 var ErrBadRef = errors.New("artifact reference must be scion://artifact/<id>[@<seq>] or a bare id")
+
+// ErrBadAttachmentRef is returned by ParseAttachmentRef for a malformed
+// attachment reference.
+var ErrBadAttachmentRef = errors.New("attachment reference must be scion://attachment/<id>")
+
+// IsAttachmentRef reports whether ref starts with AttachmentRefScheme
+// (ignoring surrounding space).
+func IsAttachmentRef(ref string) bool {
+	return strings.HasPrefix(strings.TrimSpace(ref), AttachmentRefScheme)
+}
+
+// ParseAttachmentRef parses scion://attachment/<id>. The id must be a UUID in
+// its canonical 36-character form (any case); the returned id is lowercase.
+func ParseAttachmentRef(ref string) (string, error) {
+	s := strings.TrimSpace(ref)
+	id, ok := strings.CutPrefix(s, AttachmentRefScheme)
+	if !ok {
+		return "", ErrBadAttachmentRef
+	}
+	u, perr := uuid.Parse(id)
+	if perr != nil || len(id) != 36 {
+		return "", ErrBadAttachmentRef
+	}
+	return u.String(), nil
+}
 
 // ParseRef parses scion://artifact/<id>[@<seq>] or a bare <id>[@<seq>].
 // seq is 0 when the reference names the current version. The id must be a
@@ -117,15 +150,27 @@ type ArtifactResponse struct {
 	// woken, or remains suspended (ptone/scion#8946). Omitted for running
 	// agents and non-agent owners.
 	ReviewDelivery *ReviewDeliveryInfo `json:"reviewDelivery,omitempty"`
-	// ReviewState, on a GET of the artifact or of one of its versions while
-	// hub.artifacts_review_requests is enabled, reports the caller's review
-	// request state (ptone/scion#9296). Omitted while the experiment is off.
+	// ReviewState, on a GET of the artifact or of one of its versions,
+	// reports the artifact's review state for the caller (ptone/scion#9296).
+	// RequestedOfMe is populated only while hub.artifacts_review_requests is on;
+	// MyDraft and DraftsInProgress are populated only while
+	// hub.artifacts_review_drafts is on.
 	ReviewState *ReviewStateInfo `json:"reviewState,omitempty"`
+}
+
+// ReviewDraftSummary describes the caller's saved review draft on an artifact
+// without exposing its body or note.
+type ReviewDraftSummary struct {
+	Base    int       `json:"base"`
+	SavedAt time.Time `json:"savedAt"`
 }
 
 // ReviewStateInfo carries viewer-specific review state on ArtifactResponse.
 type ReviewStateInfo struct {
-	RequestedOfMe *ReviewRequestInfo `json:"requestedOfMe"`
+	ReviewOnLatest   bool                `json:"reviewOnLatest"`
+	RequestedOfMe    *ReviewRequestInfo  `json:"requestedOfMe,omitempty"`
+	MyDraft          *ReviewDraftSummary `json:"myDraft,omitempty"`
+	DraftsInProgress int                 `json:"draftsInProgress,omitempty"`
 }
 
 // ReviewRequestPrincipal identifies a reviewer or requester in API responses.
@@ -137,18 +182,20 @@ type ReviewRequestPrincipal struct {
 
 // ReviewRequestInfo is the JSON representation of one artifact review request.
 type ReviewRequestInfo struct {
-	ID           string                 `json:"id"`
-	Reviewer     ReviewRequestPrincipal `json:"reviewer"`
-	Requester    ReviewRequestPrincipal `json:"requester"`
-	RequestedSeq int                    `json:"requestedSeq"`
-	Note         string                 `json:"note,omitempty"`
-	Access       string                 `json:"access"`
-	State        string                 `json:"state"`
-	ResponseNote string                 `json:"responseNote,omitempty"`
-	ResolvedSeq  *int                   `json:"resolvedSeq,omitempty"`
-	CreatedAt    time.Time              `json:"createdAt"`
-	RemindedAt   *time.Time             `json:"remindedAt,omitempty"`
-	ResolvedAt   *time.Time             `json:"resolvedAt,omitempty"`
+	ID                string                 `json:"id"`
+	Reviewer          ReviewRequestPrincipal `json:"reviewer"`
+	Requester         ReviewRequestPrincipal `json:"requester"`
+	RequestedSeq      int                    `json:"requestedSeq"`
+	Note              string                 `json:"note,omitempty"`
+	Access            string                 `json:"access"`
+	State             string                 `json:"state"`
+	ResponseNote      string                 `json:"responseNote,omitempty"`
+	ResolvedSeq       *int                   `json:"resolvedSeq,omitempty"`
+	CreatedAt         time.Time              `json:"createdAt"`
+	RemindedAt        *time.Time             `json:"remindedAt,omitempty"`
+	ResolvedAt        *time.Time             `json:"resolvedAt,omitempty"`
+	ReviewerCanReview *bool                  `json:"reviewerCanReview,omitempty"`
+	InDraft           bool                   `json:"inDraft,omitempty"`
 }
 
 // ReviewDeliveryStatus values describe what happened to the review notice
@@ -177,9 +224,15 @@ type ReviewDeliveryInfo struct {
 // (append a pending version). Title, Key and Scope apply to the first form
 // only.
 type CreateVersionRequest struct {
-	Title string `json:"title,omitempty"`
-	Key   string `json:"key,omitempty"`
-	Scope string `json:"scope,omitempty"`
+	// FromAttachment, when set on POST /api/v1/artifacts, publishes an
+	// existing attachment as an artifact version by reference with no bytes
+	// copied (ptone/scion#4599).
+	FromAttachment string `json:"fromAttachment,omitempty"`
+	Title          string `json:"title,omitempty"`
+	Key            string `json:"key,omitempty"`
+	Scope          string `json:"scope,omitempty"`
+	// ScopeRef is an alias for Scope used by fromAttachment requests.
+	ScopeRef string `json:"scopeRef,omitempty"`
 	// Kind is the version kind; "" means publish.
 	Kind  string `json:"kind,omitempty"`
 	Entry string `json:"entry"`
@@ -318,6 +371,20 @@ type VersionInfo struct {
 	CreatedAt     time.Time  `json:"createdAt"`
 	State         string     `json:"state"`
 	Files         []FileInfo `json:"files,omitempty"`
+	// SourceAttachmentID is the attachment id this version was published
+	// from by reference, omitted for ordinary publishes (ptone/scion#4599).
+	SourceAttachmentID string `json:"sourceAttachmentId,omitempty"`
+	// SourceMessageID is the message id the source attachment was sent in,
+	// populated only when the viewer may read that message.
+	SourceMessageID string `json:"sourceMessageId,omitempty"`
+	// SourceConversationKey is the web chat conversation key (topic/thread id
+	// or "dm:...") of the source message, populated only under the same viewer
+	// gate as SourceMessageID.
+	SourceConversationKey string `json:"sourceConversationKey,omitempty"`
+	// SourceProjectID is the owning project id of a project-thread source
+	// message (empty for DMs), populated only under the same viewer gate as
+	// SourceMessageID.
+	SourceProjectID string `json:"sourceProjectId,omitempty"`
 }
 
 // FileInfo describes one file of a version.
@@ -351,6 +418,7 @@ func versionInfo(v *Version, files []File) *VersionInfo {
 		Seq: v.Seq, Ref: FormatRef(v.ArtifactID, v.Seq), Kind: v.Kind, EntryPath: v.EntryPath, Note: v.Note,
 		TotalBytes: v.TotalBytes, FileCount: v.FileCount, CreatedByKind: v.CreatedByKind,
 		CreatedByRef: v.CreatedByRef, CreatedAt: v.CreatedAt, State: v.State, Files: []FileInfo{},
+		SourceAttachmentID: v.SourceAttachmentID,
 	}
 	for _, f := range files {
 		fi := FileInfo{Path: f.Path, Size: f.Size, SHA256: f.SHA256, MediaType: f.MediaType}

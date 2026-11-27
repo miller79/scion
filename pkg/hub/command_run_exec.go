@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/GoogleCloudPlatform/scion/pkg/agentcontrol"
 	"github.com/GoogleCloudPlatform/scion/pkg/api"
+	"github.com/GoogleCloudPlatform/scion/pkg/conduit/registry"
 	"github.com/GoogleCloudPlatform/scion/pkg/conduit/router"
 	"github.com/GoogleCloudPlatform/scion/pkg/messages"
 	"github.com/GoogleCloudPlatform/scion/pkg/msgaction"
@@ -42,19 +44,31 @@ type CommandRunLauncher interface {
 // Command-run executor and sweeper bounds. Variables only as test seams: tests
 // that change them must not use t.Parallel and must restore them via t.Cleanup.
 var (
-	commandRunMaxTracked   = 256
-	commandRunPollInitial  = 1 * time.Second
-	commandRunPollMax      = 10 * time.Second
-	commandRunStopGrace    = 2 * time.Second
-	commandRunNotAfter     = agentcontrol.ExecNotAfter
-	commandRunLeaseGrace   = 120 * time.Second
-	commandRunSweepBatch   = 100
-	commandRunSweepMaxPage = 10
+	commandRunMaxTracked              = 256
+	commandRunPollInitial             = 1 * time.Second
+	commandRunPollMax                 = 10 * time.Second
+	commandRunStopGrace               = 2 * time.Second
+	commandRunNotAfter                = agentcontrol.ExecNotAfter
+	commandRunLeaseGrace              = 120 * time.Second
+	commandRunSweepBatch              = 100
+	commandRunSweepMaxPage            = 10
+	commandRunSweepInFlight           = 8
+	commandRunPollClaimTTL            = 10 * time.Second
+	commandRunWakeTimeout             = commandRunWakeBudget
+	commandRunReadyPollInitial        = 1 * time.Second
+	commandRunReadyPollMax            = 5 * time.Second
+	commandRunOutputRetention         = 7 * 24 * time.Hour
+	commandRunOutcomeRetryWindow      = 1 * time.Hour
+	commandRunOutcomeClaimLease       = 2 * time.Minute
+	commandRunOutcomeRetryMaxPerSweep = 20
+	commandRunOutcomeRetryBudget      = 20 * time.Second
 )
 
 // Stages of a command run at which commandRunExecHook runs (test seam only).
 const (
 	commandRunStageResolved       = "resolved"
+	commandRunStageWaking         = "waking"
+	commandRunStageReady          = "ready"
 	commandRunStageBeforeDispatch = "before_dispatch"
 	commandRunStageDispatched     = "dispatched"
 	commandRunStageStarted        = "started"
@@ -107,6 +121,19 @@ func (t *commandRunTracker) release(runID string) {
 	}
 	delete(t.owned, runID)
 	t.used--
+}
+
+func (t *commandRunTracker) ownedIDs() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.owned) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(t.owned))
+	for id := range t.owned {
+		out = append(out, id)
+	}
+	return out
 }
 
 // stopCommandRuns cancels in-flight command-run trackers during hub shutdown
@@ -163,10 +190,10 @@ func commandRunArgv(script string) []string {
 	return []string{"/bin/bash", "--login", "-c", script, "scion-command"}
 }
 
-// executeCommandRun runs the P1 subset of design §4.8 (steps 1, 2, 4–7):
-// resolve container, refuse stopped/suspended (no wake in P1), re-resolve &
-// pin, CAS to dispatching before send, send exec-start once, and track to
-// completion.
+// executeCommandRun runs design §4.8 (steps 1–7): resolve container, wake
+// suspended containers (never auto-starting stopped containers, D5), wait for
+// Conduit exec readiness, re-resolve & pin, CAS to dispatching before send,
+// send exec-start once, and track to completion.
 func (s *Server) executeCommandRun(ctx context.Context, req *store.CommandRequest, run *store.CommandRun) {
 	if ctx.Err() != nil {
 		return
@@ -208,17 +235,117 @@ func (s *Server) executeCommandRun(ctx context.Context, req *store.CommandReques
 		return
 	}
 
-	// Step 2 (P1 subset): never auto-start stopped containers (D5); suspended
-	// wake is P2, so P1 ends suspended as not_started/container_not_running.
+	wakeBudget := execSeamDuration(&commandRunWakeTimeout)
+	wakeBase := run.CreatedAt
+	if wakeBase.IsZero() {
+		wakeBase = time.Now().UTC()
+	}
+	wakeDeadline := wakeBase.Add(wakeBudget)
+
+	// Step 2: never auto-start stopped containers (D5); resume suspended
+	// containers as the approver after re-checking agent-lifecycle permission.
 	switch r1.State {
 	case ExecContainerStateStopped:
 		finishBeforeDispatch("container_stopped")
 		return
 	case ExecContainerStateSuspended:
-		finishBeforeDispatch("container_not_running")
-		return
-	case ExecContainerStateReady:
-		// proceed
+		approver, uerr := s.store.GetUser(ctx, run.ApproverUserID)
+		if ctx.Err() != nil {
+			return
+		}
+		if uerr != nil || approver == nil {
+			finishBeforeDispatch("container_changed")
+			return
+		}
+		approverIdent := NewAuthenticatedUser(approver.ID, approver.Email, approver.DisplayName, approver.Role, "internal")
+		if !s.agentLifecycleAllowed(ctx, approverIdent, r1.Agent) {
+			finishBeforeDispatch("wake_not_permitted")
+			return
+		}
+		wctx, cancelWakeCAS := context.WithTimeout(context.WithoutCancel(ctx), scheduledEventRecordTimeout)
+		wonWake, werr := s.store.TransitionCommandRunToWaking(wctx, run.ID, store.CommandRunWakeResume)
+		cancelWakeCAS()
+		if werr != nil || !wonWake {
+			// Sweeper or another writer already finished or moved the row.
+			return
+		}
+		run.Status = store.CommandRunStatusWaking
+		run.Wake = store.CommandRunWakeResume
+		s.emitCommandRunAudit(context.WithoutCancel(ctx), req, run, msgaction.EventCmdRunWaking, "", nil)
+		if req != nil {
+			s.publishActionUpdated(msgaction.KindCommandRequest, req.ProjectID, req.MessageID, req.ChatKey, commandRequestSSEView(req, nil, run))
+		}
+		commandRunExecStage(commandRunStageWaking, run.ID)
+		if ctx.Err() != nil {
+			return
+		}
+
+		agent := r1.Agent
+		if agent.IdleSuspendClaimActive || agent.IdleSuspendClaimUntil != nil {
+			settleCtx, cancelSettle := context.WithDeadline(ctx, wakeDeadline)
+			settleErr := s.waitForIdleSuspendToSettle(settleCtx, agent)
+			cancelSettle()
+			if ctx.Err() != nil {
+				return
+			}
+			if settleErr != nil {
+				finishBeforeDispatch("wake_failed")
+				return
+			}
+		}
+
+		switch mapExecContainerState(agent) {
+		case ExecContainerStateStopped:
+			finishBeforeDispatch("container_stopped")
+			return
+		case ExecContainerStateSuspended:
+			if isManagedAgentRuntime(agent.Runtime) {
+				finishBeforeDispatch("wake_failed")
+				return
+			}
+			// Re-check lifecycle permission against the refreshed row after
+			// any idle-suspend settle wait so a revocation during the wait
+			// still refuses the wake before startAgentCore.
+			if !s.agentLifecycleAllowed(ctx, approverIdent, agent) {
+				finishBeforeDispatch("wake_not_permitted")
+				return
+			}
+			startCtx, cancelStart := context.WithDeadline(ctx, wakeDeadline)
+			startErr := s.startAgentCore(startCtx, agent, StartOpts{
+				Kind:               store.StartClaimWake,
+				Resume:             true,
+				KeepCallerDeadline: true,
+				SyncDispatchBound:  true,
+			})
+			cancelStart()
+			if ctx.Err() != nil {
+				return
+			}
+			if startErr != nil && !s.isCommandRunStartInProgress(ctx, agent.ID, startErr) {
+				if errors.Is(startErr, store.ErrNotFound) || errors.Is(startErr, store.ErrDeleteInProgress) {
+					finishBeforeDispatch("container_changed")
+					return
+				}
+				if cur, gerr := s.store.GetAgent(ctx, agent.ID); errors.Is(gerr, store.ErrNotFound) || (gerr == nil && (cur == nil || !cur.DeletedAt.IsZero())) {
+					finishBeforeDispatch("container_changed")
+					return
+				} else if gerr == nil && mapExecContainerState(cur) == ExecContainerStateStopped {
+					finishBeforeDispatch("container_stopped")
+					return
+				}
+				slog.Warn("Command run: wake resume failed",
+					"run_id", run.ID, "exec_agent_id", run.ExecAgentID, "error", startErr)
+				finishBeforeDispatch("wake_failed")
+				return
+			}
+		case ExecContainerStateReady, ExecContainerStateStarting:
+			// Already starting or running after idle-suspend settled; just wait.
+		default:
+			finishBeforeDispatch("wake_failed")
+			return
+		}
+	case ExecContainerStateStarting, ExecContainerStateReady:
+		// Already starting or ready; wait for Conduit exec readiness in step 3.
 	default:
 		finishBeforeDispatch("container_not_running")
 		return
@@ -228,12 +355,27 @@ func (s *Server) executeCommandRun(ctx context.Context, req *store.CommandReques
 		return
 	}
 
-	// Step 4: re-resolve and pin the live launch RunID.
+	// Step 3: wait for a Conduit session of (agent, RunID) advertising the exec
+	// routes and required features (exec_capture.v1, exec_workdir.v1).
+	sessionLaunchID, readyFailReason := s.waitForConduitExecReady(ctx, run.ExecAgentID, wakeDeadline)
+	if ctx.Err() != nil {
+		return
+	}
+	if readyFailReason != "" {
+		finishBeforeDispatch(readyFailReason)
+		return
+	}
+	commandRunExecStage(commandRunStageReady, run.ID)
+	if ctx.Err() != nil {
+		return
+	}
+
+	// Step 4: re-resolve and pin the live launch RunID (must match session incarnation).
 	r2, err := s.ResolveExecContainer(ctx, run.ApproverUserID)
 	if ctx.Err() != nil {
 		return
 	}
-	if err != nil || r2.State != ExecContainerStateReady || r2.Agent == nil || r2.Agent.ID != run.ExecAgentID || r2.RunID == "" {
+	if err != nil || r2.State != ExecContainerStateReady || r2.Agent == nil || r2.Agent.ID != run.ExecAgentID || r2.RunID == "" || r2.RunID != sessionLaunchID {
 		finishBeforeDispatch("container_changed")
 		return
 	}
@@ -383,13 +525,15 @@ func (s *Server) executeCommandRun(ctx context.Context, req *store.CommandReques
 		}
 		if res.State == agentcontrol.ExecStateRunning {
 			tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), scheduledEventRecordTimeout)
-			if wonRun, terr := s.store.TransitionCommandRunToRunning(tctx, run.ID); terr == nil && wonRun {
-				run.Status = store.CommandRunStatusRunning
-				if req != nil {
-					s.publishActionUpdated(msgaction.KindCommandRequest, req.ProjectID, req.MessageID, req.ChatKey, commandRequestSSEView(req, nil, run))
-				}
-			}
+			wonRun, terr := s.store.TransitionCommandRunToRunning(tctx, run.ID)
 			cancel()
+			// Monotonic transition: sciontool confirmed the run is running, so
+			// advance the local snapshot even if another replica's sweeper won
+			// the DB CAS first (R1).
+			run.Status = store.CommandRunStatusRunning
+			if terr == nil && wonRun && req != nil {
+				s.publishActionUpdated(msgaction.KindCommandRequest, req.ProjectID, req.MessageID, req.ChatKey, commandRequestSSEView(req, nil, run))
+			}
 		}
 		// Track via exec-status (even on a 200 finished replay, because
 		// exec-start never includes captured output).
@@ -397,6 +541,106 @@ func (s *Server) executeCommandRun(ctx context.Context, req *store.CommandReques
 	default:
 		// Unexpected status: treat as ambiguous and poll.
 		s.pollCommandRun(ctx, req, run)
+	}
+}
+
+// isCommandRunStartInProgress reports whether a startAgentCore error indicates
+// another start of agentID is already in progress elsewhere (design §4.8 step 2:
+// do not start again; just wait in waitForConduitExecReady).
+func (s *Server) isCommandRunStartInProgress(ctx context.Context, agentID string, err error) bool {
+	if err == nil {
+		return false
+	}
+	var held *store.ClaimHeldError
+	if errors.As(err, &held) && held.Kind != store.StartClaimStop {
+		return true
+	}
+	if errors.Is(err, ErrLaunchInFlight) {
+		return true
+	}
+	if errors.Is(err, errStartingWrite) && errors.Is(err, store.ErrPhaseMismatch) {
+		if fresh, gerr := s.store.GetAgent(ctx, agentID); gerr == nil && fresh != nil {
+			st := mapExecContainerState(fresh)
+			return st == ExecContainerStateStarting || st == ExecContainerStateReady
+		}
+	}
+	return false
+}
+
+// waitForConduitExecReady polls conduitRouter() with 1s->5s exponential backoff
+// until deadline for a Conduit session of (agentID, agent.RunID) advertising
+// RouteExecStart, RouteExecStatus, FeatureExecCapture, and FeatureExecWorkdir
+// (design §4.8 step 3).
+//
+// Returns (sessionLaunchID, "") when ready, ("", "") on ctx cancellation
+// (shutdown), or ("", failReason) where failReason is one of "wake_timeout",
+// "exec_unsupported", "container_stopped", or "container_changed".
+func (s *Server) waitForConduitExecReady(ctx context.Context, agentID string, deadline time.Time) (string, string) {
+	interval := execSeamDuration(&commandRunReadyPollInitial)
+	longest := execSeamDuration(&commandRunReadyPollMax)
+	for {
+		if ctx.Err() != nil {
+			return "", ""
+		}
+		agent, err := s.store.GetAgent(ctx, agentID)
+		if ctx.Err() != nil {
+			return "", ""
+		}
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return "", "container_changed"
+			}
+		} else {
+			if agent == nil || !agent.DeletedAt.IsZero() {
+				return "", "container_changed"
+			}
+			st := mapExecContainerState(agent)
+			if st == ExecContainerStateStopped {
+				return "", "container_stopped"
+			}
+			if st == ExecContainerStateReady && agent.RunID != "" {
+				if rtr := s.conduitRouter(); rtr != nil {
+					res, rerr := rtr.Resolve(ctx, router.Request{
+						Op:    router.OpStatefulRPC,
+						Kind:  registry.PrincipalAgent,
+						ID:    agent.ID,
+						Want:  registry.Want{ProjectID: agent.ProjectID},
+						Agent: agentIncarnationFacts(agent),
+					}, nil)
+					if ctx.Err() != nil {
+						return "", ""
+					}
+					if rerr == nil && res.Session != nil &&
+						res.Record.EndpointIncarnation == agent.RunID &&
+						res.Want.Incarnation == agent.RunID {
+						caps := res.Session.Info().Capabilities
+						rpc := caps.GetRpc()
+						features := caps.GetFeatures()
+						if slices.Contains(rpc, agentcontrol.RouteExecStart) &&
+							slices.Contains(rpc, agentcontrol.RouteExecStatus) &&
+							slices.Contains(features, agentcontrol.FeatureExecCapture) &&
+							slices.Contains(features, agentcontrol.FeatureExecWorkdir) {
+							return agent.RunID, ""
+						}
+						return "", "exec_unsupported"
+					}
+				}
+			}
+		}
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return "", "wake_timeout"
+		}
+		wait := min(interval, remaining)
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", ""
+		case <-timer.C:
+		}
+		interval = min(interval*2, longest)
 	}
 }
 
@@ -496,24 +740,56 @@ func (s *Server) pollCommandRunOnce(ctx context.Context, req *store.CommandReque
 	case agentcontrol.ExecStateRunning:
 		if run.Status == store.CommandRunStatusDispatching {
 			tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), scheduledEventRecordTimeout)
-			if won, terr := s.store.TransitionCommandRunToRunning(tctx, run.ID); terr == nil && won {
-				run.Status = store.CommandRunStatusRunning
-			}
+			_, _ = s.store.TransitionCommandRunToRunning(tctx, run.ID)
 			cancel()
+			run.Status = store.CommandRunStatusRunning
 		}
 		if pollPastLease {
 			return record(store.CommandRunStatusUnknown, "lease_expired", nil, agentcontrol.ExecOutputLost)
 		}
 		return false
 	default: // ExecStateUnknown (404)
+		// Re-read authoritative DB status before choosing between unknown and
+		// not_started: another replica's sweeper may have moved the row to
+		// running while our in-memory snapshot still reads dispatching (R1).
+		if fresh, gerr := s.store.GetCommandRun(ctx, run.ID); gerr == nil && fresh != nil {
+			if fresh.FinishedAt != nil {
+				return true
+			}
+			run.Status = fresh.Status
+		}
 		if run.Status == store.CommandRunStatusRunning {
 			// sciontool knew the run and has forgotten it: container restarted.
 			return record(store.CommandRunStatusUnknown, "agent_restarted", nil, agentcontrol.ExecOutputLost)
 		}
 		if run.NotAfter != nil && time.Now().After(run.NotAfter.Add(execSeamDuration(&scheduledExecStartAbsentGrace))) {
 			// Frozen start deadline + clock tolerance + grace has passed while
-			// still dispatching: sciontool can never admit the start.
-			return record(store.CommandRunStatusNotStarted, "dispatch_failed", nil, "")
+			// still dispatching: sciontool can never admit the start. Guard the
+			// not_started finish to ExpectedStatuses={dispatching} only so a
+			// concurrent dispatching->running transition can never be recorded
+			// as not_started (R1).
+			recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), scheduledEventRecordTimeout)
+			won, ferr := s.finishCommandRun(recordCtx, req, run, []string{store.CommandRunStatusDispatching}, store.CommandRunStatusNotStarted, "dispatch_failed", nil, "")
+			cancel()
+			if ferr != nil {
+				return false
+			}
+			if won {
+				return true
+			}
+			if fresh, gerr := s.store.GetCommandRun(ctx, run.ID); gerr == nil && fresh != nil {
+				if fresh.FinishedAt != nil {
+					return true
+				}
+				if fresh.Status == store.CommandRunStatusRunning {
+					run.Status = store.CommandRunStatusRunning
+					recordCtx2, cancel2 := context.WithTimeout(context.WithoutCancel(ctx), scheduledEventRecordTimeout)
+					_, ferr2 := s.finishCommandRun(recordCtx2, req, run, []string{store.CommandRunStatusRunning}, store.CommandRunStatusUnknown, "agent_restarted", nil, agentcontrol.ExecOutputLost)
+					cancel2()
+					return ferr2 == nil
+				}
+			}
+			return false
 		}
 		if pollPastLease {
 			return record(store.CommandRunStatusUnknown, "lease_expired", nil, agentcontrol.ExecOutputLost)
@@ -625,9 +901,11 @@ func (s *Server) finishCommandRun(
 		s.publishActionUpdated(msgaction.KindCommandRequest, req.ProjectID, req.MessageID, req.ChatKey, commandRequestSSEView(req, nil, run))
 	}
 
-	// 3. Deliver outcome-only command-response message to the asker agent (§4.9, P1).
+	// 3. Deliver command-response message to the asker agent (§4.9).
+	// Output tail is included only when run.ShareOutput is true, after
+	// best-effort redaction and 4 KiB UTF-8 bounding.
 	if req != nil {
-		s.deliverCommandRunOutcome(postCtx, req, run)
+		s.deliverCommandRunOutcome(postCtx, req, run, fin.Output)
 	}
 
 	return true, nil
@@ -686,45 +964,99 @@ func (s *Server) emitCommandRunAudit(ctx context.Context, req *store.CommandRequ
 	s.emitMessageActionEvent(ctx, ev)
 }
 
-// deliverCommandRunOutcome sends one outcome-only command-response message to
-// the asking agent via dispatchActionResponse (design §4.9, P1: no output_tail,
-// no retry loop). Deleting the asker makes delivery a no-op (C2).
-func (s *Server) deliverCommandRunOutcome(ctx context.Context, req *store.CommandRequest, run *store.CommandRun) {
+// deliverCommandRunOutcome sends one command-response message to the asking
+// agent via dispatchActionResponse (design §4.9). Output tail is attached only
+// when run.ShareOutput is true, after best-effort redaction and 4 KiB UTF-8
+// bounding. Deleting the asker makes delivery a no-op (C2). On transient
+// persistence or dispatch failures, outcome_delivered_at is cleared so the
+// sweeper retries for up to 1h.
+func (s *Server) deliverCommandRunOutcome(ctx context.Context, req *store.CommandRequest, run *store.CommandRun, capturedOutput []byte) {
 	if req.AgentID == "" {
 		return
 	}
-	deliveredAt := time.Now().UTC()
-	claimed, err := s.store.ClaimCommandRunOutcomeDelivery(ctx, run.ID, deliveredAt)
+	deliveredAt := time.Now().UTC().Truncate(time.Microsecond)
+	staleBefore := deliveredAt.Add(-execSeamDuration(&commandRunOutcomeClaimLease))
+	claimed, err := s.store.ClaimCommandRunOutcomeDelivery(ctx, run.ID, deliveredAt, staleBefore)
 	if err != nil || !claimed {
 		return
 	}
 
+	clearClaim := func() {
+		finCtx, cancelFin := context.WithTimeout(context.WithoutCancel(ctx), scheduledEventRecordTimeout)
+		defer cancelFin()
+		_, _ = s.store.ClearCommandRunOutcomeDelivery(finCtx, run.ID, deliveredAt)
+	}
+
 	asker, err := s.store.GetAgent(ctx, req.AgentID)
-	if err != nil || asker == nil || !asker.DeletedAt.IsZero() {
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			slog.Warn("Command run: transient error loading asker for outcome delivery; will retry",
+				"run_id", run.ID, "agent_id", req.AgentID, "error", err)
+			clearClaim()
+		}
+		return
+	}
+	if asker == nil || !asker.DeletedAt.IsZero() {
 		return
 	}
 
-	respText := formatCommandRunOutcomeMessage(req, run)
-	respMsg := &store.Message{
-		ID:             api.NewUUID(),
-		ProjectID:      req.ProjectID,
-		ConversationID: req.ConversationID,
-		ThreadID:       req.ChatKey,
-		Sender:         "system:hub",
-		SenderID:       "system:hub",
-		Recipient:      "agent:" + asker.Slug,
-		RecipientID:    asker.ID,
-		Msg:            respText,
-		Type:           messages.TypeCommandResponse,
-		DispatchState:  store.MessageDispatchDispatched,
+	var outputTail string
+	var redactionCount int
+	if run.ShareOutput {
+		if len(capturedOutput) > 0 {
+			outputTail, redactionCount = redactAndBoundCommandOutput(capturedOutput)
+		} else {
+			outputTail, redactionCount = s.loadSharedCommandRunOutputTail(ctx, run)
+		}
 	}
-	if err := s.store.CreateMessage(ctx, respMsg); err != nil {
-		slog.Warn("Command run: failed to persist command-response message",
-			"run_id", run.ID, "agent_id", asker.ID, "error", err)
-		_, _ = s.store.ClearCommandRunOutcomeDelivery(ctx, run.ID, deliveredAt)
-		return
+
+	isDM := s.isCommandRequestDM(ctx, req)
+	agentText := formatCommandRunOutcomeMessage(req, run, outputTail)
+	storedText := agentText
+	if !isDM {
+		storedText = formatCommandRunGroupOutcomeMessage(req, run)
 	}
-	_ = s.store.RecordCommandRunOutcomeMessage(ctx, run.ID, respMsg.ID)
+	var respMsg *store.Message
+	if run.OutcomeMessageID != "" {
+		existing, merr := s.store.GetMessage(ctx, run.OutcomeMessageID)
+		if merr != nil && !errors.Is(merr, store.ErrNotFound) {
+			slog.Warn("Command run: transient error loading persisted outcome message; will retry",
+				"run_id", run.ID, "message_id", run.OutcomeMessageID, "error", merr)
+			clearClaim()
+			return
+		}
+		if existing != nil {
+			respMsg = existing
+			if isDM {
+				agentText = existing.Msg
+			}
+		}
+	}
+	if respMsg == nil {
+		respMsg = &store.Message{
+			ID:             api.NewUUID(),
+			ProjectID:      req.ProjectID,
+			ConversationID: req.ConversationID,
+			ThreadID:       req.ChatKey,
+			Sender:         "system:hub",
+			SenderID:       "system:hub",
+			Recipient:      "agent:" + asker.Slug,
+			RecipientID:    asker.ID,
+			Msg:            storedText,
+			Type:           messages.TypeCommandResponse,
+			DispatchState:  store.MessageDispatchDispatched,
+		}
+		if err := s.store.CreateMessage(ctx, respMsg); err != nil {
+			slog.Warn("Command run: failed to persist command-response message; will retry",
+				"run_id", run.ID, "agent_id", asker.ID, "error", err)
+			clearClaim()
+			return
+		}
+		finCtx, cancelFin := context.WithTimeout(context.WithoutCancel(ctx), scheduledEventRecordTimeout)
+		_ = s.store.RecordCommandRunOutcomeMessage(finCtx, run.ID, respMsg.ID)
+		cancelFin()
+		run.OutcomeMessageID = respMsg.ID
+	}
 
 	sm := &messages.StructuredMessage{
 		Version:        messages.Version,
@@ -733,41 +1065,156 @@ func (s *Server) deliverCommandRunOutcome(ctx context.Context, req *store.Comman
 		SenderID:       respMsg.SenderID,
 		Recipient:      respMsg.Recipient,
 		RecipientID:    respMsg.RecipientID,
-		Msg:            respText,
+		Msg:            agentText,
 		Type:           messages.TypeCommandResponse,
 		ThreadID:       req.ChatKey,
 		ConversationID: req.ConversationID,
 	}
-	_, _ = s.dispatchActionResponse(ctx, actionResponse{
+	if _, derr := s.dispatchActionResponse(ctx, actionResponse{
 		Asker:      asker,
 		Message:    respMsg,
-		Text:       respText,
+		Text:       agentText,
 		Structured: sm,
 		PopulateMeta: func(meta map[string]string) {
-			meta["command_request_id"] = req.ID
-			meta["command_request_key"] = req.Key
-			meta["command_request_version"] = strconv.Itoa(req.Version)
-			meta["command_run_id"] = run.ID
-			meta["command_run_status"] = run.Status
-			if run.ExitCode != nil {
-				meta["command_run_exit_code"] = strconv.Itoa(*run.ExitCode)
-			}
-			if run.DurationMS != nil {
-				meta["command_run_duration_ms"] = strconv.FormatInt(*run.DurationMS, 10)
-			}
-			if run.Reason != "" {
-				meta["command_run_reason"] = run.Reason
-			}
-			if run.OutputStatus != "" {
-				meta["command_run_output_status"] = run.OutputStatus
-			}
+			populateCommandRunMeta(meta, req, run)
 		},
 		LogPrefix: "command_run",
 		Label:     "command-response",
-	})
+	}); derr != nil {
+		slog.Warn("Command run: failed to deliver command-response; clearing claim for sweeper retry",
+			"run_id", run.ID, "agent_id", asker.ID, "error", derr)
+		clearClaim()
+		return
+	}
+
+	if outputTail != "" {
+		s.emitCommandRunAudit(ctx, req, run, msgaction.EventCmdOutputReturned, "", map[string]string{
+			"output_bytes":    strconv.Itoa(len(outputTail)),
+			"redaction_count": strconv.Itoa(redactionCount),
+		})
+	}
 }
 
-func formatCommandRunOutcomeMessage(req *store.CommandRequest, run *store.CommandRun) string {
+func populateCommandRunMeta(meta map[string]string, req *store.CommandRequest, run *store.CommandRun) {
+	if meta == nil || req == nil || run == nil {
+		return
+	}
+	meta["command_request_id"] = req.ID
+	meta["command_request_key"] = req.Key
+	meta["command_request_version"] = strconv.Itoa(req.Version)
+	if req.MessageID != "" {
+		meta["command_request_message_id"] = req.MessageID
+	}
+	meta["command_run_id"] = run.ID
+	meta["command_run_status"] = run.Status
+	if run.ExitCode != nil {
+		meta["command_run_exit_code"] = strconv.Itoa(*run.ExitCode)
+	}
+	if run.DurationMS != nil {
+		meta["command_run_duration_ms"] = strconv.FormatInt(*run.DurationMS, 10)
+	}
+	if run.Reason != "" {
+		meta["command_run_reason"] = run.Reason
+	}
+	if run.OutputStatus != "" {
+		meta["command_run_output_status"] = run.OutputStatus
+	}
+}
+
+// enrichHeldCommandResponse reconstructs the asking-agent command-response text
+// (including run reason and, when shared, the redacted output tail) and hub-set
+// command_* metadata when a held TypeCommandResponse row is re-driven from the
+// store (design §4.9, §15, R2). For group conversations the stored row carries
+// only status/exit code so other participants cannot read reason or tail; this
+// helper ensures the asking agent still receives the full outcome on re-drive.
+// Dismissal TypeCommandResponse rows have no command_runs row and are left as-is.
+func (s *Server) enrichHeldCommandResponse(ctx context.Context, row *store.Message, sm *messages.StructuredMessage) error {
+	if s == nil || s.store == nil || row == nil || sm == nil {
+		return nil
+	}
+	run, err := s.store.GetCommandRunByOutcomeMessageID(ctx, row.ID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidInput) {
+			return nil
+		}
+		return fmt.Errorf("command run lookup: %w", err)
+	}
+	if run == nil || run.RequestID == "" {
+		return nil
+	}
+	req, err := s.store.GetCommandRequest(ctx, run.RequestID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("command request lookup: %w", err)
+	}
+	if req == nil {
+		return nil
+	}
+	var outputTail string
+	if run.ShareOutput {
+		outputTail, _ = s.loadSharedCommandRunOutputTail(ctx, run)
+	}
+	sm.Msg = formatCommandRunOutcomeMessage(req, run, outputTail)
+	if sm.Metadata == nil {
+		sm.Metadata = make(map[string]string, 9)
+	}
+	populateCommandRunMeta(sm.Metadata, req, run)
+	return nil
+}
+
+// isCommandRequestDM reports whether req was sent in a 1:1 direct message
+// (approver + asking agent only). The conversation record is authoritative:
+// when ConversationID is set, it returns true only if conv.Kind == "direct"
+// and (when ChatKey is set) conv.ExternalRef == ChatKey, failing closed on
+// lookup error or mismatch. The dm: ChatKey prefix is consulted only when
+// ConversationID is empty, and must be a validDMKey naming req.AgentID and
+// req.ApproverUserID (R1, design §4.9, §15).
+func (s *Server) isCommandRequestDM(ctx context.Context, req *store.CommandRequest) bool {
+	if req == nil {
+		return false
+	}
+	if req.ConversationID != "" {
+		if s.store == nil {
+			return false
+		}
+		conv, err := s.store.GetConversation(ctx, req.ConversationID)
+		if err != nil || conv == nil || conv.Kind != "direct" {
+			return false
+		}
+		if req.ChatKey != "" && conv.ExternalRef != req.ChatKey {
+			return false
+		}
+		return true
+	}
+	if req.ChatKey == "" || !validDMKey(req.ChatKey) {
+		return false
+	}
+	parts := strings.Split(req.ChatKey, ":")
+	if len(parts) != 5 {
+		return false
+	}
+	agentMatches := (parts[1] == "agent" && parts[2] == req.AgentID) || (parts[3] == "agent" && parts[4] == req.AgentID)
+	userMatches := (parts[1] == "user" && parts[2] == req.ApproverUserID) || (parts[3] == "user" && parts[4] == req.ApproverUserID)
+	return agentMatches && userMatches
+}
+
+// formatCommandRunGroupOutcomeMessage builds the conversation-stored outcome
+// message for non-DM conversations (group/thread): status and exit code only
+// plus a fixed agent-only pointer, omitting reason, output status, and shared
+// output tail (design §4.9, §15, R2).
+func formatCommandRunGroupOutcomeMessage(req *store.CommandRequest, run *store.CommandRun) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Command request `%s` (v%d) finished with status **%s**", req.Key, req.Version, run.Status)
+	if run.ExitCode != nil {
+		fmt.Fprintf(&b, " (exit code %d)", *run.ExitCode)
+	}
+	b.WriteString(".\nFull outcome: `scion command request list`.")
+	return b.String()
+}
+
+func formatCommandRunOutcomeMessage(req *store.CommandRequest, run *store.CommandRun, outputTail string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Command request `%s` (v%d) finished with status **%s**", req.Key, req.Version, run.Status)
 	if run.ExitCode != nil {
@@ -786,22 +1233,44 @@ func formatCommandRunOutcomeMessage(req *store.CommandRequest, run *store.Comman
 	if run.OutputStatus != "" {
 		fmt.Fprintf(&b, " Output status: `%s`.", run.OutputStatus)
 	}
+	if outputTail != "" {
+		fence := "```"
+		for strings.Contains(outputTail, fence) {
+			fence += "`"
+		}
+		b.WriteString("\n\nShared output tail:\n")
+		b.WriteString(fence)
+		b.WriteByte('\n')
+		b.WriteString(outputTail)
+		if !strings.HasSuffix(outputTail, "\n") {
+			b.WriteByte('\n')
+		}
+		b.WriteString(fence)
+	}
 	return b.String()
 }
 
-// commandRunSweepHandler returns the periodic command-run lease-expiry sweeper
-// handler (P1 subset of design §4.12: rows (a) and (b) only).
+// commandRunSweepHandler returns the periodic command-run sweeper handler
+// (design §4.12: request expiry, lease expiry rows (a)/(b), live poll (c), and outcome delivery retry (d)).
 func (s *Server) commandRunSweepHandler() func(ctx context.Context) {
 	return s.sweepCommandRuns
 }
 
-// sweepCommandRuns resolves expired pending command requests (O2, §4.12) and
-// expired unfinished command runs (design §4.12 rows (a) and (b)):
+// sweepCommandRuns resolves expired pending command requests (O2, §4.12),
+// expired unfinished command runs (design §4.12 rows (a) and (b)), live
+// unowned dispatching/running command runs (design §4.12 row (c)), and pending
+// outcome-delivery retries (design §4.9, §4.12 row (d)):
 //   - pending command_requests past expires_at -> expired + audit event;
 //   - (a) queued/waking past lease -> not_started/lease_expired (nothing sent,
 //     guarded by ExpectedStatuses {queued, waking});
 //   - (b) dispatching/running past lease -> poll exec-status once, then
-//     unknown/lease_expired if still unresolved.
+//     unknown/lease_expired if still unresolved;
+//   - (c) live unowned dispatching/running -> claimed via poll_claimed_at
+//     (ClaimCommandRunsForPoll, excluding this replica's owned IDs) and polled
+//     once;
+//   - (d) finished runs within the 1h retry window with outcome_delivered_at
+//     IS NULL (or a stale pre-message claim past commandRunOutcomeClaimLease) ->
+//     retry outcome message delivery, bounded by count and time budget.
 //
 // The sweeper never sends exec-start and never wakes a container.
 func (s *Server) sweepCommandRuns(ctx context.Context) {
@@ -845,14 +1314,25 @@ func (s *Server) sweepCommandRuns(ctx context.Context) {
 		}
 	}
 
+	// Purge action_run exec_run_outputs older than 7 days (design §4.9, carry-forward I1).
+	if ctx.Err() == nil {
+		cutoff := time.Now().UTC().Add(-execSeamDuration(&commandRunOutputRetention))
+		if purged, err := s.store.PurgeOldActionRunOutputs(ctx, cutoff); err != nil {
+			slog.Warn("Command run sweep: purge old action_run outputs failed", "error", err)
+		} else if purged > 0 {
+			slog.Info("Command run sweep: purged old action_run outputs", "purged", purged)
+		}
+	}
+
+	// (a) & (b): expired unfinished runs past their lease.
 	for processed := 0; processed < budget && ctx.Err() == nil; {
 		runs, err := s.store.ListExpiredCommandRuns(ctx, time.Now().UTC(), batch)
 		if err != nil {
 			slog.Warn("Command run sweep: list expired failed", "error", err)
-			return
+			break
 		}
 		if len(runs) == 0 {
-			return
+			break
 		}
 		progressed := false
 		for _, run := range runs {
@@ -881,7 +1361,94 @@ func (s *Server) sweepCommandRuns(ctx context.Context) {
 		}
 		processed += len(runs)
 		if len(runs) < batch || !progressed {
+			break
+		}
+	}
+
+	// (c): live unowned dispatching/running runs claimed via poll_claimed_at.
+	inFlight := execSeamInt(&commandRunSweepInFlight)
+	if inFlight > 0 && budget > 0 && ctx.Err() == nil {
+		sem := make(chan struct{}, inFlight)
+		var wg sync.WaitGroup
+		var claimedThisSweep []string
+		claimTTL := execSeamDuration(&commandRunPollClaimTTL)
+		for polled := 0; polled < budget && ctx.Err() == nil; {
+			reserved := reserveSweepSlots(ctx, sem, min(inFlight, budget-polled))
+			if reserved == 0 {
+				break
+			}
+			owned := s.commandRuns.ownedIDs()
+			exclude := make([]string, 0, len(owned)+len(claimedThisSweep))
+			exclude = append(exclude, owned...)
+			exclude = append(exclude, claimedThisSweep...)
+
+			claimed, err := s.store.ClaimCommandRunsForPoll(ctx, time.Now().UTC(), claimTTL, reserved, exclude)
+			if err != nil {
+				for i := 0; i < reserved; i++ {
+					<-sem
+				}
+				slog.Warn("Command run sweep: claim live runs failed", "error", err)
+				break
+			}
+			for i := len(claimed); i < reserved; i++ {
+				<-sem
+			}
+			if len(claimed) == 0 {
+				break
+			}
+			for _, run := range claimed {
+				claimedThisSweep = append(claimedThisSweep, run.ID)
+				wg.Add(1)
+				go func(r *store.CommandRun) {
+					defer wg.Done()
+					defer func() { <-sem }()
+					var req *store.CommandRequest
+					if r.RequestID != "" {
+						if loaded, lerr := s.store.GetCommandRequest(ctx, r.RequestID); lerr == nil {
+							req = loaded
+						}
+					}
+					s.pollCommandRunOnce(ctx, req, r, false)
+				}(run)
+			}
+			polled += len(claimed)
+			if len(claimed) < reserved {
+				break
+			}
+		}
+		wg.Wait()
+	}
+
+	// (d) Retry outcome delivery for finished runs whose outcome_delivered_at is
+	// NULL (or whose pre-message claim aged past commandRunOutcomeClaimLease)
+	// within the 1h retry window, bounded by count and time budget (design §4.9, §4.12, O2/O3).
+	if ctx.Err() != nil {
+		return
+	}
+	nowSweep := time.Now().UTC()
+	since := nowSweep.Add(-execSeamDuration(&commandRunOutcomeRetryWindow))
+	staleBefore := nowSweep.Add(-execSeamDuration(&commandRunOutcomeClaimLease))
+	retryLimit := min(batch, execSeamInt(&commandRunOutcomeRetryMaxPerSweep))
+	if retryLimit <= 0 {
+		retryLimit = 1
+	}
+	retryDeadline := time.Now().Add(execSeamDuration(&commandRunOutcomeRetryBudget))
+	pendingRuns, err := s.store.ListCommandRunsPendingOutcomeDelivery(ctx, since, staleBefore, retryLimit)
+	if err != nil {
+		slog.Warn("Command run sweep: list pending outcome deliveries failed", "error", err)
+		return
+	}
+	for _, run := range pendingRuns {
+		if ctx.Err() != nil || time.Now().After(retryDeadline) {
 			return
 		}
+		if run.RequestID == "" {
+			continue
+		}
+		req, rerr := s.store.GetCommandRequest(ctx, run.RequestID)
+		if rerr != nil || req == nil {
+			continue
+		}
+		s.deliverCommandRunOutcome(ctx, req, run, nil)
 	}
 }

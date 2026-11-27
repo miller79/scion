@@ -64,9 +64,12 @@ import {
 } from '../../../utils/feature-flags.js';
 import {
   ARTIFACTS_FLAG,
+  ATTACHMENT_ARTIFACTS_FLAG,
+  formatAttachmentRef,
   orderArtifactRefs,
   type MessageArtifactRef,
 } from '../../../client/artifacts.js';
+import { showToast } from '../../../utils/toast.js';
 import './chat-file-preview.js';
 import type { PreviewTarget } from './chat-file-preview.js';
 import '../code-editor.js';
@@ -78,16 +81,34 @@ import {
   type MentionRosterAgent,
 } from './prose-mentions.js';
 import './chat-decisions.js';
+import type { DecisionArtifactOpenDetail } from './chat-decisions.js';
 import './chat-decision-response.js';
 import './chat-secret-request.js';
 import './chat-command-request.js';
+import './command-confirm-dialog.js';
+import type { CommandConfirmSubmitDetail } from './command-confirm-dialog.js';
+import {
+  SHELL_EXECUTE_LANGS,
+  evaluateMarkdownBlockExecuteState,
+  markdownRunStatusLabel,
+  markdownRunStatusTone,
+} from './markdown-execute.js';
+import { stateManager } from '../../../client/state.js';
 import {
   fetchSecretRequestCard,
   type SecretRequestCardResponse,
 } from '../../../client/secret-requests.js';
 import {
+  createCommandRequestFromMessage,
   fetchCommandRequestDetail,
+  generateCommandRequestIdempotencyKey,
+  mapCommandRequestConflictMessage,
+  newerCommandRequestView,
   type CommandRequestDetailResponse,
+  type CommandRequestExecContainerView,
+  type CommandRequestRunView,
+  type CommandRequestUpdatedEvent,
+  type CommandRequestView,
 } from '../../../client/command-requests.js';
 import { ANSWERABLE } from '../../../client/decision-prompts.js';
 import type { AskerAnswerability } from '../../../client/decision-prompts.js';
@@ -137,6 +158,7 @@ export interface AttachmentRefInfo {
 
 /** Roster entry used to resolve `@<email>` and code-span `@<slug>` mentions (ptone/scion#8133, ptone/scion#8783). */
 export interface ChatMessageMember {
+  id?: string;
   name?: string;
   displayName?: string;
   email?: string;
@@ -400,6 +422,7 @@ const CODE_BLOCK_LANGUAGE_MAP: Record<string, string> = {
   bash: 'plaintext',
   sh: 'plaintext',
   shell: 'plaintext',
+  console: 'plaintext',
 };
 
 // ---------------------------------------------------------------------------
@@ -1342,7 +1365,7 @@ export class ScionChatMessage extends LitElement {
   fromAgent = false;
 
   /**
-   * Whether the viewer starred this message (web.chat_starred_messages).
+   * Whether the viewer starred this message.
    * Shows a small, noninteractive filled star in the message meta; the
    * Star/Unstar toggle lives in the message menu.
    */
@@ -1350,7 +1373,7 @@ export class ScionChatMessage extends LitElement {
   starred = false;
 
   /**
-   * Show the message's More actions button (web.chat_starred_messages):
+   * Show the message's More actions button:
    * the keyboard entry to the message menu. The thread makes one message's
    * button the list's single tab stop (`actionsTabIndex` 0, the others
    * -1) and moves it with the arrow keys. It is always visible: bare dots
@@ -1505,6 +1528,13 @@ export class ScionChatMessage extends LitElement {
   @property({ type: Array })
   artifactRefs: MessageArtifactRef[] = [];
 
+  /**
+   * Whether the caller has publish rights to save an attachment as an artifact
+   * (ptone/scion#4598, #4599). When false, "Save as artifact…" is disabled.
+   */
+  @property({ type: Boolean })
+  canPublishArtifacts = true;
+
   /** Reply preview data: the message this one is replying to. */
   @property({ type: Object })
   replyPreview: ReplyPreviewInfo | null = null;
@@ -1540,6 +1570,22 @@ export class ScionChatMessage extends LitElement {
   /** The signed-in user's id; the artifact preview shows their artifacts' owner as "You". */
   @property()
   currentUserId = '';
+
+  /** Whether this message is rendered in a direct (1:1 DM) conversation (§4.14). */
+  @property({ type: Boolean })
+  isDirectConversation = false;
+
+  /** Message recipient string (e.g. "user:alice@example.com") for single-addressed-human checks. */
+  @property()
+  recipient = '';
+
+  /** Message recipient ID for single-addressed-human checks. */
+  @property()
+  recipientId = '';
+
+  /** Signed-in viewer's resolved execution container state (for Markdown Execute). */
+  @property({ attribute: false })
+  execContainer: CommandRequestExecContainerView | null = null;
 
   /**
    * Known roster members on the thread/hub, used to resolve `@<email>` mentions
@@ -1611,6 +1657,31 @@ export class ScionChatMessage extends LitElement {
 
   private previewObserver: IntersectionObserver | null = null;
   private observedPreviews = new WeakSet<Element>();
+
+  /** Markdown Execute confirm dialog state (§4.14). */
+  @state()
+  private mdExecuteDialogOpen = false;
+
+  @state()
+  private mdExecuteScript = '';
+
+  @state()
+  private mdExecuteLangTag = '';
+
+  @state()
+  private mdExecuteSubmitting = false;
+
+  @state()
+  private mdExecuteError = '';
+
+  private mdExecuteActiveWrapper: HTMLElement | null = null;
+  private mdExecuteIdempotencyKey = '';
+  private mdRawScripts = new WeakMap<HTMLElement, string>();
+  private mdBlockRunsByWrapper = new WeakMap<
+    HTMLElement,
+    { request: CommandRequestView; run: CommandRequestRunView }
+  >();
+  private mdWrappersByRowId = new Map<string, HTMLElement>();
 
   static override styles = css`
     :host {
@@ -1918,8 +1989,125 @@ export class ScionChatMessage extends LitElement {
       margin: 0.5em 0;
       max-height: 400px;
       overflow: auto;
-      border: 1px solid var(--scion-border, #e2e8f0);
+      border: 1px solid var(--scion-border);
       border-radius: calc(var(--scion-radius) * 0.75);
+    }
+
+    /* Shell fenced code block wrapper with Copy + Execute toolbar (§4.14) */
+    .code-block {
+      margin: 0.5em 0;
+      border: 1px solid var(--scion-border);
+      border-radius: calc(var(--scion-radius) * 0.75);
+      overflow: hidden;
+      background: var(--scion-bg);
+    }
+
+    .code-block .code-block-editor {
+      margin: 0;
+      border: none;
+      border-radius: 0;
+    }
+
+    .code-block-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      padding: 0.25rem 0.5rem;
+      background: var(--scion-bg-subtle);
+      border-bottom: 1px solid var(--scion-border);
+      font-size: var(--chat-fs-sm, 0.8125rem);
+      color: var(--scion-text-muted);
+    }
+
+    .code-block-lang {
+      font-family: var(--scion-font-mono);
+      font-size: 0.75rem;
+      color: var(--scion-text-muted);
+    }
+
+    .code-block-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.375rem;
+      flex-wrap: wrap;
+    }
+
+    .code-block-copy-btn,
+    .code-block-execute-btn {
+      padding: 0.125rem 0.5rem;
+      font-size: var(--chat-fs-sm, 0.8125rem);
+      font-family: inherit;
+      line-height: var(--chat-lh-tight);
+      border: 1px solid var(--scion-border);
+      border-radius: var(--scion-radius-sm);
+      background: var(--scion-surface);
+      color: var(--scion-text);
+      cursor: pointer;
+    }
+
+    .code-block-copy-btn:hover,
+    .code-block-execute-btn:hover:not(:disabled) {
+      background: var(--scion-bg-subtle);
+    }
+
+    .code-block-execute-btn {
+      border-color: var(--scion-primary);
+      color: var(--scion-primary);
+      font-weight: 600;
+    }
+
+    .code-block-execute-btn:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      border-color: var(--scion-border);
+      color: var(--scion-text-muted);
+    }
+
+    .code-block-setup-link {
+      font-size: 0.75rem;
+      color: var(--scion-primary);
+      text-decoration: none;
+      font-weight: 500;
+    }
+
+    .code-block-setup-link:hover {
+      text-decoration: underline;
+    }
+
+    .code-block-run-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      padding: 0.1rem 0.45rem;
+      border-radius: var(--scion-radius-sm);
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-decoration: none;
+      background: var(--scion-badge-neutral-bg);
+      color: var(--scion-badge-neutral-text);
+    }
+
+    .code-block-run-chip:hover {
+      text-decoration: underline;
+    }
+
+    .code-block-run-chip.success {
+      color: var(--scion-status-success);
+    }
+
+    .code-block-run-chip.danger {
+      background: var(--scion-error-bg);
+      color: var(--scion-error-text);
+    }
+
+    .code-block-run-chip.warning {
+      background: var(--scion-warning-bg);
+      color: var(--scion-warning-text);
+    }
+
+    .code-block-run-chip.info {
+      color: var(--scion-primary);
     }
 
     .copy-btn {
@@ -2271,6 +2459,18 @@ export class ScionChatMessage extends LitElement {
     .download-chip .file-size {
       color: var(--scion-text-muted, #64748b);
       font-size: var(--chat-fs-sm);
+    }
+
+    .download-chip-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.125rem;
+    }
+
+    .attachment-menu-trigger::part(base) {
+      padding: 0.25rem;
+      font-size: var(--chat-fs-base);
+      color: var(--scion-text-muted);
     }
 
     /* Inline code/text previews for non-image attachments */
@@ -2879,6 +3079,7 @@ export class ScionChatMessage extends LitElement {
         : '';
       void this.renderContent();
     }
+    this.refreshAllShellBlockToolbars();
     if (
       this.messageType === 'secret-request' ||
       this.messageType === 'secret-response' ||
@@ -2893,6 +3094,7 @@ export class ScionChatMessage extends LitElement {
     this.renderRoot.addEventListener('pointerdown', this.boundRecordContextPress, true);
     this.addEventListener('pointerdown', this.boundHostContextPress, true);
     window.addEventListener(FEATURE_FLAGS_CHANGED_EVENT, this.handleFeatureFlagsChanged);
+    stateManager.addEventListener('message-action-updated', this.handleMarkdownRunSSEUpdate);
     this.renderedCardMode =
       this.showsDecisionCard || this.showsSecretRequestCard || this.showsCommandRequestCard;
     this.renderedCodeSpanMentions = codeSpanMentionsEnabled();
@@ -2911,6 +3113,8 @@ export class ScionChatMessage extends LitElement {
     this.removeEventListener('pointerdown', this.boundHostContextPress, true);
     this._contextPress = null;
     window.removeEventListener(FEATURE_FLAGS_CHANGED_EVENT, this.handleFeatureFlagsChanged);
+    stateManager.removeEventListener('message-action-updated', this.handleMarkdownRunSSEUpdate);
+    this.mdWrappersByRowId.clear();
     this.secretRequestAbort?.abort();
     this.secretRequestAbort = null;
     this.secretRequestLoadedMsgId = '';
@@ -2921,6 +3125,25 @@ export class ScionChatMessage extends LitElement {
     this.previewObserver = null;
     this.observedPreviews = new WeakSet();
   }
+
+  private readonly handleMarkdownRunSSEUpdate = (e: Event): void => {
+    if (this.mdWrappersByRowId.size === 0) return;
+    const raw = (e as CustomEvent<Record<string, unknown>>).detail;
+    const payload = ((raw?.data as Record<string, unknown> | undefined) ?? raw) as
+      | CommandRequestUpdatedEvent
+      | undefined;
+    const view = payload?.command_request;
+    if (!view || !view.rowId) return;
+    const wrapper = this.mdWrappersByRowId.get(view.rowId);
+    if (!wrapper) return;
+    const prev = this.mdBlockRunsByWrapper.get(wrapper);
+    const mergedReq = prev ? newerCommandRequestView(prev.request, view) : view;
+    const mergedRun = mergedReq.run ?? prev?.run;
+    if (mergedRun) {
+      this.mdBlockRunsByWrapper.set(wrapper, { request: mergedReq, run: mergedRun });
+      this.refreshShellBlockToolbar(wrapper);
+    }
+  };
 
   private recordContextPress(e: Event): void {
     // Only record presses that can initiate a context menu: secondary button,
@@ -3058,6 +3281,17 @@ export class ScionChatMessage extends LitElement {
       this.injectDiffBlocks();
       this.injectCollapsibleBlocks();
       this.injectTestResults();
+    } else if (
+      changed.has('execContainer') ||
+      changed.has('isDirectConversation') ||
+      changed.has('currentUserId') ||
+      changed.has('timestamp') ||
+      changed.has('senderIsAgent') ||
+      changed.has('recipient') ||
+      changed.has('recipientId') ||
+      changed.has('members')
+    ) {
+      this.refreshAllShellBlockToolbars();
     }
     this.observePreviews();
   }
@@ -3197,17 +3431,266 @@ export class ScionChatMessage extends LitElement {
       if (!language) return; // Unknown language — keep plain styling.
 
       const content = codeEl.textContent ?? '';
+      const noExecute = codeEl.hasAttribute('data-no-execute');
       pre.setAttribute('data-highlighted', 'true');
 
-      // Create a readonly code editor and replace the <pre> in-place.
+      // Create a readonly code editor.
       const editor = document.createElement('scion-code-editor');
       editor.content = content;
       editor.language = language;
       editor.readonly = true;
       editor.classList.add('code-block-editor');
 
+      // Shell fences (`bash`, `sh`, `shell`, `console`) are wrapped in
+      // `<div class="code-block">` with a toolbar carrying Copy (restoring
+      // Copy on shell fences) and Execute when eligible (design §4.14).
+      // The raw script text is captured from the original `<code>` textContent
+      // BEFORE replacement and kept on the wrapper, never re-read from the editor.
+      if (SHELL_EXECUTE_LANGS.has(langTag)) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'code-block';
+        wrapper.dataset.lang = langTag;
+        wrapper.dataset.shellBlock = 'true';
+        wrapper.dataset.rawScript = content;
+        if (noExecute) {
+          wrapper.dataset.noExecute = 'true';
+        }
+        // O1: mirror the hub's column-0 fence rule — blocks nested inside list
+        // items or blockquotes will always be refused by the hub, so hide Execute.
+        if (pre.closest('li, blockquote')) {
+          wrapper.dataset.nestedBlock = 'true';
+        }
+        this.mdRawScripts.set(wrapper, content);
+
+        const toolbar = document.createElement('div');
+        toolbar.className = 'code-block-toolbar';
+        wrapper.appendChild(toolbar);
+        wrapper.appendChild(editor);
+
+        this.refreshShellBlockToolbar(wrapper);
+        pre.replaceWith(wrapper);
+        return;
+      }
+
       pre.replaceWith(editor);
     });
+  }
+
+  private refreshAllShellBlockToolbars(): void {
+    const wrappers = this.shadowRoot?.querySelectorAll<HTMLElement>(
+      '.md-content .code-block[data-shell-block="true"]'
+    );
+    if (!wrappers) return;
+    wrappers.forEach((wrapper) => this.refreshShellBlockToolbar(wrapper));
+  }
+
+  private refreshShellBlockToolbar(wrapper: HTMLElement): void {
+    const toolbar = wrapper.querySelector<HTMLElement>('.code-block-toolbar');
+    if (!toolbar) return;
+
+    const langTag = wrapper.dataset.lang ?? 'sh';
+    const noExecute = wrapper.dataset.noExecute === 'true';
+    const nestedInListOrQuote = wrapper.dataset.nestedBlock === 'true';
+    const rawScript = this.mdRawScripts.get(wrapper) ?? wrapper.dataset.rawScript ?? '';
+
+    toolbar.textContent = '';
+
+    const langLabel = document.createElement('span');
+    langLabel.className = 'code-block-lang';
+    langLabel.textContent = langTag;
+    toolbar.appendChild(langLabel);
+
+    const actions = document.createElement('div');
+    actions.className = 'code-block-actions';
+
+    // Copy button is ALWAYS present on all shell fences (§4.14 / AC-F9).
+    type CopyButton = HTMLButtonElement & { _copyTimer?: ReturnType<typeof setTimeout> };
+    const copyBtn = document.createElement('button') as CopyButton;
+    copyBtn.type = 'button';
+    copyBtn.className = 'code-block-copy-btn';
+    copyBtn.dataset.testid = 'code-block-copy-btn';
+    copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', () => {
+      void copyToClipboard(rawScript).then((ok) => {
+        if (!ok) {
+          showCopyFailedToast();
+          return;
+        }
+        copyBtn.textContent = 'Copied!';
+        if (copyBtn._copyTimer) clearTimeout(copyBtn._copyTimer);
+        copyBtn._copyTimer = setTimeout(() => {
+          if (!this.isConnected) return;
+          copyBtn.textContent = 'Copy';
+        }, 1500);
+      });
+    });
+    actions.appendChild(copyBtn);
+
+    const existing = this.mdBlockRunsByWrapper.get(wrapper);
+    if (existing) {
+      const chip = document.createElement('a');
+      const tone = markdownRunStatusTone(existing.run.status);
+      chip.className = `code-block-run-chip ${tone}`;
+      chip.href = `/command-requests/${encodeURIComponent(existing.request.rowId)}`;
+      chip.dataset.testid = 'code-block-run-chip';
+      const label = markdownRunStatusLabel(existing.run.status);
+      const exitSuffix =
+        existing.run.exitCode !== undefined && existing.run.exitCode !== null
+          ? ` (exit ${existing.run.exitCode})`
+          : '';
+      chip.textContent = `${label}${exitSuffix}`;
+      actions.appendChild(chip);
+    } else {
+      const execState = evaluateMarkdownBlockExecuteState({
+        experimentEnabled: commandRequestsEnabled(),
+        senderIsAgent: this.senderIsAgent,
+        messageType: this.messageType,
+        messageId: this.messageId,
+        timestamp: this.timestamp,
+        langTag,
+        noExecute,
+        nestedInListOrQuote,
+        rawScript,
+        isDirectConversation: this.isDirectConversation,
+        currentUserId: this.currentUserId,
+        recipient: this.recipient,
+        recipientId: this.recipientId,
+        body: this.body,
+        members: this.members,
+        execContainer: this.execContainer,
+      });
+
+      if (execState.mode === 'setup-link') {
+        const link = document.createElement('a');
+        link.className = 'code-block-setup-link';
+        link.href = '/profile/settings';
+        link.dataset.testid = 'code-block-setup-link';
+        link.textContent = 'Set up an execution container';
+        actions.appendChild(link);
+      } else if (execState.mode === 'disabled') {
+        const execBtn = document.createElement('button');
+        execBtn.type = 'button';
+        execBtn.className = 'code-block-execute-btn';
+        execBtn.dataset.testid = 'code-block-execute-btn';
+        execBtn.disabled = true;
+        execBtn.title = execState.reason;
+        execBtn.textContent = 'Execute';
+        actions.appendChild(execBtn);
+      } else if (execState.mode === 'enabled') {
+        const execBtn = document.createElement('button');
+        execBtn.type = 'button';
+        execBtn.className = 'code-block-execute-btn';
+        execBtn.dataset.testid = 'code-block-execute-btn';
+        execBtn.textContent = 'Execute';
+        execBtn.addEventListener('click', () =>
+          this.openMarkdownExecuteDialog(wrapper, rawScript, langTag)
+        );
+        actions.appendChild(execBtn);
+      }
+    }
+
+    toolbar.appendChild(actions);
+  }
+
+  private openMarkdownExecuteDialog(
+    wrapper: HTMLElement,
+    rawScript: string,
+    langTag: string
+  ): void {
+    if (this.mdExecuteSubmitting) return;
+    this.mdExecuteActiveWrapper = wrapper;
+    this.mdExecuteScript = rawScript;
+    this.mdExecuteLangTag = langTag.toLowerCase();
+    this.mdExecuteError = '';
+    this.mdExecuteIdempotencyKey = '';
+    this.mdExecuteDialogOpen = true;
+  }
+
+  private closeMarkdownExecuteDialog(): void {
+    if (this.mdExecuteSubmitting) return;
+    this.mdExecuteDialogOpen = false;
+    this.mdExecuteError = '';
+  }
+
+  private async handleMarkdownExecuteSubmit(
+    e: CustomEvent<CommandConfirmSubmitDetail>
+  ): Promise<void> {
+    if (this.mdExecuteSubmitting || !this.messageId) return;
+    const { commandSha256, shareOutput } = e.detail;
+    if (!this.mdExecuteIdempotencyKey) {
+      this.mdExecuteIdempotencyKey = generateCommandRequestIdempotencyKey();
+    }
+
+    this.mdExecuteSubmitting = true;
+    this.mdExecuteError = '';
+
+    const result = await createCommandRequestFromMessage({
+      message_id: this.messageId,
+      script: this.mdExecuteScript,
+      command_sha256: commandSha256,
+      share_output: shareOutput,
+      idempotency_key: this.mdExecuteIdempotencyKey,
+    });
+
+    this.mdExecuteSubmitting = false;
+
+    if (result.ok) {
+      this.mdExecuteIdempotencyKey = '';
+      this.mdExecuteDialogOpen = false;
+      const wrapper = this.mdExecuteActiveWrapper;
+      if (wrapper) {
+        const merged: CommandRequestView = { ...result.request, run: result.run };
+        this.mdBlockRunsByWrapper.set(wrapper, { request: merged, run: result.run });
+        this.mdWrappersByRowId.set(result.request.rowId, wrapper);
+        this.refreshShellBlockToolbar(wrapper);
+      }
+      return;
+    }
+
+    if (result.status === 409 && result.code === 'already_resolved' && result.details?.run) {
+      this.mdExecuteIdempotencyKey = '';
+      this.mdExecuteDialogOpen = false;
+      const wrapper = this.mdExecuteActiveWrapper;
+      if (wrapper && result.details.request) {
+        this.mdBlockRunsByWrapper.set(wrapper, {
+          request: result.details.request,
+          run: result.details.run,
+        });
+        this.mdWrappersByRowId.set(result.details.request.rowId, wrapper);
+        this.refreshShellBlockToolbar(wrapper);
+      }
+      return;
+    }
+
+    if (result.status === 409 || result.status === 422 || result.status === 403) {
+      this.mdExecuteIdempotencyKey = '';
+      this.mdExecuteError = mapCommandRequestConflictMessage(
+        result.code,
+        result.details,
+        result.message
+      );
+      return;
+    }
+
+    this.mdExecuteError = result.message;
+  }
+
+  private renderMarkdownExecuteDialog(): TemplateResult | typeof nothing {
+    if (!this.mdExecuteDialogOpen) return nothing;
+    return html`<scion-command-confirm-dialog
+      ?open=${this.mdExecuteDialogOpen}
+      .script=${this.mdExecuteScript}
+      .isConsoleFence=${this.mdExecuteLangTag === 'console'}
+      workdir=""
+      .timeoutS=${600}
+      .execContainer=${this.execContainer}
+      .shareOutputDefault=${false}
+      ?submitting=${this.mdExecuteSubmitting}
+      .errorMessage=${this.mdExecuteError}
+      @command-confirm-close=${(): void => this.closeMarkdownExecuteDialog()}
+      @command-confirm-submit=${(e: CustomEvent<CommandConfirmSubmitDetail>): void =>
+        void this.handleMarkdownExecuteSubmit(e)}
+    ></scion-command-confirm-dialog>`;
   }
 
   /**
@@ -3862,7 +4345,7 @@ export class ScionChatMessage extends LitElement {
                         : nothing}${this.renderActionsButton()}
                 </div>`}
           ${isDeleted ? nothing : this.renderAttachments()}
-          ${isDeleted ? nothing : this.renderArtifactChips()}
+          ${isDeleted || decisionCard ? nothing : this.renderArtifactChips()}
           ${isDeleted ? nothing : this.renderBadges()}
           ${isDeleted ? nothing : this.renderDeliveryState()}
           ${this.showsStarMeta() ? this.renderStarMeta() : nothing}
@@ -3870,7 +4353,7 @@ export class ScionChatMessage extends LitElement {
           ${this.renderActionsHelp()}
         </div>
       </div>
-      ${this.renderFullPreview()}
+      ${this.renderFullPreview()} ${this.renderMarkdownExecuteDialog()}
     `;
   }
 
@@ -4150,6 +4633,11 @@ export class ScionChatMessage extends LitElement {
       .answerability=${this.answerability ?? ANSWERABLE}
       .createdAt=${this.timestamp}
       .conversationLabel=${this.conversationLabel}
+      .artifactRefs=${this.artifactRefs}
+      .intro=${this.displayBody}
+      @decision-artifact-open=${(e: CustomEvent<DecisionArtifactOpenDetail>): void => {
+        this.openArtifactPreview(e.detail.id, e.detail.seq, e.detail.title);
+      }}
     ></scion-chat-decisions>`;
   }
 
@@ -4370,6 +4858,7 @@ export class ScionChatMessage extends LitElement {
                         href=${attachmentURL(img.id)}
                         download=${img.name}
                       ></sl-icon-button>
+                      ${this.renderAttachmentMenu(img)}
                     </div>
                   </div>
                 `
@@ -4383,22 +4872,112 @@ export class ScionChatMessage extends LitElement {
             <div class="attachments">
               ${files.map(
                 (file) => html`
-                  <a
-                    class="download-chip"
-                    href="/api/v1/chat/attachments/${file.id}"
-                    download=${file.name}
-                    title="Download ${file.name}"
-                  >
-                    <sl-icon name="file-earmark-arrow-down"></sl-icon>
-                    <span class="file-name">${file.name}</span>
-                    <span class="file-size">${formatFileSize(file.size)}</span>
-                  </a>
+                  <span class="download-chip-wrap">
+                    <a
+                      class="download-chip"
+                      href="/api/v1/chat/attachments/${file.id}"
+                      download=${file.name}
+                      title="Download ${file.name}"
+                    >
+                      <sl-icon name="file-earmark-arrow-down"></sl-icon>
+                      <span class="file-name">${file.name}</span>
+                      <span class="file-size">${formatFileSize(file.size)}</span>
+                    </a>
+                    ${this.renderAttachmentMenu(file)}
+                  </span>
                 `
               )}
             </div>
           `
         : nothing}
     `;
+  }
+
+  /**
+   * Overflow menu on an attachment chip/preview when `hub.attachment_artifacts`
+   * is enabled: Save as artifact… (also gated on `hub.artifacts` and publish
+   * rights), Copy reference (`scion://attachment/<id>`), and Download.
+   */
+  private renderAttachmentMenu(file: AttachmentRefInfo) {
+    if (!isFeatureEnabled(ATTACHMENT_ARTIFACTS_FLAG)) return nothing;
+    const showSaveAsArtifact = isFeatureEnabled(ARTIFACTS_FLAG);
+    return html`
+      <sl-dropdown class="attachment-menu" placement="bottom-end" hoist>
+        <sl-icon-button
+          slot="trigger"
+          class="attachment-menu-trigger"
+          name="three-dots-vertical"
+          label="Attachment actions for ${file.name}"
+        ></sl-icon-button>
+        <sl-menu
+          @sl-select=${(e: CustomEvent<{ item?: { value?: string } }>) =>
+            void this.handleAttachmentMenuSelect(file, e)}
+        >
+          ${showSaveAsArtifact
+            ? html`
+                <sl-menu-item
+                  class="attachment-save-artifact-item"
+                  value="save-as-artifact"
+                  ?disabled=${!this.canPublishArtifacts}
+                  title=${this.canPublishArtifacts
+                    ? ''
+                    : "You don't have permission to publish artifacts"}
+                >
+                  <sl-icon slot="prefix" name="file-earmark-plus"></sl-icon>
+                  Save as artifact…
+                </sl-menu-item>
+              `
+            : nothing}
+          <sl-menu-item class="attachment-copy-ref-item" value="copy-ref">
+            <sl-icon slot="prefix" name="clipboard"></sl-icon>
+            Copy reference
+          </sl-menu-item>
+          <sl-menu-item class="attachment-download-item" value="download">
+            <sl-icon slot="prefix" name="download"></sl-icon>
+            Download
+          </sl-menu-item>
+        </sl-menu>
+      </sl-dropdown>
+    `;
+  }
+
+  private async handleAttachmentMenuSelect(
+    file: AttachmentRefInfo,
+    e: CustomEvent<{ item?: { value?: string } }>
+  ): Promise<void> {
+    const action = e.detail?.item?.value;
+    if (action === 'save-as-artifact') {
+      if (!this.canPublishArtifacts) return;
+      this.dispatchEvent(
+        new CustomEvent('save-attachment-as-artifact', {
+          detail: { attachment: file },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      return;
+    }
+    if (action === 'copy-ref') {
+      const ok = await copyToClipboard(formatAttachmentRef(file.id));
+      if (ok) {
+        showToast('Attachment reference copied', 'success');
+      } else {
+        showCopyFailedToast();
+      }
+      return;
+    }
+    if (action === 'download') {
+      const a = document.createElement('a');
+      a.href = attachmentURL(file.id);
+      a.download = file.name;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      try {
+        a.click();
+      } finally {
+        a.remove();
+      }
+    }
   }
 
   /** A short read-only slice of a text attachment, with expand + download. */
@@ -4459,6 +5038,7 @@ export class ScionChatMessage extends LitElement {
               href=${attachmentURL(ref.id)}
               download=${ref.name}
             ></sl-icon-button>
+            ${this.renderAttachmentMenu(ref)}
           </div>
         </div>
         ${isMd && !showSource
@@ -4556,6 +5136,8 @@ export class ScionChatMessage extends LitElement {
       <scion-chat-file-preview
         .target=${target}
         .currentUserId=${this.currentUserId}
+        ?allowSaveAsArtifact=${true}
+        .canPublishArtifacts=${this.canPublishArtifacts}
         @chat-file-preview-close=${() => {
           this.expandedTarget = null;
         }}

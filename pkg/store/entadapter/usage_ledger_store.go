@@ -21,6 +21,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"sort"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -86,13 +90,19 @@ func (s *AgentStore) RunAttributionConfigInstalled() bool {
 
 // UsageLedgerStore implements store.UsageLedgerStore using the Ent ORM.
 type UsageLedgerStore struct {
-	client *ent.Client
-	inTx   bool
+	client                 *ent.Client
+	inTx                   bool
+	hourlyCoverageRecorded *atomic.Bool
+	legacyBackfillMu       *sync.Mutex
 }
 
 // NewUsageLedgerStore creates a new Ent-backed UsageLedgerStore.
 func NewUsageLedgerStore(client *ent.Client) *UsageLedgerStore {
-	return &UsageLedgerStore{client: client}
+	return &UsageLedgerStore{
+		client:                 client,
+		hourlyCoverageRecorded: &atomic.Bool{},
+		legacyBackfillMu:       &sync.Mutex{},
+	}
 }
 
 var _ store.UsageLedgerStore = (*UsageLedgerStore)(nil)
@@ -528,6 +538,121 @@ func fillRunAttributionLaunchIDTx(ctx context.Context, client *ent.Client, runID
 	return mapError(err)
 }
 
+// fillRunAttributionUsageLiveSourcesTx stamps run_attribution.usage_live_source
+// fill-once (WHERE usage_live_source = ” OR usage_live_source IS NULL) for each
+// distinct run_id present in newly inserted non-legacy Track 1 usage events,
+// iterating run_ids in canonical sorted order.
+//
+// First-wins semantics: if usage_live_source is already populated with a
+// different value (or if the same batch contains events with conflicting live
+// sources for the same run_id), the first value is preserved and a warning is
+// logged without overwriting.
+func fillRunAttributionUsageLiveSourcesTx(ctx context.Context, client *ent.Client, events []*store.UsageEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	type runLiveSourceCandidates struct {
+		first     string
+		conflicts []string
+	}
+	byRun := make(map[string]*runLiveSourceCandidates)
+	for _, ev := range events {
+		if ev == nil || ev.RunID == "" {
+			continue
+		}
+		src := strings.TrimSpace(ev.UsageSource)
+		if src == "" || src == store.UsageSourceLegacySessionMetrics {
+			continue
+		}
+		cand, ok := byRun[ev.RunID]
+		if !ok {
+			byRun[ev.RunID] = &runLiveSourceCandidates{first: src}
+			continue
+		}
+		if src != cand.first && !slices.Contains(cand.conflicts, src) {
+			cand.conflicts = append(cand.conflicts, src)
+		}
+	}
+	if len(byRun) == 0 {
+		return nil
+	}
+
+	runIDs := make([]string, 0, len(byRun))
+	for runID := range byRun {
+		runIDs = append(runIDs, runID)
+	}
+	sort.Strings(runIDs)
+
+	rows, err := client.RunAttribution.Query().
+		Where(runattribution.IDIn(runIDs...)).
+		Select(runattribution.FieldID, runattribution.FieldUsageLiveSource).
+		All(ctx)
+	if err != nil {
+		return mapError(err)
+	}
+	existingByRun := make(map[string]string, len(rows))
+	hasRow := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		existingByRun[row.ID] = row.UsageLiveSource
+		hasRow[row.ID] = true
+	}
+
+	for _, runID := range runIDs {
+		if !hasRow[runID] {
+			continue
+		}
+		cand := byRun[runID]
+		existing := existingByRun[runID]
+
+		if existing == "" {
+			n, err := client.RunAttribution.Update().
+				Where(
+					runattribution.IDEQ(runID),
+					runattribution.Or(
+						runattribution.UsageLiveSourceEQ(""),
+						runattribution.UsageLiveSourceIsNil(),
+					),
+				).
+				SetUsageLiveSource(cand.first).
+				Save(ctx)
+			if err != nil {
+				return mapError(err)
+			}
+			if n > 0 {
+				existing = cand.first
+			} else {
+				// Another concurrent transaction won the fill-once race;
+				// re-read the winning value so we can log a warning if our
+				// candidate conflicts with it.
+				row, err := client.RunAttribution.Query().
+					Where(runattribution.IDEQ(runID)).
+					Select(runattribution.FieldUsageLiveSource).
+					Only(ctx)
+				if err != nil {
+					if ent.IsNotFound(err) {
+						continue
+					}
+					return mapError(err)
+				}
+				existing = row.UsageLiveSource
+			}
+		}
+
+		if existing != "" && existing != cand.first {
+			slog.Warn("run_attribution: ignoring conflicting usage_live_source update",
+				"run_id", runID, "existing", existing, "incoming", cand.first)
+		}
+		for _, conflict := range cand.conflicts {
+			if existing != "" && existing != conflict {
+				slog.Warn("run_attribution: ignoring conflicting usage_live_source update",
+					"run_id", runID, "existing", existing, "incoming", conflict)
+			}
+		}
+	}
+	return nil
+}
+
 // runAttributionNotExists filters agents to those whose current run_id does
 // not yet have a row in run_attribution (dialect-uniform SQLite & Postgres).
 func runAttributionNotExists(sel *entsql.Selector) {
@@ -614,16 +739,23 @@ func (s *UsageLedgerStore) backfillActiveRunAttributionsPaged(ctx context.Contex
 
 // upsertMeterHealthTx performs a race-safe monotonic upsert of meter_health
 // inside IngestUsageBatch's transaction. The Hub is the sole authority on
-// sequence gaps and contiguity: (existingMax, maxSeq] minus receivedSeqs is
-// always added to missing_ranges, and last_contiguous_seq advances strictly
-// through receivedSeqs.
+// sequence gaps and contiguity: (existingMax, maxSeq] minus
+// (receivedSeqs ∪ rejectedSeqs) is added to missing_ranges, rejectedSeqs are
+// tracked separately in rejected_ranges/rejected_count so Hub-rejected events
+// are never misclassified as lost data gaps, and last_contiguous_seq advances
+// strictly through accounted (received or rejected) sequences.
+//
+// Returns the merged (supportedSignals, schemaDriftDetected) state for this
+// (agent_id, run_id, producer_epoch) so scope-counter accounting in the same
+// transaction can evaluate companion token-metering state without an extra query.
 func (s *UsageLedgerStore) upsertMeterHealthTx(
 	ctx context.Context,
 	client *ent.Client,
 	mh *store.MeterHealth,
 	anomalousDelta int64,
 	receivedSeqs []int64,
-) error {
+	rejectedSeqs []int64,
+) ([]string, bool, error) {
 	lastReceipt := mh.LastReceiptAt
 	if lastReceipt.IsZero() {
 		lastReceipt = time.Now()
@@ -658,13 +790,20 @@ func (s *UsageLedgerStore) upsertMeterHealthTx(
 
 	existing, err := queryExisting()
 	if err != nil {
-		return err
+		return nil, false, err
 	}
 
 	if existing == nil {
-		initContig, initMax, initMissing, coalesced := advanceIngestSeqState(0, 0, nil, mh.MaxSeqSeen, receivedSeqs)
-		if coalesced {
+		initContig, initMax, initMissing, initRejCount, initRejRanges, missingCoalesced, rejectedCoalesced := advanceIngestSeqState(
+			0, 0, nil, 0, nil, mh.MaxSeqSeen, receivedSeqs, rejectedSeqs,
+		)
+		if missingCoalesced {
 			slog.Warn("meter_health: missing_ranges exceeded cap; conservatively coalesced adjacent gaps",
+				"agent_id", mh.AgentID, "run_id", mh.RunID, "producer_epoch", mh.ProducerEpoch,
+				"cap", maxMeterHealthMissingRanges, "max_seq_seen", initMax)
+		}
+		if rejectedCoalesced {
+			slog.Warn("meter_health: rejected_ranges exceeded cap; coalesced adjacent ranges",
 				"agent_id", mh.AgentID, "run_id", mh.RunID, "producer_epoch", mh.ProducerEpoch,
 				"cap", maxMeterHealthMissingRanges, "max_seq_seen", initMax)
 		}
@@ -677,6 +816,7 @@ func (s *UsageLedgerStore) upsertMeterHealthTx(
 			SetLastReceiptAt(lastReceipt).
 			SetLastContiguousSeq(initContig).
 			SetMaxSeqSeen(initMax).
+			SetRejectedCount(initRejCount).
 			SetNillableLastSourceActivityAt(lastSourceActivity).
 			SetAnomalousCount(anomalousDelta).
 			SetSchemaDriftDetected(mh.SchemaDriftDetected).
@@ -685,6 +825,9 @@ func (s *UsageLedgerStore) upsertMeterHealthTx(
 		if len(initMissing) > 0 {
 			b = b.SetMissingRanges(initMissing)
 		}
+		if len(initRejRanges) > 0 {
+			b = b.SetRejectedRanges(initRejRanges)
+		}
 		if len(mh.SupportedSignals) > 0 {
 			b = b.SetSupportedSignals(mh.SupportedSignals)
 		}
@@ -692,7 +835,7 @@ func (s *UsageLedgerStore) upsertMeterHealthTx(
 			OnConflictColumns(meterhealth.FieldAgentID, meterhealth.FieldRunID, meterhealth.FieldProducerEpoch).
 			DoNothing().
 			Exec(ctx); err != nil {
-			return mapError(err)
+			return nil, false, mapError(err)
 		}
 
 		// Check whether our insert won the first-insert race. If another
@@ -701,10 +844,10 @@ func (s *UsageLedgerStore) upsertMeterHealthTx(
 		// or anomaly count is silently lost (P1.1 review O6).
 		row, err := queryExisting()
 		if err != nil {
-			return err
+			return nil, false, err
 		}
 		if row == nil || row.ID == newID {
-			return nil
+			return mh.SupportedSignals, mh.SchemaDriftDetected, nil
 		}
 		existing = row
 	}
@@ -713,12 +856,18 @@ func (s *UsageLedgerStore) upsertMeterHealthTx(
 	if lastReceipt.After(nextReceipt) {
 		nextReceipt = lastReceipt
 	}
-	nextContig, nextMax, nextMissing, coalesced := advanceIngestSeqState(
+	nextContig, nextMax, nextMissing, nextRejCount, nextRejRanges, missingCoalesced, rejectedCoalesced := advanceIngestSeqState(
 		existing.LastContiguousSeq, existing.MaxSeqSeen, existing.MissingRanges,
-		mh.MaxSeqSeen, receivedSeqs,
+		existing.RejectedCount, existing.RejectedRanges,
+		mh.MaxSeqSeen, receivedSeqs, rejectedSeqs,
 	)
-	if coalesced {
+	if missingCoalesced {
 		slog.Warn("meter_health: missing_ranges exceeded cap; conservatively coalesced adjacent gaps",
+			"agent_id", mh.AgentID, "run_id", mh.RunID, "producer_epoch", mh.ProducerEpoch,
+			"cap", maxMeterHealthMissingRanges, "max_seq_seen", nextMax)
+	}
+	if rejectedCoalesced {
+		slog.Warn("meter_health: rejected_ranges exceeded cap; coalesced adjacent ranges",
 			"agent_id", mh.AgentID, "run_id", mh.RunID, "producer_epoch", mh.ProducerEpoch,
 			"cap", maxMeterHealthMissingRanges, "max_seq_seen", nextMax)
 	}
@@ -731,10 +880,16 @@ func (s *UsageLedgerStore) upsertMeterHealthTx(
 		nextFinal = finalState
 	}
 
+	effectiveSignals := existing.SupportedSignals
+	if len(mh.SupportedSignals) > 0 {
+		effectiveSignals = mh.SupportedSignals
+	}
+
 	u := client.MeterHealth.UpdateOneID(existing.ID).
 		SetLastReceiptAt(nextReceipt).
 		SetLastContiguousSeq(nextContig).
 		SetMaxSeqSeen(nextMax).
+		SetRejectedCount(nextRejCount).
 		SetAnomalousCount(nextAnomalous).
 		SetSchemaDriftDetected(nextDrift).
 		SetFinalState(nextFinal).
@@ -753,9 +908,15 @@ func (s *UsageLedgerStore) upsertMeterHealthTx(
 	} else if len(existing.MissingRanges) > 0 {
 		u = u.SetMissingRanges([]store.SeqRange{})
 	}
+	if nextRejRanges != nil {
+		u = u.SetRejectedRanges(nextRejRanges)
+	}
 
 	_, err = u.Save(ctx)
-	return mapError(err)
+	if err != nil {
+		return nil, false, mapError(err)
+	}
+	return effectiveSignals, nextDrift, nil
 }
 
 // GetMeterHealth implements store.UsageLedgerStore.GetMeterHealth.
@@ -821,6 +982,8 @@ func entMeterHealthToStore(r *ent.MeterHealth) *store.MeterHealth {
 		LastContiguousSeq:    r.LastContiguousSeq,
 		MaxSeqSeen:           r.MaxSeqSeen,
 		MissingRanges:        append([]store.SeqRange(nil), r.MissingRanges...),
+		RejectedCount:        r.RejectedCount,
+		RejectedRanges:       append([]store.SeqRange(nil), r.RejectedRanges...),
 		LastSourceActivityAt: copyTimePtr(r.LastSourceActivityAt),
 		SupportedSignals:     append([]string(nil), r.SupportedSignals...),
 		AnomalousCount:       r.AnomalousCount,

@@ -24,16 +24,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GoogleCloudPlatform/scion/pkg/experiments"
 	"github.com/GoogleCloudPlatform/scion/pkg/store"
 	"github.com/GoogleCloudPlatform/scion/pkg/util/logging"
 )
 
-// GET /api/v1/chat/starred-conversations: the Starred rail
-// (web.chat_starred_messages). Each item is one conversation the caller
-// can read now in which the caller has at least one live star, with its
-// current name, activity and project. No excerpt, count or other user's
-// state is returned.
+// GET /api/v1/chat/starred-conversations: the Starred rail. Each item is
+// one conversation the caller can read now in which the caller has at least
+// one live star, with its current name, activity and project. No excerpt,
+// count or other user's state is returned.
 //
 // Query: projectId (optional, a project the caller can read), sort
 // (activity, the default, or alpha), limit (1-100, default 30) and cursor.
@@ -82,10 +80,6 @@ type starredConversationsCursor struct {
 
 // handleChatStarredConversations serves /api/v1/chat/starred-conversations.
 func (s *Server) handleChatStarredConversations(w http.ResponseWriter, r *http.Request) {
-	if !s.experimentEnabled(experiments.ChatStarredMessages) {
-		http.NotFound(w, r)
-		return
-	}
 	if r.Method != http.MethodGet {
 		MethodNotAllowed(w, http.MethodGet)
 		return
@@ -126,7 +120,7 @@ func (s *Server) handleChatStarredConversations(w http.ResponseWriter, r *http.R
 		limit = n
 	}
 
-	auth := s.newStarredConversationAuthorizer(r, call)
+	auth := s.newStarredConversationAuthorizer(ctx, call)
 	if projectID != "" {
 		// The project scope is authorized before anything is queried; a
 		// project the caller may not read is answered as a missing one.
@@ -292,10 +286,18 @@ type starredConversationAuthorizer struct {
 	agentRead map[string]bool
 }
 
-func (s *Server) newStarredConversationAuthorizer(r *http.Request, call starCall) *starredConversationAuthorizer {
+func (s *Server) newStarredConversationAuthorizer(ctx context.Context, call starCall) *starredConversationAuthorizer {
+	identity := GetIdentityFromContext(ctx)
+	if isNilIdentity(identity) {
+		if call.token != nil {
+			identity = call.token
+		} else {
+			identity = call.user
+		}
+	}
 	a := &starredConversationAuthorizer{
 		s: s, call: call,
-		identity:    GetIdentityFromContext(r.Context()),
+		identity:    identity,
 		projects:    map[string]*store.Project{},
 		projectRead: map[string]bool{},
 		agents:      map[string]*store.Agent{},
@@ -303,7 +305,7 @@ func (s *Server) newStarredConversationAuthorizer(r *http.Request, call starCall
 		agentRead:   map[string]bool{},
 	}
 	if call.token != nil {
-		a.check = s.newSelfScopeCheck(r.Context(), call.token, permInboxRead)
+		a.check = s.newSelfScopeCheck(ctx, call.token, permInboxRead)
 	}
 	return a
 }

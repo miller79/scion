@@ -35,6 +35,8 @@
     "/api/v1/experiments": {
       "status": 200,
       "fields": [
+        "experiments.agent_policy.limit_ceilings:boolean",
+        "experiments.agent_policy.telemetry_enforcement:boolean",
         "experiments.federation.project_visitors:boolean",
         "experiments.hub.access_constraints:boolean",
         "experiments.hub.admin_managed_brokers:boolean",
@@ -71,8 +73,6 @@
         "experiments.web.agent_edit:boolean",
         "experiments.web.artifact_manage_access:boolean",
         "experiments.web.artifact_review_editor:boolean",
-        "experiments.web.chat_scheduled_send:boolean",
-        "experiments.web.chat_starred_messages:boolean",
         "experiments.web.decisions:boolean",
         "experiments.web.inbox_dashboard:boolean",
         "experiments.web.sse_hidden_tab_close:boolean",

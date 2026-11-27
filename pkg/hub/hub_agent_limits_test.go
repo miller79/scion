@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,7 +38,19 @@ import (
 	"github.com/GoogleCloudPlatform/scion/pkg/config/opsettings"
 	"github.com/GoogleCloudPlatform/scion/pkg/experiments"
 	"github.com/GoogleCloudPlatform/scion/pkg/runtimebroker"
+	"github.com/GoogleCloudPlatform/scion/pkg/store"
 )
+
+func setProjectBrokerLimitCeilingsCap(t *testing.T, s store.Store, project *store.Project, supported bool) {
+	t.Helper()
+	b, err := s.GetRuntimeBroker(context.Background(), project.DefaultRuntimeBrokerID)
+	require.NoError(t, err)
+	if b.Capabilities == nil {
+		b.Capabilities = &store.BrokerCapabilities{}
+	}
+	b.Capabilities.LimitCeilings = supported
+	require.NoError(t, s.UpdateRuntimeBroker(context.Background(), b))
+}
 
 func setAgentLimitsOpSettings(t *testing.T, srv *Server, experimentOn bool, ceilingsDoc string) *OperationalSettings {
 	t.Helper()
@@ -210,6 +223,7 @@ func (c *limitCeilingsBrokerClient) applySimulatedBrokerClamp(
 
 func TestAgentLimits_CreateFailFastAndExperimentGate(t *testing.T) {
 	srv, s, project, mock := setupThinkingLevelDispatch(t)
+	setProjectBrokerLimitCeilingsCap(t, s, project, true)
 	brokerClient := &limitCeilingsBrokerClient{mockRuntimeBrokerClient: mock}
 	srv.SetDispatcher(NewHTTPAgentDispatcherWithClient(s, brokerClient, false, slog.Default()))
 
@@ -274,6 +288,7 @@ func TestAgentLimits_CreateFailFastAndExperimentGate(t *testing.T) {
 // returns a clamped warning in the create response.
 func TestAgentLimits_EndToEndTemplateUnlimitedClampedWithEchoAndWarning(t *testing.T) {
 	srv, s, project, mock := setupThinkingLevelDispatch(t)
+	setProjectBrokerLimitCeilingsCap(t, s, project, true)
 	brokerClient := &limitCeilingsBrokerClient{
 		mockRuntimeBrokerClient: mock,
 		templateMaxTurns:        api.IntPtr(0),
@@ -311,6 +326,7 @@ func TestAgentLimits_EndToEndTemplateUnlimitedClampedWithEchoAndWarning(t *testi
 // Hub records EffectiveConfig + returns the warning.
 func TestAgentLimits_StoredOverCeilingClampedOnStart(t *testing.T) {
 	srv, s, project, mock := setupThinkingLevelDispatch(t)
+	setProjectBrokerLimitCeilingsCap(t, s, project, true)
 	brokerClient := &limitCeilingsBrokerClient{mockRuntimeBrokerClient: mock}
 	srv.SetDispatcher(NewHTTPAgentDispatcherWithClient(s, brokerClient, false, slog.Default()))
 
@@ -385,15 +401,17 @@ func TestPutServerConfigDB_AgentDefaultsExceedsAgentLimitsCeiling_422(t *testing
 }
 
 // TestPutServerConfigDB_AgentLimitsMultiSectionAtomicity pins:
-//  1. Sending agent_limits directly on PUT /api/v1/admin/server-config is
-//     refused (422 unpersisted_keys_rejected) because agent_limits is DB-only
-//     with no KoanfPaths.
-//  2. A multi-section PUT carrying an earlier alphabetical section ("access")
+//  1. Sending agent_limits on PUT /api/v1/admin/server-config is refused with
+//     412 experiment_disabled when agent_policy.limit_ceilings is off (while
+//     echoing stored values or clearing passes), and persists cleanly when on.
+//  2. Unknown nested fields under agent_limits are refused with 422
+//     unpersisted_keys_rejected, and invalid durations return 422 validation_error.
+//  3. A multi-section PUT carrying an earlier alphabetical section ("access")
 //     plus an invalid agent_defaults value (default_max_turns > ceiling)
 //     fails upfront with 422 and writes neither section (no partial write).
-//  3. validateAgentLimitsSectionDocs uses effective post-request values when
-//     both agent_defaults and agent_limits are present, and refuses lowering
-//     agent_limits below stored agent_defaults.
+//  4. Simultaneous valid updates to agent_defaults + agent_limits succeed
+//     atomically, and lowering agent_limits below stored agent_defaults fails
+//     with 422.
 func TestPutServerConfigDB_AgentLimitsMultiSectionAtomicity(t *testing.T) {
 	srv, fakeStore, ops := newTestDBServer(t)
 	ctx := context.Background()
@@ -401,15 +419,39 @@ func TestPutServerConfigDB_AgentLimitsMultiSectionAtomicity(t *testing.T) {
 	_, err := ops.Update(ctx, opsettings.AgentLimitsSectionName, json.RawMessage(`{"max_turns":50}`), "admin", -1, "managed")
 	require.NoError(t, err)
 
-	// (1) PUT carrying agent_limits directly is refused as unpersisted/unsupported.
+	// (1a) Experiment OFF: changing agent_limits to a new non-empty value is
+	// refused with 412 experiment_disabled.
 	req := adminRequest(http.MethodPut, "/api/v1/admin/server-config", `{"agent_limits":{"max_turns":40}}`)
 	rr := httptest.NewRecorder()
 	srv.handlePutServerConfigDB(rr, req, ops)
-	require.Equal(t, http.StatusUnprocessableEntity, rr.Code, rr.Body.String())
-	assert.Contains(t, rr.Body.String(), "unpersisted_keys_rejected")
+	require.Equal(t, http.StatusPreconditionFailed, rr.Code, rr.Body.String())
+	assert.Contains(t, rr.Body.String(), ErrCodeExperimentDisabled)
 	assert.Equal(t, 50, ops.AgentLimits().MaxTurns, "rejected PUT must not change agent_limits")
 
-	// (2) Multi-section PUT where "access" sorts before "agent_defaults" and
+	// (1b) Experiment OFF: echoing the stored agent_limits value passes.
+	req = adminRequest(http.MethodPut, "/api/v1/admin/server-config", `{"agent_limits":{"max_turns":50}}`)
+	rr = httptest.NewRecorder()
+	srv.handlePutServerConfigDB(rr, req, ops)
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+
+	// (2) Enable experiment: unknown nested key returns 422 unpersisted_keys_rejected,
+	// invalid duration returns 422 validation_error, valid values persist and round-trip via GET.
+	_, err = ops.Update(ctx, "experiments", json.RawMessage(fmt.Sprintf(`{"overrides":{%q:true}}`, experiments.AgentPolicyLimitCeilings)), "admin", -1, "managed")
+	require.NoError(t, err)
+
+	req = adminRequest(http.MethodPut, "/api/v1/admin/server-config", `{"agent_limits":{"max_turns":40,"bogus":1}}`)
+	rr = httptest.NewRecorder()
+	srv.handlePutServerConfigDB(rr, req, ops)
+	require.Equal(t, http.StatusUnprocessableEntity, rr.Code, rr.Body.String())
+	assert.Contains(t, rr.Body.String(), "unpersisted_keys_rejected")
+
+	req = adminRequest(http.MethodPut, "/api/v1/admin/server-config", `{"agent_limits":{"max_duration":"not-a-duration"}}`)
+	rr = httptest.NewRecorder()
+	srv.handlePutServerConfigDB(rr, req, ops)
+	require.Equal(t, http.StatusUnprocessableEntity, rr.Code, rr.Body.String())
+	assert.Contains(t, rr.Body.String(), "validation_error")
+
+	// Multi-section PUT where "access" sorts before "agent_defaults" and
 	// agent_defaults exceeds the ceiling: 422 upfront, nothing written.
 	multiBody := `{"server":{"hub":{"admin_emails":["new@example.com"]}},"default_max_turns":80}`
 	req = adminRequest(http.MethodPut, "/api/v1/admin/server-config", multiBody)
@@ -424,18 +466,52 @@ func TestPutServerConfigDB_AgentLimitsMultiSectionAtomicity(t *testing.T) {
 	_, defaultsErr := fakeStore.GetHubSetting(ctx, "agent_defaults")
 	assert.Error(t, defaultsErr, "invalid 'agent_defaults' must not be written")
 
-	// (3) Upfront cross-section validator uses effective post-request values
-	// when both sections are present and checks lowering agent_limits against
-	// stored agent_defaults.
-	t.Run("simultaneous raise ceiling and default allowed", func(t *testing.T) {
-		errs := make(map[string][]config.ValidationError)
-		validateAgentLimitsSectionDocs(ops, map[string]json.RawMessage{
-			"agent_defaults":                  json.RawMessage(`{"default_max_turns":80}`),
-			opsettings.AgentLimitsSectionName: json.RawMessage(`{"max_turns":100}`),
-		}, errs)
-		assert.Empty(t, errs)
-	})
+	// Simultaneous raise of ceiling + default in one PUT succeeds and GET returns agent_limits.
+	req = adminRequest(http.MethodPut, "/api/v1/admin/server-config", `{"default_max_turns":80,"agent_limits":{"max_turns":100,"max_model_calls":250,"max_duration":"2h"}}`)
+	rr = httptest.NewRecorder()
+	srv.handlePutServerConfigDB(rr, req, ops)
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 
+	getReq := adminRequest(http.MethodGet, "/api/v1/admin/server-config", "")
+	getRR := httptest.NewRecorder()
+	srv.handleGetServerConfigDB(getRR, getReq, ops)
+	require.Equal(t, http.StatusOK, getRR.Code, getRR.Body.String())
+	var getResp ServerConfigDBResponse
+	require.NoError(t, json.Unmarshal(getRR.Body.Bytes(), &getResp))
+	require.NotNil(t, getResp.AgentLimits)
+	assert.Equal(t, 100, getResp.AgentLimits.MaxTurns)
+	assert.Equal(t, 250, getResp.AgentLimits.MaxModelCalls)
+	assert.Equal(t, "2h", getResp.AgentLimits.MaxDuration)
+
+	// Lowering ceiling below stored default_max_turns=80 is refused with 422.
+	req = adminRequest(http.MethodPut, "/api/v1/admin/server-config", `{"agent_limits":{"max_turns":60}}`)
+	rr = httptest.NewRecorder()
+	srv.handlePutServerConfigDB(rr, req, ops)
+	require.Equal(t, http.StatusUnprocessableEntity, rr.Code, rr.Body.String())
+	assert.Contains(t, rr.Body.String(), "validation_error")
+	assert.Equal(t, 100, ops.AgentLimits().MaxTurns)
+
+	// Clearing ceilings via empty object succeeds, and clearing via null
+	// (the UI full-clear payload) also succeeds.
+	req = adminRequest(http.MethodPut, "/api/v1/admin/server-config", `{"agent_limits":{}}`)
+	rr = httptest.NewRecorder()
+	srv.handlePutServerConfigDB(rr, req, ops)
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+	assert.True(t, ops.AgentLimits().IsEmpty())
+
+	req = adminRequest(http.MethodPut, "/api/v1/admin/server-config", `{"agent_limits":{"max_turns":100}}`)
+	rr = httptest.NewRecorder()
+	srv.handlePutServerConfigDB(rr, req, ops)
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+	assert.Equal(t, 100, ops.AgentLimits().MaxTurns)
+
+	req = adminRequest(http.MethodPut, "/api/v1/admin/server-config", `{"agent_limits":null}`)
+	rr = httptest.NewRecorder()
+	srv.handlePutServerConfigDB(rr, req, ops)
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+	assert.True(t, ops.AgentLimits().IsEmpty())
+
+	// Direct validator checks for simultaneous and single-section cases.
 	t.Run("simultaneous lower ceiling below incoming default refused", func(t *testing.T) {
 		errs := make(map[string][]config.ValidationError)
 		validateAgentLimitsSectionDocs(ops, map[string]json.RawMessage{
@@ -446,17 +522,495 @@ func TestPutServerConfigDB_AgentLimitsMultiSectionAtomicity(t *testing.T) {
 		assert.Contains(t, errs["agent_defaults"][0].Message, "agent_defaults.default_max_turns")
 		assert.Contains(t, errs["agent_defaults"][0].Message, "agent_limits.max_turns")
 	})
+}
 
-	t.Run("lowering agent_limits below stored agent_defaults refused", func(t *testing.T) {
-		_, err := ops.Update(ctx, "agent_defaults", json.RawMessage(`{"default_max_turns":45}`), "admin", -1, "managed")
-		require.NoError(t, err)
+// TestResolvedSettings_IncludesLimitCeilingsWhenExperimentEnabled verifies
+// GET /api/v1/projects/{id}/settings/resolved exposes ceiling per limit when
+// agent_policy.limit_ceilings is enabled, and null when off or unset.
+func TestResolvedSettings_IncludesLimitCeilingsWhenExperimentEnabled(t *testing.T) {
+	srv, s := testServer(t)
+	project := createTestProjectForSettings(t, s)
 
-		errs := make(map[string][]config.ValidationError)
-		validateAgentLimitsSectionDocs(ops, map[string]json.RawMessage{
-			opsettings.AgentLimitsSectionName: json.RawMessage(`{"max_turns":30}`),
-		}, errs)
-		require.Len(t, errs[opsettings.AgentLimitsSectionName], 1)
-		assert.Contains(t, errs[opsettings.AgentLimitsSectionName][0].Message, "agent_defaults.default_max_turns")
-		assert.Contains(t, errs[opsettings.AgentLimitsSectionName][0].Message, "agent_limits.max_turns")
+	// Experiment OFF: ceilings are null even when stored in opsettings.
+	setAgentLimitsOpSettings(t, srv, false, `{"max_turns":50,"max_model_calls":200,"max_duration":"2h"}`)
+	rec := doRequest(t, srv, http.MethodGet, "/api/v1/projects/"+project.ID+"/settings/resolved", nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var offResp ResolvedProjectSettings
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &offResp))
+	assert.Nil(t, offResp.Settings[projectSettingDefaultMaxTurns].Ceiling)
+	assert.Nil(t, offResp.Settings[projectSettingDefaultMaxModelCalls].Ceiling)
+	assert.Nil(t, offResp.Settings[projectSettingDefaultMaxDuration].Ceiling)
+
+	// Experiment ON: ceilings are populated for the three limit keys only.
+	setAgentLimitsOpSettings(t, srv, true, `{"max_turns":50,"max_model_calls":200,"max_duration":"2h"}`)
+	rec = doRequest(t, srv, http.MethodGet, "/api/v1/projects/"+project.ID+"/settings/resolved", nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var onResp ResolvedProjectSettings
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &onResp))
+	assert.Equal(t, float64(50), onResp.Settings[projectSettingDefaultMaxTurns].Ceiling)
+	assert.Equal(t, float64(200), onResp.Settings[projectSettingDefaultMaxModelCalls].Ceiling)
+	assert.Equal(t, "2h", onResp.Settings[projectSettingDefaultMaxDuration].Ceiling)
+	assert.Nil(t, onResp.Settings[projectSettingDefaultModel].Ceiling)
+}
+
+// TestGetAgent_IncludesEffectiveConfigLimits verifies GET /api/v1/agents/{id}
+// projects EffectiveConfig (maxTurns, maxModelCalls, maxDuration, limitsClampedBy)
+// onto the single-agent response when recorded.
+func TestGetAgent_IncludesEffectiveConfigLimits(t *testing.T) {
+	srv, s, project, mock := setupThinkingLevelDispatch(t)
+	setProjectBrokerLimitCeilingsCap(t, s, project, true)
+	brokerClient := &limitCeilingsBrokerClient{
+		mockRuntimeBrokerClient: mock,
+		templateMaxTurns:        api.IntPtr(0),
+	}
+	srv.SetDispatcher(NewHTTPAgentDispatcherWithClient(s, brokerClient, false, slog.Default()))
+	setAgentLimitsOpSettings(t, srv, true, `{"max_turns":50}`)
+
+	rec := doRequest(t, srv, http.MethodPost, "/api/v1/projects/"+project.ID+"/agents", map[string]interface{}{
+		"name": "effective-limits-get",
 	})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var createResp CreateAgentResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &createResp))
+	require.NotNil(t, createResp.Agent)
+
+	getRec := doRequest(t, srv, http.MethodGet, "/api/v1/agents/"+createResp.Agent.ID, nil)
+	require.Equal(t, http.StatusOK, getRec.Code, getRec.Body.String())
+	var got AgentWithCapabilities
+	require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &got))
+	require.NotNil(t, got.EffectiveConfig)
+	assert.Equal(t, 50, got.EffectiveConfig.MaxTurns)
+	assert.Equal(t, []string{"max_turns"}, got.EffectiveConfig.LimitsClampedBy)
+}
+
+// TestAgentLimits_CreateFailFastAllLimits verifies Hub create-time fail-fast
+// for max_model_calls and max_duration ("0", "9999h", unparsable, negative)
+// when the agent_policy.limit_ceilings experiment is enabled, and passthrough
+// when the experiment is disabled.
+func TestAgentLimits_CreateFailFastAllLimits(t *testing.T) {
+	srv, s, project, mock := setupThinkingLevelDispatch(t)
+	setProjectBrokerLimitCeilingsCap(t, s, project, true)
+	brokerClient := &limitCeilingsBrokerClient{mockRuntimeBrokerClient: mock}
+	srv.SetDispatcher(NewHTTPAgentDispatcherWithClient(s, brokerClient, false, slog.Default()))
+
+	// Experiment OFF: over-ceiling and 0/"0"/"9999h" are accepted, no limitCeilings on wire.
+	setAgentLimitsOpSettings(t, srv, false, `{"max_model_calls":100,"max_duration":"2h"}`)
+	rec := doRequest(t, srv, http.MethodPost, "/api/v1/projects/"+project.ID+"/agents", map[string]interface{}{
+		"name": "exp-off-all",
+		"config": map[string]interface{}{
+			"max_model_calls": 0,
+			"max_duration":    "9999h",
+		},
+	})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	rawOff, err := json.Marshal(brokerClient.lastCreateReq)
+	require.NoError(t, err)
+	assert.NotContains(t, string(rawOff), "limitCeilings")
+
+	// Experiment ON: ceilings max_model_calls=100, max_duration="2h".
+	setAgentLimitsOpSettings(t, srv, true, `{"max_model_calls":100,"max_duration":"2h"}`)
+
+	for _, tc := range []struct {
+		name      string
+		cfg       map[string]interface{}
+		wantField string
+	}{
+		{"model calls over ceiling", map[string]interface{}{"max_model_calls": 101}, "max_model_calls"},
+		{"model calls unlimited 0", map[string]interface{}{"max_model_calls": 0}, "max_model_calls"},
+		{"duration unlimited 0", map[string]interface{}{"max_duration": "0"}, "max_duration"},
+		{"duration over ceiling 9999h", map[string]interface{}{"max_duration": "9999h"}, "max_duration"},
+		{"duration unparsable", map[string]interface{}{"max_duration": "not-a-duration"}, "max_duration"},
+		{"duration negative", map[string]interface{}{"max_duration": "-5m"}, "max_duration"},
+		{"duration leading whitespace", map[string]interface{}{"max_duration": " 5m"}, "max_duration"},
+		{"duration trailing whitespace", map[string]interface{}{"max_duration": "5m "}, "max_duration"},
+		{"duration tab padded", map[string]interface{}{"max_duration": "1h\t"}, "max_duration"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := doRequest(t, srv, http.MethodPost, "/api/v1/projects/"+project.ID+"/agents", map[string]interface{}{
+				"name":   "refused-" + strings.ReplaceAll(tc.name, " ", "-"),
+				"config": tc.cfg,
+			})
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			assert.Contains(t, rec.Body.String(), ErrCodeLimitExceedsHubCeiling)
+			assert.Contains(t, rec.Body.String(), tc.wantField)
+		})
+	}
+
+	// Within ceilings succeeds and dispatches LimitCeilings.
+	rec = doRequest(t, srv, http.MethodPost, "/api/v1/projects/"+project.ID+"/agents", map[string]interface{}{
+		"name": "allowed-all",
+		"config": map[string]interface{}{
+			"max_model_calls": 100,
+			"max_duration":    "2h",
+		},
+	})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	require.NotNil(t, brokerClient.lastCreateHubDefaults)
+	require.NotNil(t, brokerClient.lastCreateHubDefaults.LimitCeilings)
+	assert.Equal(t, 100, brokerClient.lastCreateHubDefaults.LimitCeilings.MaxModelCalls)
+	assert.Equal(t, "2h", brokerClient.lastCreateHubDefaults.LimitCeilings.MaxDuration)
+}
+
+// TestAgentLimits_ProjectSettingsPutCeilingsAndUnlimitedAudit verifies project
+// settings PUT refusal (400 limit_exceeds_hub_ceiling) for defaultMaxTurns,
+// defaultMaxModelCalls, and defaultMaxDuration, confirms the 0 = Unlimited
+// audit event is NOT emitted when refused by a ceiling, and confirms it still
+// fires when no ceilings are configured.
+func TestAgentLimits_ProjectSettingsPutCeilingsAndUnlimitedAudit(t *testing.T) {
+	srv, s, project, _ := setupThinkingLevelDispatch(t)
+	setAgentLimitsOpSettings(t, srv, true, `{"max_turns":50,"max_model_calls":100,"max_duration":"2h"}`)
+
+	putSettings := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/projects/"+project.ID+"/settings", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+testDevToken)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	listUnlimitedAudits := func() []*store.MutationAuditRecord {
+		recs, _, err := s.ListMutationAudits(context.Background(), store.MutationAuditFilter{
+			MutationType: mutationTypeProjectSettingsLimitUnlimited,
+			TargetID:     project.ID,
+			Limit:        20,
+		})
+		require.NoError(t, err)
+		return recs
+	}
+
+	// Over-ceiling and unlimited values are refused with 400 limit_exceeds_hub_ceiling.
+	for _, tc := range []struct {
+		name      string
+		body      string
+		wantField string
+	}{
+		{"turns over ceiling", `{"defaultMaxTurns":80}`, projectSettingsFieldMaxTurns},
+		{"turns unlimited 0", `{"defaultMaxTurns":0}`, projectSettingsFieldMaxTurns},
+		{"model calls over ceiling", `{"defaultMaxModelCalls":150}`, projectSettingsFieldMaxModelCalls},
+		{"model calls unlimited 0", `{"defaultMaxModelCalls":0}`, projectSettingsFieldMaxModelCalls},
+		{"duration unlimited 0", `{"defaultMaxDuration":"0"}`, projectSettingsFieldMaxDuration},
+		{"duration over ceiling", `{"defaultMaxDuration":"9999h"}`, projectSettingsFieldMaxDuration},
+		{"duration unparsable", `{"defaultMaxDuration":"bogus"}`, projectSettingsFieldMaxDuration},
+		{"duration leading whitespace", `{"defaultMaxDuration":" 5m"}`, projectSettingsFieldMaxDuration},
+		{"duration trailing whitespace", `{"defaultMaxDuration":"5m "}`, projectSettingsFieldMaxDuration},
+		{"duration tab padded", `{"defaultMaxDuration":"1h\t"}`, projectSettingsFieldMaxDuration},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := putSettings(tc.body)
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			assert.Contains(t, rec.Body.String(), ErrCodeLimitExceedsHubCeiling)
+			assert.Contains(t, rec.Body.String(), tc.wantField)
+		})
+	}
+
+	// Refused 0 transitions must NOT have emitted any unlimited audit event.
+	time.Sleep(100 * time.Millisecond)
+	assert.Empty(t, listUnlimitedAudits(), "refused 0 transitions must not emit unlimited audit events")
+
+	// Within ceilings succeeds.
+	rec := putSettings(`{"defaultMaxTurns":50,"defaultMaxModelCalls":100,"defaultMaxDuration":"2h"}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	// Clearing via null / "" succeeds.
+	rec = putSettings(`{"defaultMaxTurns":null,"defaultMaxModelCalls":null,"defaultMaxDuration":""}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	// Pre-existing over-ceiling annotation does not block an unrelated partial PUT.
+	storedProj, err := s.GetProject(context.Background(), project.ID)
+	require.NoError(t, err)
+	if storedProj.Annotations == nil {
+		storedProj.Annotations = map[string]string{}
+	}
+	storedProj.Annotations[projectSettingDefaultMaxTurns] = "200"
+	require.NoError(t, s.UpdateProject(context.Background(), storedProj))
+
+	rec = putSettings(`{"defaultModel":"claude-sonnet"}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	// When no ceilings are configured, 0 = Unlimited succeeds and emits the audit event.
+	setAgentLimitsOpSettings(t, srv, true, `{}`)
+	rec = putSettings(`{"defaultMaxTurns":0}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Eventually(t, func() bool {
+		return len(listUnlimitedAudits()) >= 1
+	}, 5*time.Second, 20*time.Millisecond, "expected unlimited audit event when no ceiling is configured")
+}
+
+// TestAgentLimits_AgentPatchCeilings verifies PATCH /api/v1/agents/{id}
+// refuses over-ceiling, unlimited (0 / "0"), and unparsable limits with 400
+// limit_exceeds_hub_ceiling (including on pre-existing over-ceiling rows per
+// D4), while allowing compliant edits and unrelated partial patches.
+func TestAgentLimits_AgentPatchCeilings(t *testing.T) {
+	srv, s, project, mock := setupThinkingLevelDispatch(t)
+	setProjectBrokerLimitCeilingsCap(t, s, project, true)
+	brokerClient := &limitCeilingsBrokerClient{mockRuntimeBrokerClient: mock}
+	srv.SetDispatcher(NewHTTPAgentDispatcherWithClient(s, brokerClient, false, slog.Default()))
+
+	// Create an agent before ceilings are active with max_turns=100.
+	setAgentLimitsOpSettings(t, srv, false, "")
+	rec := doRequest(t, srv, http.MethodPost, "/api/v1/projects/"+project.ID+"/agents", map[string]interface{}{
+		"name":   "patch-ceiling-agent",
+		"config": map[string]interface{}{"max_turns": 100},
+	})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var createResp CreateAgentResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &createResp))
+	agentID := createResp.Agent.ID
+
+	// Transition to stopped so live PATCH is accepted, and use a harness
+	// ("gemini") that supports max_turns and max_model_calls.
+	ag, err := s.GetAgent(context.Background(), agentID)
+	require.NoError(t, err)
+	ag.Phase = string(state.PhaseStopped)
+	if ag.AppliedConfig != nil {
+		ag.AppliedConfig.Harness = "gemini"
+	}
+	require.NoError(t, s.UpdateAgent(context.Background(), ag))
+
+	// Enable ceilings.
+	setAgentLimitsOpSettings(t, srv, true, `{"max_turns":50,"max_model_calls":100,"max_duration":"2h"}`)
+
+	for _, tc := range []struct {
+		name      string
+		cfg       map[string]interface{}
+		wantField string
+	}{
+		{"turns over ceiling (re-sending stored 100)", map[string]interface{}{"max_turns": 100}, "max_turns"},
+		{"turns unlimited 0", map[string]interface{}{"max_turns": 0}, "max_turns"},
+		{"model calls over ceiling", map[string]interface{}{"max_model_calls": 101}, "max_model_calls"},
+		{"model calls unlimited 0", map[string]interface{}{"max_model_calls": 0}, "max_model_calls"},
+		{"duration unlimited 0", map[string]interface{}{"max_duration": "0"}, "max_duration"},
+		{"duration over ceiling 9999h", map[string]interface{}{"max_duration": "9999h"}, "max_duration"},
+		{"duration unparsable", map[string]interface{}{"max_duration": "bogus"}, "max_duration"},
+		{"duration leading whitespace", map[string]interface{}{"max_duration": " 5m"}, "max_duration"},
+		{"duration trailing whitespace", map[string]interface{}{"max_duration": "5m "}, "max_duration"},
+		{"duration tab padded", map[string]interface{}{"max_duration": "1h\t"}, "max_duration"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := doRequest(t, srv, http.MethodPatch, "/api/v1/agents/"+agentID, map[string]interface{}{
+				"config": tc.cfg,
+			})
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			assert.Contains(t, rec.Body.String(), ErrCodeLimitExceedsHubCeiling)
+			assert.Contains(t, rec.Body.String(), tc.wantField)
+		})
+	}
+
+	// Unrelated PATCH (model only) succeeds even though stored max_turns=100.
+	rec = doRequest(t, srv, http.MethodPatch, "/api/v1/agents/"+agentID, map[string]interface{}{
+		"config": map[string]interface{}{"model": "claude-sonnet"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	// Compliant PATCH succeeds.
+	rec = doRequest(t, srv, http.MethodPatch, "/api/v1/agents/"+agentID, map[string]interface{}{
+		"config": map[string]interface{}{
+			"max_turns":       40,
+			"max_model_calls": 80,
+			"max_duration":    "1h",
+		},
+	})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	// Held PATCH path (running agent + hub.agent_edit_held enabled) also
+	// refuses whitespace-padded max_duration with 400 limit_exceeds_hub_ceiling.
+	ag, err = s.GetAgent(context.Background(), agentID)
+	require.NoError(t, err)
+	ag.Phase = string(state.PhaseRunning)
+	require.NoError(t, s.UpdateAgent(context.Background(), ag))
+
+	heldStore := newFakeHubSettingStore()
+	heldStore.seed("experiments", json.RawMessage(fmt.Sprintf(
+		`{"overrides":{%q:true,%q:true}}`,
+		experiments.AgentPolicyLimitCeilings, experiments.AgentEditHeld,
+	)))
+	heldStore.seed(opsettings.AgentLimitsSectionName, json.RawMessage(`{"max_turns":50,"max_model_calls":100,"max_duration":"2h"}`))
+	heldOps := NewOperationalSettings(heldStore, emptyKoanf(), emptyKoanf())
+	require.NoError(t, func() error { _, err := heldOps.Refresh(context.Background()); return err }())
+	srv.SetOperationalSettings(heldOps)
+
+	for _, tc := range []struct {
+		name string
+		dur  string
+	}{
+		{"held leading whitespace", " 5m"},
+		{"held trailing whitespace", "5m "},
+		{"held tab padded", "1h\t"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := doRequest(t, srv, http.MethodPatch, "/api/v1/agents/"+agentID, map[string]interface{}{
+				"config": map[string]interface{}{"max_duration": tc.dur},
+			})
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			assert.Contains(t, rec.Body.String(), ErrCodeLimitExceedsHubCeiling)
+			assert.Contains(t, rec.Body.String(), "max_duration")
+		})
+	}
+}
+
+// TestAgentLimits_OldBrokerRefusalAndCapability verifies D3:
+//   - capabilitiesFromStrings parses limitCeilings / limit_ceilings;
+//   - when a Hub ceiling is active and the target broker lacks LimitCeilings,
+//     create, start, and restart dispatches are refused with typed
+//     limit_ceilings_unsupported (412) without calling the broker;
+//   - when no ceiling is active (or experiment is off), the same broker works.
+func TestAgentLimits_OldBrokerRefusalAndCapability(t *testing.T) {
+	// Capability string parsing.
+	for _, name := range []string{"limitCeilings", "limit_ceilings", " LimitCeilings "} {
+		assert.True(t, capabilitiesFromStrings([]string{name}).LimitCeilings, name)
+	}
+	assert.False(t, capabilitiesFromStrings([]string{"unlimitedCountLimits"}).LimitCeilings)
+
+	srv, s, project, mock := setupThinkingLevelDispatch(t)
+	// Broker does NOT advertise LimitCeilings.
+	setProjectBrokerLimitCeilingsCap(t, s, project, false)
+	brokerClient := &limitCeilingsBrokerClient{mockRuntimeBrokerClient: mock}
+	srv.SetDispatcher(NewHTTPAgentDispatcherWithClient(s, brokerClient, false, slog.Default()))
+
+	// With ceilings configured but experiment OFF, the old broker is NOT refused.
+	setAgentLimitsOpSettings(t, srv, false, `{"max_turns":50}`)
+	rec := doRequest(t, srv, http.MethodPost, "/api/v1/projects/"+project.ID+"/agents", map[string]interface{}{
+		"name": "old-broker-exp-off",
+	})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+
+	// With no ceilings configured and experiment ON, the old broker works normally.
+	setAgentLimitsOpSettings(t, srv, true, `{}`)
+	rec = doRequest(t, srv, http.MethodPost, "/api/v1/projects/"+project.ID+"/agents", map[string]interface{}{
+		"name": "old-broker-no-ceiling",
+	})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var createResp CreateAgentResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &createResp))
+	agentID := createResp.Agent.ID
+
+	// Reset capture pointers before enabling ceiling.
+	brokerClient.lastCreateReq = nil
+	brokerClient.lastStartHubDefaults = nil
+
+	// Enable ceiling max_turns=50: create on the old broker is refused with 412 limit_ceilings_unsupported.
+	setAgentLimitsOpSettings(t, srv, true, `{"max_turns":50}`)
+	rec = doRequest(t, srv, http.MethodPost, "/api/v1/projects/"+project.ID+"/agents", map[string]interface{}{
+		"name": "old-broker-refused-create",
+	})
+	require.Equal(t, http.StatusPreconditionFailed, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), api.LaunchCodeLimitCeilingsUnsupported)
+	assert.Nil(t, brokerClient.lastCreateReq, "refused create must not call broker")
+
+	// Start of the existing agent on the old broker is also refused with 412 limit_ceilings_unsupported.
+	ag, err := s.GetAgent(context.Background(), agentID)
+	require.NoError(t, err)
+	ag.Phase = string(state.PhaseStopped)
+	require.NoError(t, s.UpdateAgent(context.Background(), ag))
+
+	rec = doRequest(t, srv, http.MethodPost, "/api/v1/agents/"+agentID+"/start", nil)
+	require.Equal(t, http.StatusPreconditionFailed, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), api.LaunchCodeLimitCeilingsUnsupported)
+	assert.Nil(t, brokerClient.lastStartHubDefaults, "refused start must not call broker")
+
+	// Restart of the existing agent on the old broker is also refused with 412 limit_ceilings_unsupported.
+	ag.Phase = string(state.PhaseRunning)
+	require.NoError(t, s.UpdateAgent(context.Background(), ag))
+	rec = doRequest(t, srv, http.MethodPost, "/api/v1/agents/"+agentID+"/restart", nil)
+	require.Equal(t, http.StatusPreconditionFailed, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), api.LaunchCodeLimitCeilingsUnsupported)
+
+	// Upgrading the broker to advertise LimitCeilings allows start to succeed.
+	setProjectBrokerLimitCeilingsCap(t, s, project, true)
+	ag.Phase = string(state.PhaseStopped)
+	require.NoError(t, s.UpdateAgent(context.Background(), ag))
+	rec = doRequest(t, srv, http.MethodPost, "/api/v1/agents/"+agentID+"/start", nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.NotNil(t, brokerClient.lastStartHubDefaults)
+	require.NotNil(t, brokerClient.lastStartHubDefaults.LimitCeilings)
+	assert.Equal(t, 50, brokerClient.lastStartHubDefaults.LimitCeilings.MaxTurns)
+}
+
+// TestAgentLimits_OldBrokerRefusalAllDispatchOps pins limitCeilingsBrokerPrecheck
+// directly across the remaining start-capable dispatch methods
+// (DispatchAgentProvision, DispatchAgentReprovision, DispatchAgentCreateWithGather,
+// DispatchFinalizeEnv): an old broker lacking Capabilities.LimitCeilings with an
+// active Hub ceiling is refused with *RuntimeTargetRefusal (code
+// limit_ceilings_unsupported) before any broker call is made.
+func TestAgentLimits_OldBrokerRefusalAllDispatchOps(t *testing.T) {
+	srv, s, project, mock := setupThinkingLevelDispatch(t)
+	setProjectBrokerLimitCeilingsCap(t, s, project, false)
+	brokerClient := &limitCeilingsBrokerClient{mockRuntimeBrokerClient: mock}
+	d := NewHTTPAgentDispatcherWithClient(s, brokerClient, false, slog.Default())
+	srv.SetDispatcher(d)
+	setAgentLimitsOpSettings(t, srv, true, `{"max_turns":50}`)
+
+	agent := &store.Agent{
+		ID:              "agent-precheck-ops",
+		Slug:            "agent-precheck-ops",
+		Name:            "agent-precheck-ops",
+		ProjectID:       project.ID,
+		RuntimeBrokerID: project.DefaultRuntimeBrokerID,
+		AppliedConfig:   &store.AgentAppliedConfig{},
+	}
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{"DispatchAgentProvision", func() error {
+			return d.DispatchAgentProvision(ctx, agent)
+		}},
+		{"DispatchAgentReprovision", func() error {
+			return d.DispatchAgentReprovision(ctx, agent, ReprovisionOptions{})
+		}},
+		{"DispatchAgentCreateWithGather", func() error {
+			_, err := d.DispatchAgentCreateWithGather(ctx, agent)
+			return err
+		}},
+		{"DispatchFinalizeEnv", func() error {
+			_, err := d.DispatchFinalizeEnv(ctx, agent, nil)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			brokerClient.lastCreateReq = nil
+			err := tc.call()
+			require.Error(t, err)
+			var refusal *RuntimeTargetRefusal
+			require.ErrorAs(t, err, &refusal, "expected *RuntimeTargetRefusal, got %T: %v", err, err)
+			assert.Equal(t, api.LaunchCodeLimitCeilingsUnsupported, refusal.Code)
+			assert.Equal(t, http.StatusPreconditionFailed, refusal.Status)
+			assert.Nil(t, brokerClient.lastCreateReq, "refused %s must not call broker", tc.name)
+		})
+	}
+}
+
+// TestPutServerConfigDB_AgentLimitsPaddedDurationRefused_422 verifies that
+// whitespace-padded max_duration values (" 2h", "2h ", "2h\t") sent to
+// PUT /api/v1/admin/server-config in agent_limits are refused with HTTP 422
+// validation_error rather than silently trimmed and accepted.
+func TestPutServerConfigDB_AgentLimitsPaddedDurationRefused_422(t *testing.T) {
+	srv, fakeStore, ops := newTestDBServer(t)
+	ctx := context.Background()
+	fakeStore.seed("experiments", json.RawMessage(fmt.Sprintf(
+		`{"overrides":{%q:true}}`, experiments.AgentPolicyLimitCeilings,
+	)))
+	_, err := ops.Refresh(ctx)
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"leading whitespace", `{"agent_limits":{"max_duration":" 2h"}}`},
+		{"trailing whitespace", `{"agent_limits":{"max_duration":"2h "}}`},
+		{"tab padded", `{"agent_limits":{"max_duration":"2h\t"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := adminRequest(http.MethodPut, "/api/v1/admin/server-config", tc.body)
+			rr := httptest.NewRecorder()
+			srv.handlePutServerConfigDB(rr, req, ops)
+			require.Equal(t, http.StatusUnprocessableEntity, rr.Code, rr.Body.String())
+			assert.Contains(t, rr.Body.String(), "validation_error")
+			assert.Equal(t, "", ops.AgentLimits().MaxDuration, "refused PUT must not store padded ceiling")
+		})
+	}
 }

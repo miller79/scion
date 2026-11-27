@@ -129,7 +129,9 @@ var routeAuthzManifest = map[string]string{
 	"/api/v1/pending-secrets/": "authenticated",
 
 	// ── Usage ──────────────────────────────────────────────────────────
-	"/api/v1/usage/me": "authenticated", // Caller's own quota usage
+	"/api/v1/usage/me": "authenticated", // Caller's own quota usage (distinct from /api/v1/me/usage token usage)
+	"/api/v1/me/usage": "authenticated", // Caller's own Track 1 token usage (behind tokenomics.usage_ledger)
+	"/api/v1/usage":    "admin",         // Global Track 1 token usage — hub.metrics.read (behind tokenomics.usage_ledger)
 
 	// ── Session metrics ────────────────────────────────────────────────
 	"/api/v1/metrics/session/": "authenticated", // Session metrics (DB-backed)
@@ -167,6 +169,9 @@ var routeAuthzManifest = map[string]string{
 	// ── Profile decisions roll-up ──────────────────────────────────────
 	"/api/v1/users/me/decisions":             "authenticated", // GET: caller's decisions across member projects; session or scoped UAT (project:read + inbox:read for DMs)
 	"/api/v1/users/me/decisions/suggestions": "authenticated", // GET: caller's decision filter suggestions across member projects; session or scoped UAT (project:read + inbox:read for DMs)
+
+	// ── Profile secret requests roll-up ────────────────────────────────
+	"/api/v1/users/me/secret-requests": "authenticated", // GET: caller's open/resolved secret requests across member projects and DMs; interactive session only
 
 	// ── Profile inbox summary ──────────────────────────────────────────
 	"/api/v1/users/me/inbox/summary": "authenticated", // GET: caller's inbox summary across categories; session or UAT with inbox:read
@@ -272,7 +277,7 @@ var routeAuthzManifest = map[string]string{
 	"/api/v1/messages/":             "authenticated", // Message routes
 	"/api/v1/message-channels":      "authenticated", // Message channels
 	"/api/v1/conversations":         "authenticated", // List/create conversations
-	"/api/v1/conversations/":        "authenticated", // Conversation routes
+	"/api/v1/conversations/":        "authenticated", // Conversation routes (including message attachment download for users, UATs, and agents)
 	"/api/v1/conversations/resolve": "authenticated", // Resolve a conversation reference
 	"/api/v1/thread-groups":         "authenticated", // List/create thread groups
 	"/api/v1/thread-groups/":        "authenticated", // Thread group routes
@@ -295,7 +300,7 @@ var routeAuthzManifest = map[string]string{
 	"/api/v1/decisions/":                 "authenticated", // Decision prompt decisions (read, answer)
 	"/api/v1/decision-prompts/":          "authenticated", // Decision prompt set answers and dismissal
 	"/api/v1/secret-requests/":           "authenticated", // Secret request card read, fulfill, and dismiss (session-only; agent.read / agent.attach)
-	"/api/v1/command-requests/":          "authenticated", // Command request read and approve (session-only; recipient / named approver; 404 when hub.command_requests is off)
+	"/api/v1/command-requests/":          "authenticated", // Command request read, approve, and dismiss (session-only; recipient / named approver; 404 when hub.command_requests is off)
 	"/api/v1/chat/stars":                 "authenticated", // Caller's starred messages in one conversation; 404 when the experiment is off
 	"/api/v1/chat/stars/":                "authenticated", // Star state, star detail, star add/remove (caller's own); 404 when the experiment is off
 	"/api/v1/chat/starred-conversations": "authenticated", // Caller's conversations with starred messages (the Starred rail); 404 when the experiment is off
@@ -328,6 +333,7 @@ var routeAuthzManifest = map[string]string{
 	"/api/v1/agent/secret-requests":    "agent-token", // Agent secret-request list (self-scoped; 404 when hub.agent_secrets is off)
 	"/api/v1/agent/secret-requests/":   "agent-token", // Agent secret-request withdraw (self-scoped; 404 when hub.agent_secrets is off)
 	"/api/v1/agent/command-requests":   "agent-token", // Agent command-request list (self-scoped; 404 when hub.command_requests is off)
+	"/api/v1/agent/command-requests/":  "agent-token", // Agent command-request withdraw (self-scoped; 404 when hub.command_requests is off)
 
 	// ── Public settings ────────────────────────────────────────────────
 	"/api/v1/settings/public":       "authenticated", // Public settings — requires session despite name

@@ -361,8 +361,8 @@ func TestFlatRuntimeBrokersExperimentRegistered(t *testing.T) {
 	if FlatRuntimeBrokers != "hub.flat_runtime_brokers" {
 		t.Fatalf("frozen name changed: %q", FlatRuntimeBrokers)
 	}
-	if e.Default {
-		t.Fatal("flat Runtime Brokers must default to off")
+	if !e.Default {
+		t.Fatal("flat Runtime Brokers must default to on")
 	}
 	// LayerServer gates every hub check. LayerWeb was added only so the
 	// browser can read the flag and switch to the Brokers area (delivery
@@ -426,6 +426,15 @@ func TestConduitDeliverExperimentRegistered(t *testing.T) {
 	if !strings.Contains(e.Description, "Requires hub.conduit") {
 		t.Fatalf("description must name the hub.conduit dependency: %q", e.Description)
 	}
+	if !strings.Contains(e.Description, "server.broker.conduit_deliver_runtimes") {
+		t.Fatalf("description must name server.broker.conduit_deliver_runtimes: %q", e.Description)
+	}
+	if !strings.Contains(e.Description, "several hubs") {
+		t.Fatalf("description must note that brokers connected to several hubs use exec: %q", e.Description)
+	}
+	if strings.Contains(e.Description, "Docker and Kubernetes agents keep using exec") {
+		t.Fatalf("description still carries stale Phase A text: %q", e.Description)
+	}
 	if _, ok := Default().Lookup("hub.conduit"); !ok {
 		t.Fatal("hub.conduit, its dependency, is not registered")
 	}
@@ -436,7 +445,7 @@ func TestConduitDeliverExperimentRegistered(t *testing.T) {
 
 // TestArtifactsExperiment_Registered pins the hub.artifacts entry: it gates
 // both the web surfaces and the hub routes, so it needs both layers, and it
-// ships off.
+// ships on.
 func TestArtifactsExperiment_Registered(t *testing.T) {
 	exp, ok := Default().Lookup(Artifacts)
 	if !ok {
@@ -445,8 +454,8 @@ func TestArtifactsExperiment_Registered(t *testing.T) {
 	if exp.Name != "hub.artifacts" {
 		t.Errorf("Name = %q, want hub.artifacts", exp.Name)
 	}
-	if exp.Default {
-		t.Error("Default = true, want false")
+	if !exp.Default {
+		t.Error("Default = false, want true")
 	}
 	if !exp.HasLayer(LayerWeb) || !exp.HasLayer(LayerServer) {
 		t.Errorf("Layers = %v, want LayerWeb and LayerServer", exp.Layers)
@@ -653,7 +662,7 @@ func TestAgentEditHeld_RegisteredDefaultOff(t *testing.T) {
 
 // TestSecretRotationExperimentRegistered pins server.secret_rotation
 // (ptone/scion#1530): it gates hub startup with a keyring file only, so it
-// is server-layer only, and it ships off.
+// is server-layer only, and it ships on.
 func TestSecretRotationExperimentRegistered(t *testing.T) {
 	e, ok := Default().Lookup(SecretRotation)
 	if !ok {
@@ -662,8 +671,8 @@ func TestSecretRotationExperimentRegistered(t *testing.T) {
 	if SecretRotation != "server.secret_rotation" {
 		t.Fatalf("frozen name changed: %q", SecretRotation)
 	}
-	if e.Default {
-		t.Fatal("secret rotation must default to off")
+	if !e.Default {
+		t.Fatal("secret rotation must default to on")
 	}
 	if !e.HasLayer(LayerServer) || e.HasLayer(LayerWeb) {
 		t.Fatalf("must be a server-layer (only) experiment, got %v", e.Layers)

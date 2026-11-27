@@ -147,6 +147,9 @@ type BrokerCapabilities struct {
 	// max_turns or max_model_calls of 0 as "no limit" over an inherited one
 	// (ptone/scion#5605).
 	UnlimitedCountLimits bool `json:"unlimitedCountLimits,omitempty"`
+	// LimitCeilings indicates this broker enforces Hub-supplied LimitCeilings
+	// on create, start and restart.
+	LimitCeilings bool `json:"limitCeilings,omitempty"`
 	// ClearedResourceSubfields indicates this broker applies the resources
 	// sub-field entries of cleared_fields (api.ResourceSubPaths) at start
 	// (ptone/scion#5676).
@@ -278,6 +281,7 @@ type AgentResponse struct {
 	MaxTurns        int      `json:"maxTurns,omitempty"`
 	MaxModelCalls   int      `json:"maxModelCalls,omitempty"`
 	MaxDuration     string   `json:"maxDuration,omitempty"`
+	RunDeadline     string   `json:"runDeadline,omitempty"`
 	LimitsClampedBy []string `json:"limitsClampedBy,omitempty"`
 }
 
@@ -873,6 +877,7 @@ func AgentInfoToResponse(info api.AgentInfo) AgentResponse {
 		MaxTurns:              info.EffectiveMaxTurns,
 		MaxModelCalls:         info.EffectiveMaxModelCalls,
 		MaxDuration:           info.EffectiveMaxDuration,
+		RunDeadline:           info.EffectiveRunDeadline,
 		LimitsClampedBy:       append([]string(nil), info.LimitsClampedBy...),
 		Image:                 info.Image,
 		RuntimeType:           info.Runtime,

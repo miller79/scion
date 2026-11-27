@@ -21,6 +21,8 @@ FROM ${BASE_IMAGE}
 # ad-hoc testing). The build-time smoke check below verifies that the installed
 # binary accepts every launch flag configured in config.yaml.
 ARG COPILOT_CLI_VERSION=1.0.114
+ARG COPILOT_CLI_SHA256_AMD64
+ARG COPILOT_CLI_SHA256_ARM64
 
 RUN mkdir -p /home/scion/.copilot /home/scion/.copilot/skills \
              /home/scion/.github && \
@@ -47,7 +49,23 @@ RUN ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/') && \
     else \
       URL="https://github.com/github/copilot-cli/releases/download/v${COPILOT_CLI_VERSION}/copilot-linux-${ARCH}.tar.gz"; \
     fi && \
-    curl -fsSL "$URL" | tar xz -C /usr/local/bin && \
+    case "$ARCH" in \
+      x64) SHA="${COPILOT_CLI_SHA256_AMD64}" ;; \
+      arm64) SHA="${COPILOT_CLI_SHA256_ARM64}" ;; \
+      *) exit 1 ;; \
+    esac && \
+    if [ -n "${COPILOT_CLI_SHA256_AMD64}${COPILOT_CLI_SHA256_ARM64}" ]; then \
+      case "$COPILOT_CLI_VERSION" in ''|*[!0-9.]*) exit 1 ;; esac && \
+      printf '%s\n' "$COPILOT_CLI_VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){1,3}$' && \
+      [ "${#SHA}" -eq 64 ] && \
+      printf '%s\n' "$SHA" | grep -Eq '^[a-fA-F0-9]{64}$' && \
+      curl -fsSL "$URL" -o /tmp/copilot.tar.gz && \
+      printf '%s  /tmp/copilot.tar.gz\n' "$SHA" | sha256sum -c - && \
+      tar xzf /tmp/copilot.tar.gz -C /usr/local/bin && \
+      rm /tmp/copilot.tar.gz; \
+    else \
+      curl -fsSL "$URL" | tar xz -C /usr/local/bin; \
+    fi && \
     chmod +x /usr/local/bin/copilot
 
 # Build-time smoke check: parse the bundle launch flags from config.yaml and

@@ -35,7 +35,6 @@ import {
   INBOX_SUMMARY_CHANGED_EVENT,
   inboxSummaryStore,
   type InboxCategory,
-  type InboxCategoryKey,
   type InboxSummaryResponse,
 } from '../../client/inbox-summary.js';
 import {
@@ -46,8 +45,11 @@ import {
   type ProfileDecisionVisibility,
 } from '../../client/profile-decisions.js';
 import {
+  ARTIFACTS_REVIEW_DRAFTS_FLAG,
+  ARTIFACTS_REVIEW_REQUESTS_FLAG,
   FEATURE_FLAGS_CHANGED_EVENT,
   decisionsEnabled,
+  isFeatureEnabled,
   isInboxDashboardEnabled,
 } from '../../utils/feature-flags.js';
 import {
@@ -58,15 +60,20 @@ import {
 import { inboxTabStripStyles, renderInboxTabStrip } from '../shared/inbox-tabs.js';
 import './not-found.js';
 
+export type InboxCardKey = 'decisions' | 'secrets' | 'waiting' | 'reviews' | 'chat';
+
 export interface InboxCardConfig {
-  key: InboxCategoryKey;
+  key: InboxCardKey;
   icon: string;
   title: string;
   descriptor: string;
   defaultHref: string;
 }
 
-/** Data-driven Inbox card registry in canonical display order (design §6.3, §12 Phase 1). */
+/**
+ * Data-driven Inbox card registry in canonical display order
+ * (design §6.3, amended 2026-11-26 for the single merged Secrets card).
+ */
 export const INBOX_CARDS: readonly InboxCardConfig[] = [
   {
     key: 'decisions',
@@ -76,6 +83,13 @@ export const INBOX_CARDS: readonly InboxCardConfig[] = [
     defaultHref: '/profile/decisions?tab=pending',
   },
   {
+    key: 'secrets',
+    icon: 'shield-lock',
+    title: 'Secrets',
+    descriptor: 'Secret requests from agents and secrets awaiting your approval',
+    defaultHref: '/profile/secrets',
+  },
+  {
     key: 'waiting',
     icon: 'hourglass-split',
     title: 'Agents Waiting',
@@ -83,41 +97,152 @@ export const INBOX_CARDS: readonly InboxCardConfig[] = [
     defaultHref: '/agents?q=activity%3Awaiting_for_input',
   },
   {
-    key: 'pending_secrets',
-    icon: 'shield-check',
-    title: 'Pending Secrets',
-    descriptor: 'Secrets your agents saved, awaiting your approval',
-    defaultHref: '/profile/secrets',
-  },
-  {
     key: 'reviews',
     icon: 'clipboard-check',
-    title: 'Reviews',
-    descriptor: 'Reviews on your artifacts and review requests for you',
-    defaultHref: '/artifacts?review_pending=1&owner=me',
+    title: 'Artifact Reviews',
+    descriptor: 'Reviews on your artifacts, review requests for you, and your unfinished drafts',
+    defaultHref: '/artifacts?review_on_latest=1&owner=me',
   },
   {
     key: 'chat',
     icon: 'chat-dots',
     title: 'Chat',
-    descriptor: 'Unread conversations and mentions',
+    descriptor: 'Unread conversations and starred messages',
     defaultHref: '/chat',
   },
 ];
 
 /**
  * Web-owned hrefs for non-primary inline prose link keys (design §14.3).
- * Populated when target routes hydrate in Phases 3 and 4 (AC-16).
+ * `reviews-to-address` resolves to the hub-owned primary href (`cat.href`).
  */
-export const INBOX_LINK_HREFS: Partial<Record<Exclude<InboxLinkKey, 'primary'>, string>> = {};
+export const INBOX_LINK_HREFS: Partial<
+  Record<Exclude<InboxLinkKey, 'primary' | 'secrets-requests' | 'secrets-pending'>, string>
+> = {
+  'chat-unread': '/chat?filter=unread',
+  'chat-mentions': '/chat?filter=mentions',
+  'chat-starred': '/chat?filter=starred',
+  'reviews-requested': '/artifacts?requested=1',
+  'reviews-drafts': '/artifacts?drafts=1',
+};
+
+function resolveMergedSecretsCategory(
+  categories: InboxSummaryResponse['categories']
+): InboxCategory | null {
+  const asCat = categories.agent_secrets;
+  const psCat = categories.pending_secrets;
+  if (!asCat && !psCat) return null;
+
+  const asState = asCat?.state ?? 'disabled';
+  const psState = psCat?.state ?? 'disabled';
+
+  if (asState === 'disabled' && psState === 'disabled') {
+    return {
+      state: 'disabled',
+      count: 0,
+      capped: false,
+      countsTowardTotal: false,
+      href: '/profile/secrets',
+      previews: [],
+    };
+  }
+
+  if (asState === 'error' || psState === 'error') {
+    const errorCode = (asState === 'error' ? asCat?.errorCode : psCat?.errorCode) ?? 'internal';
+    return {
+      state: 'error',
+      count: 0,
+      capped: false,
+      countsTowardTotal: false,
+      href: '/profile/secrets',
+      errorCode,
+      previews: [],
+    };
+  }
+
+  const asOK = asState === 'ok';
+  const psOK = psState === 'ok';
+
+  if (!asOK && !psOK) {
+    return {
+      state: 'unavailable',
+      count: 0,
+      capped: false,
+      countsTowardTotal: false,
+      href: psCat?.href || asCat?.href || '/profile/secrets',
+      previews: [],
+    };
+  }
+
+  const secretRequests = asOK && asCat ? asCat.count : 0;
+  const pendingSecrets = psOK && psCat ? psCat.count : 0;
+  const requestsCapped = Boolean(asOK && asCat?.capped);
+  const pendingCapped = Boolean(psOK && psCat?.capped);
+  const count = secretRequests + pendingSecrets;
+  const capped = requestsCapped || pendingCapped;
+
+  let projects = 0;
+  if (asOK && asCat) {
+    if (typeof asCat.breakdown?.secretsProjects === 'number') {
+      projects = asCat.breakdown.secretsProjects;
+    } else {
+      projects = asCat.breakdown?.projects ?? 0;
+      if (psOK && psCat && projects === 0) {
+        projects = psCat.breakdown?.projects ?? 0;
+      }
+    }
+  } else if (psOK && psCat) {
+    projects = psCat.breakdown?.projects ?? 0;
+  }
+
+  return {
+    state: 'ok',
+    count,
+    capped,
+    countsTowardTotal: true,
+    href: psCat?.href || asCat?.href || '/profile/secrets',
+    previews: [],
+    breakdown: {
+      secretRequests,
+      secretRequestsCapped: requestsCapped ? 1 : 0,
+      agents: asOK && asCat ? (asCat.breakdown?.agents ?? 0) : 0,
+      pendingSecrets,
+      pendingSecretsCapped: pendingCapped ? 1 : 0,
+      projects,
+    },
+  };
+}
+
+function resolveCardCategory(
+  cardKey: InboxCardKey,
+  categories: InboxSummaryResponse['categories']
+): InboxCategory | null {
+  if (cardKey === 'secrets') {
+    return resolveMergedSecretsCategory(categories);
+  }
+  return categories[cardKey] ?? null;
+}
 
 function resolveInboxLinkHref(
   link: InboxLinkKey,
   cat: InboxCategory,
-  card: InboxCardConfig
+  card: InboxCardConfig,
+  categories?: InboxSummaryResponse['categories']
 ): string | undefined {
-  if (link === 'primary') {
+  if (link === 'primary' || link === 'reviews-to-address') {
     return cat.href || card.defaultHref;
+  }
+  if (link === 'secrets-requests') {
+    return categories?.agent_secrets?.href || '/profile/agent-secrets';
+  }
+  if (link === 'secrets-pending') {
+    return categories?.pending_secrets?.href || '/profile/secrets';
+  }
+  if (link === 'reviews-requested' && !isFeatureEnabled(ARTIFACTS_REVIEW_REQUESTS_FLAG)) {
+    return undefined;
+  }
+  if (link === 'reviews-drafts' && !isFeatureEnabled(ARTIFACTS_REVIEW_DRAFTS_FLAG)) {
+    return undefined;
   }
   return INBOX_LINK_HREFS[link];
 }
@@ -167,6 +292,7 @@ export class ScionPageProfileInbox extends LitElement {
     } else {
       this.decisionsNavVisibility = 'unknown';
     }
+    this.requestUpdate();
   };
 
   private boundOnProfileDecisionsCountChanged = (e: Event): void => {
@@ -418,7 +544,11 @@ export class ScionPageProfileInbox extends LitElement {
     inboxSummaryStore.requestRefresh({ immediate: true, force: true });
   }
 
-  private renderCard(card: InboxCardConfig, cat: InboxCategory): TemplateResult | typeof nothing {
+  private renderCard(
+    card: InboxCardConfig,
+    cat: InboxCategory,
+    categories: InboxSummaryResponse['categories']
+  ): TemplateResult | typeof nothing {
     if (cat.state === 'disabled') return nothing;
 
     const countText = cat.capped ? `${cat.count}+` : String(cat.count);
@@ -462,7 +592,7 @@ export class ScionPageProfileInbox extends LitElement {
                 : html`<p class="card-prose" data-card-prose>
                     ${segments.map((seg) => {
                       const segHref = seg.link
-                        ? resolveInboxLinkHref(seg.link, cat, card)
+                        ? resolveInboxLinkHref(seg.link, cat, card, categories)
                         : undefined;
                       return segHref
                         ? html`<a
@@ -486,8 +616,9 @@ export class ScionPageProfileInbox extends LitElement {
 
     const categories = this.summary?.categories;
     const enabledCategories = categories
-      ? INBOX_CARDS.map((card) => categories[card.key]).filter((c): c is InboxCategory =>
-          Boolean(c && c.state !== 'disabled' && c.state !== 'unavailable')
+      ? INBOX_CARDS.map((card) => resolveCardCategory(card.key, categories)).filter(
+          (c): c is InboxCategory =>
+            Boolean(c && c.state !== 'disabled' && c.state !== 'unavailable')
         )
       : [];
     const allCaughtUp =
@@ -546,8 +677,8 @@ export class ScionPageProfileInbox extends LitElement {
               <div class="card-grid" data-inbox-grid>
                 ${categories
                   ? INBOX_CARDS.map((card) => {
-                      const cat = categories[card.key];
-                      return cat ? this.renderCard(card, cat) : nothing;
+                      const cat = resolveCardCategory(card.key, categories);
+                      return cat ? this.renderCard(card, cat, categories) : nothing;
                     })
                   : nothing}
               </div>

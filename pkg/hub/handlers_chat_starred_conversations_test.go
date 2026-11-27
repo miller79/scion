@@ -158,11 +158,6 @@ func TestChatStarredConversations_GateAndValidation(t *testing.T) {
 
 	assert.Equal(t, http.StatusMethodNotAllowed, f.session(t, f.member, http.MethodPost, starredConversationsPath, nil).Code)
 	assert.Equal(t, http.StatusNotFound, f.session(t, f.member, http.MethodGet, starredConversationsPath+"/x", nil).Code)
-
-	setStarsExperiment(t, f.srv, false, true)
-	for _, m := range []string{http.MethodGet, http.MethodPost} {
-		assert.Equal(t, http.StatusNotFound, f.session(t, f.member, m, starredConversationsPath, nil).Code, m)
-	}
 }
 
 func TestChatStarredConversations_GroupsAndPaginates(t *testing.T) {
@@ -550,7 +545,7 @@ func TestChatStarredConversations_ScanBudget(t *testing.T) {
 
 	scan := func(after *StarredConversationPosition) ([]starredConversationItem, *StarredConversationPosition) {
 		t.Helper()
-		items, next, err := f.srv.scanStarredConversations(ctx, call, f.srv.newStarredConversationAuthorizer(req, call), filter, after, 10, 2, 3)
+		items, next, err := f.srv.scanStarredConversations(ctx, call, f.srv.newStarredConversationAuthorizer(req.Context(), call), filter, after, 10, 2, 3)
 		require.NoError(t, err)
 		return items, next
 	}
@@ -566,7 +561,7 @@ func TestChatStarredConversations_ScanBudget(t *testing.T) {
 	assert.Nil(t, next, "exhausted")
 
 	// A full page stops at the item that fills it.
-	items, next, err = f.srv.scanStarredConversations(ctx, call, f.srv.newStarredConversationAuthorizer(req, call), filter, nil, 1, 100, 1000)
+	items, next, err = f.srv.scanStarredConversations(ctx, call, f.srv.newStarredConversationAuthorizer(req.Context(), call), filter, nil, 1, 100, 1000)
 	require.NoError(t, err)
 	assert.Equal(t, []string{visible[0]}, starredConversationRowKeys(items))
 	require.NotNil(t, next)
@@ -673,7 +668,6 @@ func TestChatStarredConversations_BatchedLookups(t *testing.T) {
 	require.NoError(t, wcs.Init())
 	f := &starFixture{chatFixture: &chatFixture{inboxFixture: inbox, wcs: wcs}, stars: messageStarStoreFrom(wcs)}
 	require.NotNil(t, f.stars)
-	setStarsExperiment(t, srv, true, false)
 	srv.SetWebChatStore(&starRailCountingWebChatStore{WebChatStore: wcs, MessageStarStore: f.stars, c: counter})
 
 	rail := func() map[string]int {

@@ -136,6 +136,8 @@ func IsHubOutboxActive(home string) bool {
 	return isHubOutboxActiveDir(HubAnalyticsOutboxDirFor(home))
 }
 
+const hubOutboxSuppressMarker = "suppress.hub"
+
 func isHubOutboxActiveDir(hubDir string) bool {
 	if hubDir == "" {
 		return false
@@ -144,14 +146,42 @@ func isHubOutboxActiveDir(hubDir string) bool {
 	return err == nil
 }
 
-// ClearHubOutboxActive removes the Hub outbox active marker in hubDir if
-// present, without creating hubDir.
+func isHubOutboxSuppressDir(hubDir string) bool {
+	if hubDir == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(hubDir, hubOutboxSuppressMarker))
+	return err == nil
+}
+
+// ClearHubOutboxActive removes the Hub outbox active and suppression markers
+// in hubDir if present, without creating hubDir.
 func ClearHubOutboxActive(hubDir string) {
 	if hubDir == "" {
 		return
 	}
+	removed := false
 	if err := os.Remove(filepath.Join(hubDir, hubOutboxActiveMarker)); err == nil {
+		removed = true
+	}
+	if err := os.Remove(filepath.Join(hubDir, hubOutboxSuppressMarker)); err == nil {
+		removed = true
+	}
+	if removed {
 		_ = syncDir(hubDir)
+	}
+}
+
+func (o *AnalyticsOutbox) setHubSuppress(suppress bool) {
+	if o == nil {
+		return
+	}
+	if suppress {
+		_ = o.writeFileAtomic(hubOutboxSuppressMarker, []byte("1\n"))
+		return
+	}
+	if err := os.Remove(filepath.Join(o.dir, hubOutboxSuppressMarker)); err == nil {
+		_ = syncDir(o.dir)
 	}
 }
 
@@ -196,6 +226,12 @@ const (
 	// consumed, persisted relocated_refused count). Lines already appended
 	// keep their bytes and still finalize and drain with the pinned hub.
 	AppendRefusedRelocated
+	// AppendDisabled means the analytics producer is nil, detached, or has no
+	// active outbox sink; when err == nil, nothing was written and no
+	// producer_seq was consumed. UsageAnalytics.record also returns
+	// AppendDisabled as the default outcome alongside a non-nil build/open
+	// error (callers check err != nil first).
+	AppendDisabled
 )
 
 // ErrAnalyticsOutboxRelocated is returned by finalize once the outbox has
@@ -499,10 +535,25 @@ func (o *AnalyticsOutbox) indexDir() string        { return filepath.Join(o.dir,
 // bytes to staging. The caller fills every other field. On
 // AppendCertainDuplicate and AppendOverflow nothing is written.
 func (o *AnalyticsOutbox) AppendUsage(ev *telemetrycontract.UsageEvent) (AppendOutcome, error) {
+	return o.appendUsageChecked(ev, false)
+}
+
+// AppendUsageUnique is like AppendUsage, except any event whose
+// (producer_namespace, source_kind, source_event_id) is already recorded in
+// the outbox index is treated as a certain duplicate (AppendCertainDuplicate)
+// regardless of SourceIdentity or EventTS. Used by producers whose
+// source_event_id (such as agydecode.Record.EmissionKey) already uniquely
+// identifies one exact emission so crash/retry replays never mint a second
+// event_id.
+func (o *AnalyticsOutbox) AppendUsageUnique(ev *telemetrycontract.UsageEvent) (AppendOutcome, error) {
+	return o.appendUsageChecked(ev, true)
+}
+
+func (o *AnalyticsOutbox) appendUsageChecked(ev *telemetrycontract.UsageEvent, uniqueByEventID bool) (AppendOutcome, error) {
 	if o == nil {
 		return 0, errNilOutbox
 	}
-	outcome, err := o.appendUsage(ev)
+	outcome, err := o.appendUsage(ev, uniqueByEventID)
 	switch {
 	case errors.Is(err, errAppendUnresolved):
 		// Not known lost: the intent persists and decides later.
@@ -552,7 +603,7 @@ func (o *AnalyticsOutbox) refuseLocked(seq int64, counter string) error {
 	return o.writeFileAtomic(counter, []byte(strconv.FormatInt(n+1, 10)))
 }
 
-func (o *AnalyticsOutbox) appendUsage(ev *telemetrycontract.UsageEvent) (outcome AppendOutcome, err error) {
+func (o *AnalyticsOutbox) appendUsage(ev *telemetrycontract.UsageEvent, uniqueByEventID bool) (outcome AppendOutcome, err error) {
 	unlock, err := o.lock()
 	if err != nil {
 		return 0, err
@@ -624,6 +675,9 @@ func (o *AnalyticsOutbox) appendUsage(ev *telemetrycontract.UsageEvent) (outcome
 		indexName = analyticsIndexName(ev.ProducerNamespace, ev.SourceKind, ev.SourceEventID)
 		if entry, err = o.readIndex(indexName); err != nil {
 			return 0, err
+		}
+		if uniqueByEventID && entry.count > 0 {
+			return AppendCertainDuplicate, nil
 		}
 		if ev.SourceIdentity == telemetrycontract.SourceIdentityRequestID {
 			if fingerprint, err = usageSemanticFingerprint(ev); err != nil {

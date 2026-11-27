@@ -24,7 +24,7 @@ import { apiFetch, extractApiError } from './api.js';
 import { wakeOfferFromErrorBody } from './wake-offer.js';
 import type { WakeOffer } from './wake-offer.js';
 
-export { ARTIFACTS_FLAG } from './artifacts-flag.js';
+export { ARTIFACTS_FLAG, ATTACHMENT_ARTIFACTS_FLAG } from './artifacts-flag.js';
 
 export interface ArtifactFile {
   path: string;
@@ -52,6 +52,26 @@ export interface ArtifactVersion {
   createdAt: string;
   state: string;
   files: ArtifactFile[];
+  /**
+   * Attachment id this version was published from by reference, omitted for
+   * ordinary publishes (ptone/scion#4599).
+   */
+  sourceAttachmentId?: string;
+  /**
+   * Message id the source attachment was sent in, populated only when the
+   * viewer may read that message.
+   */
+  sourceMessageId?: string;
+  /**
+   * Chat conversation key (topic/thread id or `dm:...`) of the source message,
+   * populated only under the same viewer gate as `sourceMessageId`.
+   */
+  sourceConversationKey?: string;
+  /**
+   * Owning project id of a project-thread source message (absent for DMs),
+   * populated only under the same viewer gate as `sourceMessageId`.
+   */
+  sourceProjectId?: string;
 }
 
 export interface Artifact {
@@ -135,15 +155,25 @@ export interface ArtifactResponse {
   reviewDelivery?: ReviewDeliveryInfo;
   /**
    * On a GET of the artifact or one of its versions while
-   * hub.artifacts_review_requests is enabled (ptone/scion#9296): viewer-specific
-   * review request state. Omitted while the experiment is off.
+   * hub.artifacts_review_requests or hub.artifacts_review_drafts is enabled
+   * (ptone/scion#9296): viewer-specific review request and draft state.
+   * Omitted while both experiments are off.
    */
   reviewState?: ReviewStateInfo;
 }
 
+/** Summary of the caller's saved review draft on an artifact (no body or note). */
+export interface ReviewDraftSummary {
+  base: number;
+  savedAt: string;
+}
+
 /** Viewer-specific review state on ArtifactResponse (pkg/artifacts/api.go). */
 export interface ReviewStateInfo {
-  requestedOfMe: ReviewRequestInfo | null;
+  reviewOnLatest?: boolean;
+  requestedOfMe?: ReviewRequestInfo | null;
+  myDraft?: ReviewDraftSummary | null;
+  draftsInProgress?: number;
 }
 
 /** A reviewer or requester principal in review-request responses. */
@@ -153,6 +183,9 @@ export interface ReviewRequestPrincipal {
   displayName?: string;
 }
 
+/** Lifecycle state of an artifact review request (pkg/artifacts/store_review_requests.go). */
+export type ReviewRequestState = 'open' | 'fulfilled' | 'dismissed' | 'withdrawn' | 'expired';
+
 /** One artifact review request (pkg/artifacts/api.go). */
 export interface ReviewRequestInfo {
   id: string;
@@ -161,13 +194,30 @@ export interface ReviewRequestInfo {
   requestedSeq: number;
   note?: string;
   access: string;
-  state: string;
+  state: ReviewRequestState;
   responseNote?: string;
   resolvedSeq?: number;
   createdAt: string;
   remindedAt?: string;
   resolvedAt?: string;
+  /** Publisher view only (open requests): whether the reviewer can still review. */
+  reviewerCanReview?: boolean;
+  /** Publisher view only (open requests, drafts gate on): reviewer holds a saved draft. */
+  inDraft?: boolean;
 }
+
+/** Response of GET /api/v1/artifacts/{id}/review-requests. */
+export interface ListReviewRequestsResponse {
+  requests: ReviewRequestInfo[];
+}
+
+/** Response of POST /api/v1/artifacts/{id}/review-requests/{rid}/withdraw. */
+export interface WithdrawReviewRequestResponse {
+  request: ReviewRequestInfo;
+}
+
+/** Hub error code when POST /grants with notify+review is refused while requests are enabled. */
+export const CODE_USE_REVIEW_REQUESTS = 'use_review_requests';
 
 /** Per-reviewer outcome returned by POST /api/v1/artifacts/{id}/review-requests. */
 export type ReviewRequestOutcome = 'created' | 'reminded' | 'unchanged' | 'refused';
@@ -225,8 +275,14 @@ export function reviewRequestRefusalText(code?: string): string {
       return 'Reviewer unavailable';
     case 'request_closed':
       return 'Request already closed';
+    case 'too_many_grants':
+      return 'Artifact has reached the maximum number of grants';
+    case 'unavailable':
+      return 'Temporarily unavailable — try again';
     case 'agent_cannot_request_review':
       return 'Only users can request reviews';
+    case CODE_USE_REVIEW_REQUESTS:
+      return 'Use Request review instead of Share with notify';
     default:
       return code ? `Refused (${code})` : 'Refused';
   }
@@ -666,6 +722,33 @@ export function defaultProjectChoice(publishable: ProjectChoice[]): string {
   const global = publishable.find((p) => p.slug === GLOBAL_PROJECT_SLUG);
   if (global) return global.id;
   return publishable.length === 1 ? publishable[0].id : '';
+}
+
+/**
+ * Reports whether the caller can publish artifacts in at least one project
+ * (checking `preferredProjectId` first when given, then the global project,
+ * then remaining readable projects via `filterPublishable` with `firstOnly`).
+ * Stops as soon as one publishable project is found.
+ */
+export async function canPublishAnywhere(
+  opts: { preferredProjectId?: string | undefined; signal?: AbortSignal | undefined } = {}
+): Promise<boolean> {
+  const { preferredProjectId, signal } = opts;
+  if (preferredProjectId) {
+    if (await canPublishIn(preferredProjectId, signal)) return true;
+  }
+  const global = await findGlobalProject(signal);
+  if (global && global.id !== preferredProjectId) {
+    if (await canPublishIn(global.id, signal)) return true;
+  }
+  const { projects } = await listReadableProjects({ skip: global?.id, signal });
+  const rest = preferredProjectId ? projects.filter((p) => p.id !== preferredProjectId) : projects;
+  if (rest.length === 0) return false;
+  const found = await filterPublishable(rest, {
+    firstOnly: true,
+    ...(signal ? { signal } : {}),
+  });
+  return found.length > 0;
 }
 
 /** One page of an artifact's ready versions, newest first. */
@@ -1353,9 +1436,11 @@ export function publishErrorMessage(err: unknown): string {
 /** One row of GET /api/v1/artifacts?mine=1 (pkg/artifacts/list.go). */
 export interface ArtifactListItem extends Artifact {
   /** The current version is a review awaiting the owner. */
-  reviewPending: boolean;
+  reviewOnLatest: boolean;
   /** The caller has an open review request on this artifact (when gate is on). */
   reviewRequested?: boolean;
+  /** The caller has a saved review draft on this artifact (when drafts gate is on). */
+  reviewInDraft?: boolean;
   /** Why the caller sees the artifact. */
   access?: ArtifactAccess;
   /** In a list narrowed to a project: homed elsewhere and shared with it. */
@@ -1759,6 +1844,56 @@ export async function deleteGrant(id: string, grantId: string): Promise<void> {
   if (!res.ok) throw new Error(await extractApiError(res, `HTTP ${res.status}`));
 }
 
+/** Lists review requests on an artifact (GET /api/v1/artifacts/{id}/review-requests). */
+export async function listReviewRequests(id: string): Promise<ListReviewRequestsResponse> {
+  const res = await okJSON<ListReviewRequestsResponse>(
+    await apiFetch(`${artifactPath(id)}/review-requests`)
+  );
+  return { requests: res.requests ?? [] };
+}
+
+/** A failed review-request withdraw, carrying HTTP status and hub error code. */
+export class WithdrawReviewRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: string
+  ) {
+    super(message);
+    this.name = 'WithdrawReviewRequestError';
+  }
+}
+
+/** Withdraws an open review request on an artifact (POST /api/v1/artifacts/{id}/review-requests/{rid}/withdraw). */
+export async function withdrawReviewRequest(
+  id: string,
+  requestId: string
+): Promise<WithdrawReviewRequestResponse> {
+  const res = await apiFetch(
+    `${artifactPath(id)}/review-requests/${encodeURIComponent(requestId)}/withdraw`,
+    { method: 'POST' }
+  );
+  if (!res.ok) {
+    let code = '';
+    try {
+      const body = (await res.clone().json()) as {
+        code?: string;
+        error?: { code?: string };
+      };
+      if (typeof body?.error?.code === 'string') code = body.error.code;
+      else if (typeof body?.code === 'string') code = body.code;
+    } catch {
+      // non-JSON error body
+    }
+    throw new WithdrawReviewRequestError(
+      await extractApiError(res, `HTTP ${res.status}`),
+      res.status,
+      code
+    );
+  }
+  return (await res.json()) as WithdrawReviewRequestResponse;
+}
+
 /** Requests review of an artifact from one or more user principals (ptone/scion#9306). */
 export async function createReviewRequests(
   id: string,
@@ -1915,6 +2050,50 @@ export interface MessageArtifactRef {
 /** Canonical reference string of an artifact, pinned to seq when seq > 0. */
 export function formatArtifactRef(id: string, seq?: number): string {
   return seq && seq > 0 ? `scion://artifact/${id}@${seq}` : `scion://artifact/${id}`;
+}
+
+/** Canonical reference string of a chat attachment (ptone/scion#4599). */
+export function formatAttachmentRef(id: string): string {
+  return `scion://attachment/${id}`;
+}
+
+/** Request body for POST /api/v1/artifacts with fromAttachment (ptone/scion#4599). */
+export interface PublishFromAttachmentRequest {
+  /** Attachment ID or canonical scion://attachment/<id> reference. */
+  fromAttachment: string;
+  /** Target home project ID. */
+  scopeRef: string;
+  /** Optional artifact title; defaults to the attachment file name on the hub. */
+  title?: string;
+  /** Optional stable key; appends a new version when an artifact with that key exists. */
+  key?: string;
+  /** Optional version note. */
+  note?: string;
+}
+
+/**
+ * Publishes an existing chat attachment as an artifact (or appends a new
+ * version to an existing keyed artifact) by reference, copying no blob bytes.
+ */
+export async function publishFromAttachment(
+  req: PublishFromAttachmentRequest
+): Promise<ArtifactResponse> {
+  const body: Record<string, string> = {
+    fromAttachment: req.fromAttachment,
+    scopeRef: req.scopeRef,
+  };
+  if (req.title?.trim()) body.title = req.title.trim();
+  if (req.key?.trim()) body.key = req.key.trim();
+  if (req.note?.trim()) body.note = req.note.trim();
+
+  const res = await apiFetch('/api/v1/artifacts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const refused = await reviewOpenError(res);
+  if (refused) throw refused;
+  return okJSON<ArtifactResponse>(res);
 }
 
 /**

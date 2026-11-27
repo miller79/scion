@@ -54,6 +54,7 @@ import (
 	"github.com/GoogleCloudPlatform/scion/pkg/sciontool/suppgroups"
 	"github.com/GoogleCloudPlatform/scion/pkg/sciontool/telemetry"
 	"github.com/GoogleCloudPlatform/scion/pkg/stagedsecrets"
+	"github.com/GoogleCloudPlatform/scion/pkg/telemetrycontract"
 	"github.com/GoogleCloudPlatform/scion/pkg/transportauth"
 	"github.com/GoogleCloudPlatform/scion/pkg/util"
 	"github.com/GoogleCloudPlatform/scion/pkg/util/fsutil"
@@ -1517,6 +1518,7 @@ func RunInit(args []string, opts InitRunOptions) int {
 		}()
 
 		if hubClient != nil && hubClient.IsConfigured() {
+			var execLiveWork atomic.Pointer[func() *liveness.LiveWork]
 			// Start heartbeat loop in background
 			var heartbeatCtx context.Context
 			heartbeatCtx, heartbeatCancel = context.WithCancel(context.Background())
@@ -1529,13 +1531,20 @@ func RunInit(args []string, opts InitRunOptions) int {
 				OnSuccess: func() {
 					log.Debug("Heartbeat sent successfully")
 				},
-				// Live work (ptone/scion#7855): the Hub keeps an agent
-				// with a tool call in flight, or whose container is doing
-				// CPU work, from being marked stalled or auto-suspended.
+				// Live work (ptone/scion#7855, ptone/scion#9282): the Hub keeps
+				// an agent with active/uncollected Conduit exec work, an
+				// attached terminal, a tool call in flight, or CPU work from
+				// being auto-suspended.
 				LiveWork: liveWork.record(livenessProvider(liveness.NewSampler(liveness.Config{
 					AgentUID:         livenessAgentUID(targetUID),
 					HarnessRootDepth: livenessHarnessRootDepth(os.Getenv),
 					CheckAttached:    livenessAttachedChecker(os.Getenv, livenessAgentUID(targetUID), livenessAgentGID(targetGID)),
+					CheckExec: func() *liveness.LiveWork {
+						if fn := execLiveWork.Load(); fn != nil && *fn != nil {
+							return (*fn)()
+						}
+						return nil
+					},
 				}), statusHandler.CurrentActivitySince)),
 			})
 			log.Info("Started Hub heartbeat loop (interval: %s)", hub.DefaultHeartbeatInterval)
@@ -1548,9 +1557,13 @@ func RunInit(args []string, opts InitRunOptions) int {
 				log.Info("port forwarding disabled: skipping port-forward tunnel manager and auto-expose")
 			} else {
 				ptyUser := conduitPTYUser(targetUID, targetGID, rootless, opts.RequirePrivilegeDrop)
+				execOpts := conduitExecOptions(os.Getenv, ptyUser, harnessShellEnv(config))
+				if execOpts != nil {
+					execOpts.OnLiveWork = func(fn func() *liveness.LiveWork) { execLiveWork.Store(&fn) }
+				}
 				go newPortForwarding(hubClient, opts.DisableConduit, ptyUser, conduitSSH,
 					conduitDeliverOptions(os.Getenv, exec.LookPath, childArgs, ptyUser),
-					conduitExecOptions(os.Getenv, ptyUser, harnessShellEnv(config)),
+					execOpts,
 					os.Getenv).run(ctx)
 
 				// Auto-expose: detect and register listening ports
@@ -2064,27 +2077,27 @@ func loadHarnessEnvOverlay(ctx context.Context, harnessReq hooks.HarnessManifest
 // activated, the reason is logged so operators can tell why usage is absent.
 func activateOverlayUsageSource(ctx context.Context, pipeline *telemetry.Pipeline, overlay map[string]string, nativeTelemetryPolicy string) {
 	source, ok := overlay["SCION_USAGE_SOURCE"]
-	if !ok || source != telemetry.UsageSourceNative {
+	if !ok || (source != telemetry.UsageSourceNative && source != telemetrycontract.UsageSourceSQLiteNative) {
 		return
 	}
-	if nativeTelemetryPolicy == "disabled" {
+	if source == telemetry.UsageSourceNative && nativeTelemetryPolicy == "disabled" {
 		log.Info("Native usage derivation not activated: native telemetry policy is disabled")
 		return
 	}
 	if pipeline == nil {
-		log.Info("Native usage derivation not activated: telemetry is not running")
+		log.Info("Usage source %q not activated: telemetry is not running", source)
 		return
 	}
 	outcome, err := pipeline.ActivateUsageSource(ctx, source)
 	if err != nil {
-		log.Error("Failed to activate usage source from harness env overlay: %v", err)
+		log.Error("Failed to activate usage source %q from harness env overlay: %v", source, err)
 		return
 	}
 	if outcome == telemetry.UsageActivated {
-		log.Info("Activated native usage derivation from harness env overlay")
+		log.Info("Activated %s usage collection from harness env overlay", source)
 		return
 	}
-	log.Info("Native usage derivation not activated: %s", outcome)
+	log.Info("Usage source %q not activated: %s", source, outcome)
 }
 
 func registerLifecycleTelemetryHandler(manager *hooks.LifecycleManager, providers *telemetry.Providers, redactor *telemetry.Redactor) *handlers.TelemetryHandler {

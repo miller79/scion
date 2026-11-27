@@ -935,6 +935,7 @@ func TestPipeline_HubSinkEnablesOutboxWithoutGCPExporter(t *testing.T) {
 	}
 
 	// Verify hook helper also enables when EnvUsageHubIngest=1 without GCP exporter.
+	t.Setenv(EnvUsageHubIngest, "")
 	if AnalyticsEnabledForHooks(cfg) {
 		t.Error("AnalyticsEnabledForHooks should be false when SCION_USAGE_HUB_INGEST is unset and no GCP exporter")
 	}
@@ -2389,7 +2390,7 @@ func TestDualAnalyticsDrainer_PeriodicReprobeActivatesHubSink(t *testing.T) {
 			Post:  httptestPostFunc(srv.URL, "agent-1", "tok-1"),
 			RunID: "run-reprobe",
 		}, nil
-	}, 60*time.Second, nil, func(cfg HubUsageSinkConfig, hubOutbox *AnalyticsOutbox, sink *HubUsageSink) {
+	}, 60*time.Second, nil, nil, func(cfg HubUsageSinkConfig, hubOutbox *AnalyticsOutbox, sink *HubUsageSink) {
 		native.setHubOutbox(hubOutbox, cfg.RunID, sink.NoteActivity)
 	})
 

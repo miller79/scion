@@ -13,6 +13,17 @@ Scion loads settings from the following locations, merging them in order (later 
 2.  **Project Settings**: `.scion/settings.yaml` (Project-specific overrides)
 3.  **Environment Variables**: `SCION_*` overrides.
 
+### Keys read from project settings
+
+A project's settings (`.scion/settings.*`, or the project's external settings directory) are read through a deny-by-default allow-list of top-level keys. Only these top-level keys are read from them:
+
+- Project identity and format: `schema_version`, `project_type`, `project_id`, and `hub` (the project's Hub link; `hub.token`, `hub.apiKey` and `hub.lastSyncedAt` are never read from files).
+- Agent defaults: `active_profile`, `default_template`, `default_harness_config`, `default_model`, `default_thinking_level`, `default_max_turns`, `default_max_model_calls`, `default_max_duration` and `default_resources`.
+- Runtimes, profiles and harness configs: `runtimes`, `runtime`, `profiles` and `harness_configs`.
+- Images, telemetry, CLI and workspace: `image_registry`, `image_tag`, `telemetry`, `cli`, `workspace_path`, `shared_dirs` and `local_experiments`.
+
+Every other top-level key in a project's settings is ignored, including `server`, `hub_connections`, `use_host_credentials`, `auto_inject_gcloud_adc`, `managed_agents`, `agent_policy`, `quotas`, `agent_secrets`, `broker_policy`, `project_defaults`, `auto_expose_ports`, the Hub-level defaults (`default_runtime_broker`, `default_timezone`, `default_gcp_identity_mode`, `default_gcp_identity_service_account_id`, `default_max_agent_role`, `default_agent_role`) and any key Scion does not recognize. Legacy aliases that resolve under an ignored key, such as `hub.brokerId`, `hub.brokerToken` and `hub.brokerNickname` (now `server.broker.*`), are ignored too. The value from the global settings and the defaults applies instead, and Scion logs one warning, `project settings set keys that are not read from project settings (project settings are moving to the Hub); ignored`, naming the ignored key paths and files (never their values). [`scion config set`](/scion/reference/cli/#scion-config) refuses to write these keys to a project's settings; use `--global` to write a known key to the global settings file.
+
 ## Versioned Format
 
 Settings files use a versioned format identified by the `schema_version` field. The current version is `1`.
@@ -497,6 +508,34 @@ Controls event filtering, attribute redaction, and sampling.
 | `sampling.rates` | map | `{}` | Per-event-type sampling rate overrides. |
 
 Default redacted attributes: `prompt`, `user.email`, `tool_output`, `tool_input`.
+
+### Usage Ledger Retention (`telemetry.retention`)
+
+Hub-only bounded retention settings for the Track 1 usage ledger (`tokenomics.usage_ledger`). These keys are consumed only by the Hub's single-leader retention sweeper and usage read APIs; they are not forwarded to brokers or agent containers.
+
+Every `*_days` field accepts an explicit `0` to opt into unlimited retention (no automatic deletion for that table). Non-zero values below each table's minimum are rejected on validation.
+
+| Key | Type | Default | Minimum (`0` = unlimited) | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `usage_events_days` | int | `45` | `35` | Retention window in days for `usage_events`. |
+| `hourly_rollups_days` | int | `14` | `1` | Retention window in days for `usage_rollups_hourly`. Also bounds the hourly granularity horizon on scoped usage read APIs. |
+| `daily_rollups_days` | int | `365` | `90` | Retention window in days for `usage_rollups_daily`. Also derives `run_attribution` retention (`max(365, daily_rollups_days)`, or unlimited when `0`). |
+| `scope_counters_days` | int | `90` | `65` | Retention window in days for `usage_scope_counters_daily` (always preserves the current and previous UTC calendar months). |
+| `meter_health_days` | int | `30` | `1` | Retention window in days for closed or abandoned `meter_health` rows (never deletes the current run of a live agent). |
+| `sweep_interval` | string | `"24h"` | `"1m"` | Minimum Go duration between completed retention passes across replicas. |
+| `batch_size` | int | `5000` | `1` (max `50000`) | Maximum rows deleted per transaction batch. |
+
+```yaml
+telemetry:
+  retention:
+    usage_events_days: 45
+    hourly_rollups_days: 14
+    daily_rollups_days: 365
+    scope_counters_days: 90
+    meter_health_days: 30
+    sweep_interval: "24h"
+    batch_size: 5000
+```
 
 ### Resource Attributes (`telemetry.resource`)
 

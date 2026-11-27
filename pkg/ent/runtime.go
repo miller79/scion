@@ -113,6 +113,7 @@ import (
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/testinframarker"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/threadgroup"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/threadgroupmember"
+	"github.com/GoogleCloudPlatform/scion/pkg/ent/trajectorysegment"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/trigger"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/triggerevent"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/triggerfire"
@@ -120,6 +121,7 @@ import (
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/usageevent"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/usagereservation"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/usagerollupdaily"
+	"github.com/GoogleCloudPlatform/scion/pkg/ent/usagerolluphourly"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/usagescopecounterdaily"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/user"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/useraccesstoken"
@@ -2811,20 +2813,24 @@ func init() {
 	meterhealthDescMaxSeqSeen := meterhealthFields[6].Descriptor()
 	// meterhealth.DefaultMaxSeqSeen holds the default value on creation for the max_seq_seen field.
 	meterhealth.DefaultMaxSeqSeen = meterhealthDescMaxSeqSeen.Default.(int64)
+	// meterhealthDescRejectedCount is the schema descriptor for rejected_count field.
+	meterhealthDescRejectedCount := meterhealthFields[8].Descriptor()
+	// meterhealth.DefaultRejectedCount holds the default value on creation for the rejected_count field.
+	meterhealth.DefaultRejectedCount = meterhealthDescRejectedCount.Default.(int64)
 	// meterhealthDescAnomalousCount is the schema descriptor for anomalous_count field.
-	meterhealthDescAnomalousCount := meterhealthFields[10].Descriptor()
+	meterhealthDescAnomalousCount := meterhealthFields[12].Descriptor()
 	// meterhealth.DefaultAnomalousCount holds the default value on creation for the anomalous_count field.
 	meterhealth.DefaultAnomalousCount = meterhealthDescAnomalousCount.Default.(int64)
 	// meterhealthDescSchemaDriftDetected is the schema descriptor for schema_drift_detected field.
-	meterhealthDescSchemaDriftDetected := meterhealthFields[11].Descriptor()
+	meterhealthDescSchemaDriftDetected := meterhealthFields[13].Descriptor()
 	// meterhealth.DefaultSchemaDriftDetected holds the default value on creation for the schema_drift_detected field.
 	meterhealth.DefaultSchemaDriftDetected = meterhealthDescSchemaDriftDetected.Default.(bool)
 	// meterhealthDescFinalState is the schema descriptor for final_state field.
-	meterhealthDescFinalState := meterhealthFields[12].Descriptor()
+	meterhealthDescFinalState := meterhealthFields[14].Descriptor()
 	// meterhealth.DefaultFinalState holds the default value on creation for the final_state field.
 	meterhealth.DefaultFinalState = meterhealthDescFinalState.Default.(string)
 	// meterhealthDescUpdatedAt is the schema descriptor for updated_at field.
-	meterhealthDescUpdatedAt := meterhealthFields[13].Descriptor()
+	meterhealthDescUpdatedAt := meterhealthFields[15].Descriptor()
 	// meterhealth.DefaultUpdatedAt holds the default value on creation for the updated_at field.
 	meterhealth.DefaultUpdatedAt = meterhealthDescUpdatedAt.Default.(func() time.Time)
 	// meterhealth.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
@@ -4085,6 +4091,100 @@ func init() {
 	threadgroupmemberDescID := threadgroupmemberFields[0].Descriptor()
 	// threadgroupmember.DefaultID holds the default value on creation for the id field.
 	threadgroupmember.DefaultID = threadgroupmemberDescID.Default.(func() uuid.UUID)
+	trajectorysegmentFields := schema.TrajectorySegment{}.Fields()
+	_ = trajectorysegmentFields
+	// trajectorysegmentDescHubID is the schema descriptor for hub_id field.
+	trajectorysegmentDescHubID := trajectorysegmentFields[1].Descriptor()
+	// trajectorysegment.HubIDValidator is a validator for the "hub_id" field. It is called by the builders before save.
+	trajectorysegment.HubIDValidator = trajectorysegmentDescHubID.Validators[0].(func(string) error)
+	// trajectorysegmentDescOriginHubID is the schema descriptor for origin_hub_id field.
+	trajectorysegmentDescOriginHubID := trajectorysegmentFields[2].Descriptor()
+	// trajectorysegment.DefaultOriginHubID holds the default value on creation for the origin_hub_id field.
+	trajectorysegment.DefaultOriginHubID = trajectorysegmentDescOriginHubID.Default.(string)
+	// trajectorysegmentDescProjectID is the schema descriptor for project_id field.
+	trajectorysegmentDescProjectID := trajectorysegmentFields[3].Descriptor()
+	// trajectorysegment.ProjectIDValidator is a validator for the "project_id" field. It is called by the builders before save.
+	trajectorysegment.ProjectIDValidator = trajectorysegmentDescProjectID.Validators[0].(func(string) error)
+	// trajectorysegmentDescAgentID is the schema descriptor for agent_id field.
+	trajectorysegmentDescAgentID := trajectorysegmentFields[4].Descriptor()
+	// trajectorysegment.AgentIDValidator is a validator for the "agent_id" field. It is called by the builders before save.
+	trajectorysegment.AgentIDValidator = trajectorysegmentDescAgentID.Validators[0].(func(string) error)
+	// trajectorysegmentDescRunID is the schema descriptor for run_id field.
+	trajectorysegmentDescRunID := trajectorysegmentFields[5].Descriptor()
+	// trajectorysegment.RunIDValidator is a validator for the "run_id" field. It is called by the builders before save.
+	trajectorysegment.RunIDValidator = trajectorysegmentDescRunID.Validators[0].(func(string) error)
+	// trajectorysegmentDescHarness is the schema descriptor for harness field.
+	trajectorysegmentDescHarness := trajectorysegmentFields[6].Descriptor()
+	// trajectorysegment.HarnessValidator is a validator for the "harness" field. It is called by the builders before save.
+	trajectorysegment.HarnessValidator = trajectorysegmentDescHarness.Validators[0].(func(string) error)
+	// trajectorysegmentDescNativeRelativePath is the schema descriptor for native_relative_path field.
+	trajectorysegmentDescNativeRelativePath := trajectorysegmentFields[7].Descriptor()
+	// trajectorysegment.NativeRelativePathValidator is a validator for the "native_relative_path" field. It is called by the builders before save.
+	trajectorysegment.NativeRelativePathValidator = trajectorysegmentDescNativeRelativePath.Validators[0].(func(string) error)
+	// trajectorysegmentDescArtifactKind is the schema descriptor for artifact_kind field.
+	trajectorysegmentDescArtifactKind := trajectorysegmentFields[8].Descriptor()
+	// trajectorysegment.ArtifactKindValidator is a validator for the "artifact_kind" field. It is called by the builders before save.
+	trajectorysegment.ArtifactKindValidator = trajectorysegmentDescArtifactKind.Validators[0].(func(string) error)
+	// trajectorysegmentDescGeneration is the schema descriptor for generation field.
+	trajectorysegmentDescGeneration := trajectorysegmentFields[9].Descriptor()
+	// trajectorysegment.GenerationValidator is a validator for the "generation" field. It is called by the builders before save.
+	trajectorysegment.GenerationValidator = trajectorysegmentDescGeneration.Validators[0].(func(int) error)
+	// trajectorysegmentDescByteStart is the schema descriptor for byte_start field.
+	trajectorysegmentDescByteStart := trajectorysegmentFields[10].Descriptor()
+	// trajectorysegment.ByteStartValidator is a validator for the "byte_start" field. It is called by the builders before save.
+	trajectorysegment.ByteStartValidator = trajectorysegmentDescByteStart.Validators[0].(func(int64) error)
+	// trajectorysegmentDescByteEnd is the schema descriptor for byte_end field.
+	trajectorysegmentDescByteEnd := trajectorysegmentFields[11].Descriptor()
+	// trajectorysegment.ByteEndValidator is a validator for the "byte_end" field. It is called by the builders before save.
+	trajectorysegment.ByteEndValidator = trajectorysegmentDescByteEnd.Validators[0].(func(int64) error)
+	// trajectorysegmentDescRawSha256 is the schema descriptor for raw_sha256 field.
+	trajectorysegmentDescRawSha256 := trajectorysegmentFields[12].Descriptor()
+	// trajectorysegment.RawSha256Validator is a validator for the "raw_sha256" field. It is called by the builders before save.
+	trajectorysegment.RawSha256Validator = trajectorysegmentDescRawSha256.Validators[0].(func(string) error)
+	// trajectorysegmentDescCompressedSize is the schema descriptor for compressed_size field.
+	trajectorysegmentDescCompressedSize := trajectorysegmentFields[13].Descriptor()
+	// trajectorysegment.CompressedSizeValidator is a validator for the "compressed_size" field. It is called by the builders before save.
+	trajectorysegment.CompressedSizeValidator = trajectorysegmentDescCompressedSize.Validators[0].(func(int64) error)
+	// trajectorysegmentDescCompressedSha256 is the schema descriptor for compressed_sha256 field.
+	trajectorysegmentDescCompressedSha256 := trajectorysegmentFields[14].Descriptor()
+	// trajectorysegment.CompressedSha256Validator is a validator for the "compressed_sha256" field. It is called by the builders before save.
+	trajectorysegment.CompressedSha256Validator = trajectorysegmentDescCompressedSha256.Validators[0].(func(string) error)
+	// trajectorysegmentDescIncompleteTail is the schema descriptor for incomplete_tail field.
+	trajectorysegmentDescIncompleteTail := trajectorysegmentFields[15].Descriptor()
+	// trajectorysegment.DefaultIncompleteTail holds the default value on creation for the incomplete_tail field.
+	trajectorysegment.DefaultIncompleteTail = trajectorysegmentDescIncompleteTail.Default.(bool)
+	// trajectorysegmentDescSessionID is the schema descriptor for session_id field.
+	trajectorysegmentDescSessionID := trajectorysegmentFields[16].Descriptor()
+	// trajectorysegment.DefaultSessionID holds the default value on creation for the session_id field.
+	trajectorysegment.DefaultSessionID = trajectorysegmentDescSessionID.Default.(string)
+	// trajectorysegmentDescObjectPath is the schema descriptor for object_path field.
+	trajectorysegmentDescObjectPath := trajectorysegmentFields[17].Descriptor()
+	// trajectorysegment.ObjectPathValidator is a validator for the "object_path" field. It is called by the builders before save.
+	trajectorysegment.ObjectPathValidator = trajectorysegmentDescObjectPath.Validators[0].(func(string) error)
+	// trajectorysegmentDescManifestPath is the schema descriptor for manifest_path field.
+	trajectorysegmentDescManifestPath := trajectorysegmentFields[18].Descriptor()
+	// trajectorysegment.DefaultManifestPath holds the default value on creation for the manifest_path field.
+	trajectorysegment.DefaultManifestPath = trajectorysegmentDescManifestPath.Default.(string)
+	// trajectorysegmentDescStatus is the schema descriptor for status field.
+	trajectorysegmentDescStatus := trajectorysegmentFields[19].Descriptor()
+	// trajectorysegment.DefaultStatus holds the default value on creation for the status field.
+	trajectorysegment.DefaultStatus = trajectorysegmentDescStatus.Default.(string)
+	// trajectorysegment.StatusValidator is a validator for the "status" field. It is called by the builders before save.
+	trajectorysegment.StatusValidator = trajectorysegmentDescStatus.Validators[0].(func(string) error)
+	// trajectorysegmentDescNormalizeStatus is the schema descriptor for normalize_status field.
+	trajectorysegmentDescNormalizeStatus := trajectorysegmentFields[20].Descriptor()
+	// trajectorysegment.DefaultNormalizeStatus holds the default value on creation for the normalize_status field.
+	trajectorysegment.DefaultNormalizeStatus = trajectorysegmentDescNormalizeStatus.Default.(string)
+	// trajectorysegment.NormalizeStatusValidator is a validator for the "normalize_status" field. It is called by the builders before save.
+	trajectorysegment.NormalizeStatusValidator = trajectorysegmentDescNormalizeStatus.Validators[0].(func(string) error)
+	// trajectorysegmentDescCreatedAt is the schema descriptor for created_at field.
+	trajectorysegmentDescCreatedAt := trajectorysegmentFields[21].Descriptor()
+	// trajectorysegment.DefaultCreatedAt holds the default value on creation for the created_at field.
+	trajectorysegment.DefaultCreatedAt = trajectorysegmentDescCreatedAt.Default.(func() time.Time)
+	// trajectorysegmentDescID is the schema descriptor for id field.
+	trajectorysegmentDescID := trajectorysegmentFields[0].Descriptor()
+	// trajectorysegment.IDValidator is a validator for the "id" field. It is called by the builders before save.
+	trajectorysegment.IDValidator = trajectorysegmentDescID.Validators[0].(func(string) error)
 	triggerMixin := schema.Trigger{}.Mixin()
 	triggerMixinFields1 := triggerMixin[1].Fields()
 	_ = triggerMixinFields1
@@ -4504,10 +4604,140 @@ func init() {
 	usagerollupdailyDescNullTokenEvents := usagerollupdailyFields[18].Descriptor()
 	// usagerollupdaily.DefaultNullTokenEvents holds the default value on creation for the null_token_events field.
 	usagerollupdaily.DefaultNullTokenEvents = usagerollupdailyDescNullTokenEvents.Default.(int64)
+	// usagerollupdailyDescInputKnownEvents is the schema descriptor for input_known_events field.
+	usagerollupdailyDescInputKnownEvents := usagerollupdailyFields[19].Descriptor()
+	// usagerollupdaily.DefaultInputKnownEvents holds the default value on creation for the input_known_events field.
+	usagerollupdaily.DefaultInputKnownEvents = usagerollupdailyDescInputKnownEvents.Default.(int64)
+	// usagerollupdailyDescOutputKnownEvents is the schema descriptor for output_known_events field.
+	usagerollupdailyDescOutputKnownEvents := usagerollupdailyFields[20].Descriptor()
+	// usagerollupdaily.DefaultOutputKnownEvents holds the default value on creation for the output_known_events field.
+	usagerollupdaily.DefaultOutputKnownEvents = usagerollupdailyDescOutputKnownEvents.Default.(int64)
+	// usagerollupdailyDescCacheReadKnownEvents is the schema descriptor for cache_read_known_events field.
+	usagerollupdailyDescCacheReadKnownEvents := usagerollupdailyFields[21].Descriptor()
+	// usagerollupdaily.DefaultCacheReadKnownEvents holds the default value on creation for the cache_read_known_events field.
+	usagerollupdaily.DefaultCacheReadKnownEvents = usagerollupdailyDescCacheReadKnownEvents.Default.(int64)
+	// usagerollupdailyDescCacheWriteKnownEvents is the schema descriptor for cache_write_known_events field.
+	usagerollupdailyDescCacheWriteKnownEvents := usagerollupdailyFields[22].Descriptor()
+	// usagerollupdaily.DefaultCacheWriteKnownEvents holds the default value on creation for the cache_write_known_events field.
+	usagerollupdaily.DefaultCacheWriteKnownEvents = usagerollupdailyDescCacheWriteKnownEvents.Default.(int64)
+	// usagerollupdailyDescCacheWrite1hKnownEvents is the schema descriptor for cache_write_1h_known_events field.
+	usagerollupdailyDescCacheWrite1hKnownEvents := usagerollupdailyFields[23].Descriptor()
+	// usagerollupdaily.DefaultCacheWrite1hKnownEvents holds the default value on creation for the cache_write_1h_known_events field.
+	usagerollupdaily.DefaultCacheWrite1hKnownEvents = usagerollupdailyDescCacheWrite1hKnownEvents.Default.(int64)
+	// usagerollupdailyDescReasoningKnownEvents is the schema descriptor for reasoning_known_events field.
+	usagerollupdailyDescReasoningKnownEvents := usagerollupdailyFields[24].Descriptor()
+	// usagerollupdaily.DefaultReasoningKnownEvents holds the default value on creation for the reasoning_known_events field.
+	usagerollupdaily.DefaultReasoningKnownEvents = usagerollupdailyDescReasoningKnownEvents.Default.(int64)
+	// usagerollupdailyDescPresenceTrackedEvents is the schema descriptor for presence_tracked_events field.
+	usagerollupdailyDescPresenceTrackedEvents := usagerollupdailyFields[25].Descriptor()
+	// usagerollupdaily.DefaultPresenceTrackedEvents holds the default value on creation for the presence_tracked_events field.
+	usagerollupdaily.DefaultPresenceTrackedEvents = usagerollupdailyDescPresenceTrackedEvents.Default.(int64)
 	// usagerollupdailyDescID is the schema descriptor for id field.
 	usagerollupdailyDescID := usagerollupdailyFields[0].Descriptor()
 	// usagerollupdaily.DefaultID holds the default value on creation for the id field.
 	usagerollupdaily.DefaultID = usagerollupdailyDescID.Default.(func() uuid.UUID)
+	usagerolluphourlyFields := schema.UsageRollupHourly{}.Fields()
+	_ = usagerolluphourlyFields
+	// usagerolluphourlyDescProjectID is the schema descriptor for project_id field.
+	usagerolluphourlyDescProjectID := usagerolluphourlyFields[2].Descriptor()
+	// usagerolluphourly.ProjectIDValidator is a validator for the "project_id" field. It is called by the builders before save.
+	usagerolluphourly.ProjectIDValidator = usagerolluphourlyDescProjectID.Validators[0].(func(string) error)
+	// usagerolluphourlyDescBillingUserID is the schema descriptor for billing_user_id field.
+	usagerolluphourlyDescBillingUserID := usagerolluphourlyFields[3].Descriptor()
+	// usagerolluphourly.DefaultBillingUserID holds the default value on creation for the billing_user_id field.
+	usagerolluphourly.DefaultBillingUserID = usagerolluphourlyDescBillingUserID.Default.(string)
+	// usagerolluphourlyDescAgentID is the schema descriptor for agent_id field.
+	usagerolluphourlyDescAgentID := usagerolluphourlyFields[4].Descriptor()
+	// usagerolluphourly.AgentIDValidator is a validator for the "agent_id" field. It is called by the builders before save.
+	usagerolluphourly.AgentIDValidator = usagerolluphourlyDescAgentID.Validators[0].(func(string) error)
+	// usagerolluphourlyDescHarness is the schema descriptor for harness field.
+	usagerolluphourlyDescHarness := usagerolluphourlyFields[5].Descriptor()
+	// usagerolluphourly.DefaultHarness holds the default value on creation for the harness field.
+	usagerolluphourly.DefaultHarness = usagerolluphourlyDescHarness.Default.(string)
+	// usagerolluphourlyDescModel is the schema descriptor for model field.
+	usagerolluphourlyDescModel := usagerolluphourlyFields[6].Descriptor()
+	// usagerolluphourly.DefaultModel holds the default value on creation for the model field.
+	usagerolluphourly.DefaultModel = usagerolluphourlyDescModel.Default.(string)
+	// usagerolluphourlyDescUsageSource is the schema descriptor for usage_source field.
+	usagerolluphourlyDescUsageSource := usagerolluphourlyFields[7].Descriptor()
+	// usagerolluphourly.UsageSourceValidator is a validator for the "usage_source" field. It is called by the builders before save.
+	usagerolluphourly.UsageSourceValidator = usagerolluphourlyDescUsageSource.Validators[0].(func(string) error)
+	// usagerolluphourlyDescCalls is the schema descriptor for calls field.
+	usagerolluphourlyDescCalls := usagerolluphourlyFields[8].Descriptor()
+	// usagerolluphourly.DefaultCalls holds the default value on creation for the calls field.
+	usagerolluphourly.DefaultCalls = usagerolluphourlyDescCalls.Default.(int64)
+	// usagerolluphourlyDescErrorCalls is the schema descriptor for error_calls field.
+	usagerolluphourlyDescErrorCalls := usagerolluphourlyFields[9].Descriptor()
+	// usagerolluphourly.DefaultErrorCalls holds the default value on creation for the error_calls field.
+	usagerolluphourly.DefaultErrorCalls = usagerolluphourlyDescErrorCalls.Default.(int64)
+	// usagerolluphourlyDescInput is the schema descriptor for input field.
+	usagerolluphourlyDescInput := usagerolluphourlyFields[10].Descriptor()
+	// usagerolluphourly.DefaultInput holds the default value on creation for the input field.
+	usagerolluphourly.DefaultInput = usagerolluphourlyDescInput.Default.(int64)
+	// usagerolluphourlyDescOutput is the schema descriptor for output field.
+	usagerolluphourlyDescOutput := usagerolluphourlyFields[11].Descriptor()
+	// usagerolluphourly.DefaultOutput holds the default value on creation for the output field.
+	usagerolluphourly.DefaultOutput = usagerolluphourlyDescOutput.Default.(int64)
+	// usagerolluphourlyDescCacheRead is the schema descriptor for cache_read field.
+	usagerolluphourlyDescCacheRead := usagerolluphourlyFields[12].Descriptor()
+	// usagerolluphourly.DefaultCacheRead holds the default value on creation for the cache_read field.
+	usagerolluphourly.DefaultCacheRead = usagerolluphourlyDescCacheRead.Default.(int64)
+	// usagerolluphourlyDescCacheWrite is the schema descriptor for cache_write field.
+	usagerolluphourlyDescCacheWrite := usagerolluphourlyFields[13].Descriptor()
+	// usagerolluphourly.DefaultCacheWrite holds the default value on creation for the cache_write field.
+	usagerolluphourly.DefaultCacheWrite = usagerolluphourlyDescCacheWrite.Default.(int64)
+	// usagerolluphourlyDescCacheWrite1h is the schema descriptor for cache_write_1h field.
+	usagerolluphourlyDescCacheWrite1h := usagerolluphourlyFields[14].Descriptor()
+	// usagerolluphourly.DefaultCacheWrite1h holds the default value on creation for the cache_write_1h field.
+	usagerolluphourly.DefaultCacheWrite1h = usagerolluphourlyDescCacheWrite1h.Default.(int64)
+	// usagerolluphourlyDescReasoning is the schema descriptor for reasoning field.
+	usagerolluphourlyDescReasoning := usagerolluphourlyFields[15].Descriptor()
+	// usagerolluphourly.DefaultReasoning holds the default value on creation for the reasoning field.
+	usagerolluphourly.DefaultReasoning = usagerolluphourlyDescReasoning.Default.(int64)
+	// usagerolluphourlyDescReportedCostMicros is the schema descriptor for reported_cost_micros field.
+	usagerolluphourlyDescReportedCostMicros := usagerolluphourlyFields[16].Descriptor()
+	// usagerolluphourly.DefaultReportedCostMicros holds the default value on creation for the reported_cost_micros field.
+	usagerolluphourly.DefaultReportedCostMicros = usagerolluphourlyDescReportedCostMicros.Default.(int64)
+	// usagerolluphourlyDescEvents is the schema descriptor for events field.
+	usagerolluphourlyDescEvents := usagerolluphourlyFields[17].Descriptor()
+	// usagerolluphourly.DefaultEvents holds the default value on creation for the events field.
+	usagerolluphourly.DefaultEvents = usagerolluphourlyDescEvents.Default.(int64)
+	// usagerolluphourlyDescNullTokenEvents is the schema descriptor for null_token_events field.
+	usagerolluphourlyDescNullTokenEvents := usagerolluphourlyFields[18].Descriptor()
+	// usagerolluphourly.DefaultNullTokenEvents holds the default value on creation for the null_token_events field.
+	usagerolluphourly.DefaultNullTokenEvents = usagerolluphourlyDescNullTokenEvents.Default.(int64)
+	// usagerolluphourlyDescInputKnownEvents is the schema descriptor for input_known_events field.
+	usagerolluphourlyDescInputKnownEvents := usagerolluphourlyFields[19].Descriptor()
+	// usagerolluphourly.DefaultInputKnownEvents holds the default value on creation for the input_known_events field.
+	usagerolluphourly.DefaultInputKnownEvents = usagerolluphourlyDescInputKnownEvents.Default.(int64)
+	// usagerolluphourlyDescOutputKnownEvents is the schema descriptor for output_known_events field.
+	usagerolluphourlyDescOutputKnownEvents := usagerolluphourlyFields[20].Descriptor()
+	// usagerolluphourly.DefaultOutputKnownEvents holds the default value on creation for the output_known_events field.
+	usagerolluphourly.DefaultOutputKnownEvents = usagerolluphourlyDescOutputKnownEvents.Default.(int64)
+	// usagerolluphourlyDescCacheReadKnownEvents is the schema descriptor for cache_read_known_events field.
+	usagerolluphourlyDescCacheReadKnownEvents := usagerolluphourlyFields[21].Descriptor()
+	// usagerolluphourly.DefaultCacheReadKnownEvents holds the default value on creation for the cache_read_known_events field.
+	usagerolluphourly.DefaultCacheReadKnownEvents = usagerolluphourlyDescCacheReadKnownEvents.Default.(int64)
+	// usagerolluphourlyDescCacheWriteKnownEvents is the schema descriptor for cache_write_known_events field.
+	usagerolluphourlyDescCacheWriteKnownEvents := usagerolluphourlyFields[22].Descriptor()
+	// usagerolluphourly.DefaultCacheWriteKnownEvents holds the default value on creation for the cache_write_known_events field.
+	usagerolluphourly.DefaultCacheWriteKnownEvents = usagerolluphourlyDescCacheWriteKnownEvents.Default.(int64)
+	// usagerolluphourlyDescCacheWrite1hKnownEvents is the schema descriptor for cache_write_1h_known_events field.
+	usagerolluphourlyDescCacheWrite1hKnownEvents := usagerolluphourlyFields[23].Descriptor()
+	// usagerolluphourly.DefaultCacheWrite1hKnownEvents holds the default value on creation for the cache_write_1h_known_events field.
+	usagerolluphourly.DefaultCacheWrite1hKnownEvents = usagerolluphourlyDescCacheWrite1hKnownEvents.Default.(int64)
+	// usagerolluphourlyDescReasoningKnownEvents is the schema descriptor for reasoning_known_events field.
+	usagerolluphourlyDescReasoningKnownEvents := usagerolluphourlyFields[24].Descriptor()
+	// usagerolluphourly.DefaultReasoningKnownEvents holds the default value on creation for the reasoning_known_events field.
+	usagerolluphourly.DefaultReasoningKnownEvents = usagerolluphourlyDescReasoningKnownEvents.Default.(int64)
+	// usagerolluphourlyDescPresenceTrackedEvents is the schema descriptor for presence_tracked_events field.
+	usagerolluphourlyDescPresenceTrackedEvents := usagerolluphourlyFields[25].Descriptor()
+	// usagerolluphourly.DefaultPresenceTrackedEvents holds the default value on creation for the presence_tracked_events field.
+	usagerolluphourly.DefaultPresenceTrackedEvents = usagerolluphourlyDescPresenceTrackedEvents.Default.(int64)
+	// usagerolluphourlyDescID is the schema descriptor for id field.
+	usagerolluphourlyDescID := usagerolluphourlyFields[0].Descriptor()
+	// usagerolluphourly.DefaultID holds the default value on creation for the id field.
+	usagerolluphourly.DefaultID = usagerolluphourlyDescID.Default.(func() uuid.UUID)
 	usagescopecounterdailyFields := schema.UsageScopeCounterDaily{}.Fields()
 	_ = usagescopecounterdailyFields
 	// usagescopecounterdailyDescScopeKind is the schema descriptor for scope_kind field.

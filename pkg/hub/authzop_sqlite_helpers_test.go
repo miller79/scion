@@ -328,6 +328,18 @@ func seedInboxRecords(t *testing.T, ctx context.Context, s store.Store, userID, 
 	return r
 }
 
+// seedInboxMessageAttachment uploads and binds an artifact-backed attachment
+// to messageID for userID in projectID so live-inventory and bearer-matrix
+// probes reach a real downloadable attachment.
+func seedInboxMessageAttachment(t *testing.T, ctx context.Context, srv *Server, userID, projectID, messageID string) string {
+	t.Helper()
+	uploaderCtx := contextWithIdentity(ctx, NewAuthenticatedUser(userID, userID+"@test.com", "LI", "admin", string(ClientTypeWeb)))
+	info, err := srv.attachmentService().CreateAttachment(uploaderCtx, "li.txt", "text/plain", strings.NewReader("live inventory attachment"))
+	require.NoError(t, err)
+	require.NoError(t, srv.attachmentService().BindAttachment(ctx, info.ID, artifacts.PrincipalKindUser, userID, messageID, projectID))
+	return info.ID
+}
+
 // liveInventoryFederationAudience is the peer hub audience the live
 // inventory server allows for POST /api/v1/auth/federation-token.
 const liveInventoryFederationAudience = "https://peer-hub.example.com"
@@ -821,22 +833,23 @@ func seedLiveInventoryFixtures(t *testing.T, ctx context.Context, srv *Server, s
 	seedLiveInventoryCatalogFiles(t, ctx, s, artBlobs, &f)
 
 	// hub.conduit, hub.agent_delegation, federation.project_visitors,
-	// web.chat_starred_messages, hub.agent_edit_held,
-	// hub.user_delete_force_cascade, hub.artifact_archive,
-	// hub.artifacts_open_review_check, hub.project_self_leave and
-	// hub.runtime_orphan_reconcile on too, so
+	// hub.agent_edit_held, hub.user_delete_force_cascade,
+	// hub.artifact_archive, hub.artifacts_open_review_check,
+	// hub.project_self_leave and hub.runtime_orphan_reconcile on too, so
 	// their experiment-gated
 	// routes are live: the registry above with them also defaulting on (no
 	// operational settings, which the other entries rely on, are replaced).
 	var active []experiments.Experiment
 	for _, e := range srv.experimentRegistry().All() {
 		if e.Name == conduitExperiment || e.Name == experiments.AgentDelegation || e.Name == experiments.FederationProjectVisitors ||
-			e.Name == experiments.ChatStarredMessages || e.Name == experiments.AgentEditHeld ||
+			e.Name == experiments.AgentEditHeld ||
 			e.Name == experiments.UserDeleteForceCascade || e.Name == experiments.ArtifactArchive ||
+			e.Name == experiments.AttachmentArtifacts ||
 			e.Name == experiments.ArtifactsOpenReviewCheck || e.Name == experiments.ArtifactsReviewDrafts ||
 			e.Name == experiments.ArtifactsTransfer || e.Name == experiments.ArtifactsReviewRequests ||
 			e.Name == experiments.ProjectSelfLeave || e.Name == experiments.RuntimeOrphanReconcile ||
 			e.Name == experiments.Triggers || e.Name == experiments.TokenomicsUsageLedger ||
+			e.Name == experiments.TokenomicsTrajectoryCapture ||
 			e.Name == experiments.AccessConstraints {
 			e.Default = true
 		}
@@ -849,7 +862,6 @@ func seedLiveInventoryFixtures(t *testing.T, ctx context.Context, srv *Server, s
 	require.True(t, srv.experimentEnabled(experiments.Artifacts))
 	require.True(t, srv.experimentEnabled(experiments.AgentDelegation))
 	require.True(t, srv.experimentEnabled(experiments.FederationProjectVisitors))
-	require.True(t, srv.experimentEnabled(experiments.ChatStarredMessages))
 	require.True(t, srv.experimentEnabled(experiments.AgentEditHeld))
 	require.True(t, srv.experimentEnabled(experiments.UserDeleteForceCascade))
 	require.True(t, srv.experimentEnabled(experiments.ArtifactArchive))
@@ -861,6 +873,7 @@ func seedLiveInventoryFixtures(t *testing.T, ctx context.Context, srv *Server, s
 	require.True(t, srv.experimentEnabled(experiments.RuntimeOrphanReconcile))
 	require.True(t, srv.experimentEnabled(experiments.Triggers))
 	require.True(t, srv.experimentEnabled(experiments.TokenomicsUsageLedger))
+	require.True(t, srv.experimentEnabled(experiments.TokenomicsTrajectoryCapture))
 	require.True(t, srv.experimentEnabled(experiments.AccessConstraints))
 	// POST /api/v1/auth/federation-token also answers 404 while the OIDC
 	// provider is off: install a test key manager and allow the audience
@@ -870,6 +883,7 @@ func seedLiveInventoryFixtures(t *testing.T, ctx context.Context, srv *Server, s
 
 	// Inbox, conversation and notification records of the dev user.
 	f.inbox = seedInboxRecords(t, ctx, s, DevUserID, f.project, f.agent)
+	f.inbox.groupMessageAttachment = seedInboxMessageAttachment(t, ctx, srv, DevUserID, f.project, f.inbox.groupMessage)
 	f.chat = seedChatRecords(t, ctx, s, srv.webChatStore, DevUserID, f.project, f.chatTopic, f.agent, f.user)
 	f.userSkillInjection = seedUserSkillInjection(t, ctx, s, DevUserID)
 	f.userTemplate, f.userTemplateDel = seedUserTemplates(t, ctx, s, DevUserID)
@@ -1079,6 +1093,9 @@ func opPatternOverrides(f idFixtures) map[overrideKey]map[string]string {
 		{"inbox.conversation.direct.read", "/api/v1/conversations/{id}/messages"}:             {"id": f.inbox.directConversation},
 		{"inbox.conversation.direct.read", "/api/v1/conversations/{id}/messages/{messageId}"}: {"id": f.inbox.directConversation, "messageId": f.inbox.directMessage},
 		{"inbox.conversation.direct.read", "/api/v1/conversations/{id}/watch"}:                {"id": f.inbox.directConversation},
+		{"inbox.conversation.message.attachment.download", "/api/v1/conversations/{id}/messages/{messageId}/attachments/{attachmentId}"}: {
+			"id": f.inbox.groupConversation, "messageId": f.inbox.groupMessage, "attachmentId": f.inbox.groupMessageAttachment,
+		},
 
 		// Thread group delete uses its disposable twin.
 		{"inbox.threadgroup.delete", "/api/v1/thread-groups/{id}"}: {"id": f.inbox.threadGroupDel},
@@ -1103,24 +1120,25 @@ func opPatternOverrides(f idFixtures) map[overrideKey]map[string]string {
 func patternOverrides(f idFixtures) map[string]map[string]string {
 	return map[string]map[string]string{
 		// --- artifact family ---
-		"/api/v1/artifacts/{id}":                             {"id": f.artifact},
-		"/api/v1/artifacts/{id}/files/{path}":                {"id": f.artifact, "path": "live.md"},
-		"/api/v1/artifacts/{id}/versions/{seq}/files/{path}": {"id": f.artifact, "seq": "1", "path": "live.md"},
-		"/api/v1/artifacts/{id}/grants":                      {"id": f.artifact},
-		"/api/v1/artifacts/{id}/grants/{grantId}":            {"id": f.artifact},
-		"/api/v1/artifacts/{id}/links":                       {"id": f.artifact},
-		"/api/v1/artifacts/{id}/links/{linkId}":              {"id": f.artifact},
-		"/api/v1/artifacts/{id}/versions":                    {"id": f.artifact},
-		"/api/v1/artifacts/{id}/versions/{seq}":              {"id": f.artifact, "seq": "1"},
-		"/api/v1/artifacts/{id}/versions/{seq}/finalize":     {"id": f.artifact, "seq": "1"},
-		"/api/v1/artifacts/{id}/versions/{seq}/view":         {"id": f.artifact, "seq": "1"},
-		"/api/v1/artifacts/{id}/versions/{seq}/archive":      {"id": f.artifact, "seq": "1"},
-		"/api/v1/artifacts/{id}/review-sessions/{sid}":       {"id": f.artifact, "sid": "AAAAAAAAAAAAAAAAAAAAAA"},
-		"/api/v1/artifacts/{id}/review-draft":                {"id": f.artifact},
-		"/api/v1/artifacts/{id}/transfer":                    {"id": f.artifact},
-		"/api/v1/artifacts/{id}/transfer-targets":            {"id": f.artifact},
-		"/api/v1/artifacts/{id}/review-requests":             {"id": f.artifact},
-		"/api/v1/artifacts/{id}/review-request/dismiss":      {"id": f.artifact},
+		"/api/v1/artifacts/{id}":                                {"id": f.artifact},
+		"/api/v1/artifacts/{id}/files/{path}":                   {"id": f.artifact, "path": "live.md"},
+		"/api/v1/artifacts/{id}/versions/{seq}/files/{path}":    {"id": f.artifact, "seq": "1", "path": "live.md"},
+		"/api/v1/artifacts/{id}/grants":                         {"id": f.artifact},
+		"/api/v1/artifacts/{id}/grants/{grantId}":               {"id": f.artifact},
+		"/api/v1/artifacts/{id}/links":                          {"id": f.artifact},
+		"/api/v1/artifacts/{id}/links/{linkId}":                 {"id": f.artifact},
+		"/api/v1/artifacts/{id}/versions":                       {"id": f.artifact},
+		"/api/v1/artifacts/{id}/versions/{seq}":                 {"id": f.artifact, "seq": "1"},
+		"/api/v1/artifacts/{id}/versions/{seq}/finalize":        {"id": f.artifact, "seq": "1"},
+		"/api/v1/artifacts/{id}/versions/{seq}/view":            {"id": f.artifact, "seq": "1"},
+		"/api/v1/artifacts/{id}/versions/{seq}/archive":         {"id": f.artifact, "seq": "1"},
+		"/api/v1/artifacts/{id}/review-sessions/{sid}":          {"id": f.artifact, "sid": "AAAAAAAAAAAAAAAAAAAAAA"},
+		"/api/v1/artifacts/{id}/review-draft":                   {"id": f.artifact},
+		"/api/v1/artifacts/{id}/transfer":                       {"id": f.artifact},
+		"/api/v1/artifacts/{id}/transfer-targets":               {"id": f.artifact},
+		"/api/v1/artifacts/{id}/review-requests":                {"id": f.artifact},
+		"/api/v1/artifacts/{id}/review-requests/{rid}/withdraw": {"id": f.artifact},
+		"/api/v1/artifacts/{id}/review-request/dismiss":         {"id": f.artifact},
 
 		// --- test identity family ---
 		"/api/v1/test-identities/{id}/token":          {"id": f.testIdentity},
@@ -1146,6 +1164,8 @@ func patternOverrides(f idFixtures) map[string]map[string]string {
 		"/api/v1/projects/{projectId}/agents/{id}/status":                      {"projectId": f.project, "id": f.agent},
 		"/api/v1/agents/{id}/workspace":                                        {"id": f.agent},
 		"/api/v1/agents/{id}/pending-config":                                   {"id": f.agent},
+		"/api/v1/agents/{id}/labels":                                           {"id": f.agent},
+		"/api/v1/projects/{projectId}/agents/{id}/labels":                      {"projectId": f.project, "id": f.agent},
 		"/api/v1/agents/{id}/workspace/sync-from":                              {"id": f.agent},
 		"/api/v1/agents/{id}/workspace/sync-to":                                {"id": f.agent},
 		"/api/v1/agents/{id}/workspace/sync-to/finalize":                       {"id": f.agent},
@@ -1166,13 +1186,16 @@ func patternOverrides(f idFixtures) map[string]map[string]string {
 		"/api/v1/projects/{projectId}/agents/{id}/message":                     {"projectId": f.project, "id": f.agent},
 
 		// --- agent self-access family (agent JWT routes) ---
-		"/api/v1/agents/{id}/token/refresh":                         {"id": f.agent},
-		"/api/v1/agents/{id}/refresh-token":                         {"id": f.agent},
-		"/api/v1/agents/{id}/outbound-message":                      {"id": f.agent},
-		"/api/v1/agents/{id}/metrics":                               {"id": f.agent},
-		"/api/v1/agents/{id}/usage/events":                          {"id": f.agent},
-		"/api/v1/agents/{id}/usage/capabilities":                    {"id": f.agent},
-		"/api/v1/projects/{projectId}/agents/{id}/outbound-message": {"projectId": f.project, "id": f.agent},
+		"/api/v1/agents/{id}/token/refresh":                           {"id": f.agent},
+		"/api/v1/agents/{id}/refresh-token":                           {"id": f.agent},
+		"/api/v1/agents/{id}/outbound-message":                        {"id": f.agent},
+		"/api/v1/agents/{id}/metrics":                                 {"id": f.agent},
+		"/api/v1/agents/{id}/usage/events":                            {"id": f.agent},
+		"/api/v1/agents/{id}/usage/capabilities":                      {"id": f.agent},
+		"/api/v1/agents/{id}/trajectory/segments:prepare":             {"id": f.agent},
+		"/api/v1/agents/{id}/trajectory/segments:commit":              {"id": f.agent},
+		"/api/v1/agents/{id}/trajectory/segments/{segmentId}/content": {"id": f.agent, "segmentId": "seg-1"},
+		"/api/v1/projects/{projectId}/agents/{id}/outbound-message":   {"projectId": f.project, "id": f.agent},
 
 		// --- agent lifecycle family ---
 		"/api/v1/agents/{id}/start":                            {"id": f.agentLifecycle},
@@ -1235,6 +1258,7 @@ func patternOverrides(f idFixtures) map[string]map[string]string {
 		"/api/v1/projects/{id}/metrics-summary":                   {"id": f.project},
 		"/api/v1/projects/{id}/metrics/summary":                   {"id": f.project},
 		"/api/v1/projects/{id}/metrics":                           {"id": f.project},
+		"/api/v1/projects/{id}/usage":                             {"id": f.project},
 		"/api/v1/projects/{id}/pre-start-hooks":                   {"id": f.project},
 		"/api/v1/projects/{id}/pre-start-hooks/{hookId}":          {"id": f.project, "hookId": f.projectPreStartHook},
 		"/api/v1/projects/{id}/pre-start-hooks/{hookId}/activate": {"id": f.project, "hookId": f.projectPreStartHook},
@@ -1268,6 +1292,7 @@ func patternOverrides(f idFixtures) map[string]map[string]string {
 		"/api/v1/users/{id}/revoke-sessions": {"id": f.user},
 		"/api/v1/users/{id}/delete-blockers": {"id": f.user},
 		"/api/v1/users/{id}/deletion":        {"id": f.userDeletion},
+		"/api/v1/users/{id}/usage":           {"id": f.user},
 
 		// --- skill family ---
 		"/api/v1/skills/{id}":                          {"id": f.skill},
@@ -1646,18 +1671,19 @@ func decodeErrorCode(t *testing.T, body []byte) string {
 // group conversation for the leave entry, and a direct conversation (with
 // a message) between the user and an agent.
 type inboxRecords struct {
-	message             string
-	notification        string
-	subscription        string
-	template            string
-	groupConversation   string
-	groupMessage        string
-	leaveConversation   string
-	directConversation  string
-	directMessage       string
-	createConversations string // display name prefix for conversations a test creates
-	threadGroup         string // a chat thread group in the project (ptone/scion#4424)
-	threadGroupDel      string // a disposable chat thread group for the delete probes
+	message                string
+	notification           string
+	subscription           string
+	template               string
+	groupConversation      string
+	groupMessage           string
+	groupMessageAttachment string
+	leaveConversation      string
+	directConversation     string
+	directMessage          string
+	createConversations    string // display name prefix for conversations a test creates
+	threadGroup            string // a chat thread group in the project (ptone/scion#4424)
+	threadGroupDel         string // a disposable chat thread group for the delete probes
 }
 
 // seedLiveInventoryArtifact publishes a one-file artifact directly through

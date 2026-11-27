@@ -324,17 +324,25 @@ func (s *Server) reapArtifactVersions(ctx context.Context) {
 	} else if n > 0 {
 		slog.InfoContext(ctx, "artifacts: reaped idle review sessions", "count", n)
 	}
-	if n, err := artifacts.ReapReviewDrafts(ctx, st, now, artifactReapBatch, s.artifactLog()); err != nil {
+	host := newArtifactHost(s)
+	if n, err := artifacts.ReapReviewDrafts(ctx, st, host, now, artifactReapBatch, s.artifactLog()); err != nil {
 		slog.WarnContext(ctx, "artifacts: reaping review drafts failed", "error", err)
 	} else if n > 0 {
 		slog.InfoContext(ctx, "artifacts: reaped expired review drafts", "count", n)
 	}
-	if res, err := artifacts.ReapLostAccessReviewDrafts(ctx, st, newArtifactHost(s), now, artifactReapBatch, s.artifactLog()); err != nil {
+	if res, err := artifacts.ReapLostAccessReviewDrafts(ctx, st, host, host, now, artifactReapBatch, s.artifactLog()); err != nil {
 		slog.WarnContext(ctx, "artifacts: reaping review drafts without access failed", "error", err,
 			"checked", res.Checked, "deleted", res.Deleted, "errors", res.Errors)
 	} else if res.Deleted > 0 {
 		slog.InfoContext(ctx, "artifacts: reaped review drafts without access",
 			"checked", res.Checked, "deleted", res.Deleted)
+	}
+	if res, err := artifacts.ReapReviewRequests(ctx, st, newArtifactHost(s), now, artifactReapBatch, s.artifactLog()); err != nil {
+		slog.WarnContext(ctx, "artifacts: reaping review requests failed", "error", err,
+			"checked", res.Checked, "expired", res.Expired, "purged", res.Purged, "errors", res.Errors)
+	} else if res.Expired > 0 || res.Purged > 0 {
+		slog.InfoContext(ctx, "artifacts: reaped review requests",
+			"checked", res.Checked, "expired", res.Expired, "purged", res.Purged)
 	}
 	s.backfillArtifactSponsors(ctx, st)
 	s.reconcileArtifactOwners(ctx, st, now)

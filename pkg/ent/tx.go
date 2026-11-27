@@ -226,6 +226,8 @@ type Tx struct {
 	ThreadGroup *ThreadGroupClient
 	// ThreadGroupMember is the client for interacting with the ThreadGroupMember builders.
 	ThreadGroupMember *ThreadGroupMemberClient
+	// TrajectorySegment is the client for interacting with the TrajectorySegment builders.
+	TrajectorySegment *TrajectorySegmentClient
 	// Trigger is the client for interacting with the Trigger builders.
 	Trigger *TriggerClient
 	// TriggerEvent is the client for interacting with the TriggerEvent builders.
@@ -240,6 +242,8 @@ type Tx struct {
 	UsageReservation *UsageReservationClient
 	// UsageRollupDaily is the client for interacting with the UsageRollupDaily builders.
 	UsageRollupDaily *UsageRollupDailyClient
+	// UsageRollupHourly is the client for interacting with the UsageRollupHourly builders.
+	UsageRollupHourly *UsageRollupHourlyClient
 	// UsageScopeCounterDaily is the client for interacting with the UsageScopeCounterDaily builders.
 	UsageScopeCounterDaily *UsageScopeCounterDailyClient
 	// User is the client for interacting with the User builders.
@@ -494,6 +498,7 @@ func (tx *Tx) init() {
 	tx.TestInfraMarker = NewTestInfraMarkerClient(tx.config)
 	tx.ThreadGroup = NewThreadGroupClient(tx.config)
 	tx.ThreadGroupMember = NewThreadGroupMemberClient(tx.config)
+	tx.TrajectorySegment = NewTrajectorySegmentClient(tx.config)
 	tx.Trigger = NewTriggerClient(tx.config)
 	tx.TriggerEvent = NewTriggerEventClient(tx.config)
 	tx.TriggerFire = NewTriggerFireClient(tx.config)
@@ -501,6 +506,7 @@ func (tx *Tx) init() {
 	tx.UsageEvent = NewUsageEventClient(tx.config)
 	tx.UsageReservation = NewUsageReservationClient(tx.config)
 	tx.UsageRollupDaily = NewUsageRollupDailyClient(tx.config)
+	tx.UsageRollupHourly = NewUsageRollupHourlyClient(tx.config)
 	tx.UsageScopeCounterDaily = NewUsageScopeCounterDailyClient(tx.config)
 	tx.User = NewUserClient(tx.config)
 	tx.UserAccessToken = NewUserAccessTokenClient(tx.config)

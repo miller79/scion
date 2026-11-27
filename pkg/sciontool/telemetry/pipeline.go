@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/GoogleCloudPlatform/scion/pkg/sciontool/log"
+	"github.com/GoogleCloudPlatform/scion/pkg/telemetrycontract"
 	"go.opentelemetry.io/otel/attribute"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
@@ -76,9 +77,24 @@ type Pipeline struct {
 	meter              otelmetric.Meter
 	retryConfig        RetryConfig
 	usageDeriver       atomic.Pointer[UsageDeriver]
+	agyTailer          atomic.Pointer[AntigravitySQLiteTailer]
+	agyActiveAtStop    atomic.Bool    // preserved across Pipeline.Stop so emitFinalHealth still reports sqlite_native enabled
+	driftLatched       atomic.Bool    // preserved across Pipeline.Stop after agyTailer is swapped nil
 	analytics          analyticsState // agent.usage outbox + drainer (analytics_drainer.go)
 	health             healthEmitter  // telemetry.health events (health.go)
 	sessionUsageSink   atomic.Pointer[SessionUsageSink]
+	// suppressDirectOTel is true when the Hub usage sink is active and the Hub
+	// advertised suppress_direct_otel=true (Tokenomics P2.2 D3). When true,
+	// handleMetrics strips gen_ai.api.calls and scion.usage.tokens before
+	// direct export while leaving traces, logs, non-canonical metrics, and raw
+	// native metrics policy unchanged.
+	// suppressMu serializes suppression flips (flush-then-flip) against
+	// UsageDeriver's in-memory recordAnalytics+record pair so increments
+	// derived under one decision are flushed through handleMetrics before the
+	// flag swaps. handleMetrics and any path reachable from a flushed
+	// canonical-counter batch must NEVER acquire suppressMu.
+	suppressMu         sync.RWMutex
+	suppressDirectOTel atomic.Bool
 	// apiOutcomeObserver receives model API outcomes (api_outcome.go).
 	apiOutcomeObserver atomic.Pointer[APIOutcomeObserver]
 	intakeMu           sync.Mutex
@@ -116,6 +132,64 @@ type Pipeline struct {
 	metricBatchSequence, metricPendingSequence                     uint64
 
 	authStandDown authStandDown
+}
+
+var canonicalUsageCounterMetrics = map[string]bool{
+	telemetrycontract.MetricAPICalls:    true,
+	telemetrycontract.MetricUsageTokens: true,
+}
+
+// SuppressDirectOTel reports whether direct container export of the two
+// canonical usage counters (gen_ai.api.calls, scion.usage.tokens) is currently
+// suppressed in favor of Hub OTel re-emission.
+func (p *Pipeline) SuppressDirectOTel() bool {
+	if p == nil {
+		return false
+	}
+	return p.suppressDirectOTel.Load()
+}
+
+func (p *Pipeline) withSuppressReadLock(fn func()) {
+	if p == nil {
+		fn()
+		return
+	}
+	p.suppressMu.RLock()
+	defer p.suppressMu.RUnlock()
+	fn()
+}
+
+func (p *Pipeline) setSuppressDirectOTel(suppress bool) {
+	if p == nil {
+		return
+	}
+	if p.suppressDirectOTel.Load() == suppress {
+		return
+	}
+	p.suppressMu.Lock()
+	defer p.suppressMu.Unlock()
+	if p.suppressDirectOTel.Load() == suppress {
+		return
+	}
+	// Flush-then-flip: force-flush any pending deltas in the usage deriver
+	// through handleMetrics under the OLD suppression decision before swapping
+	// the flag, so increments derived under one decision are neither stripped
+	// nor exported under the other.
+	//
+	// Deadlock invariant: handleMetrics reads suppressDirectOTel atomically
+	// and never acquires suppressMu; ProcessResourceMetrics skips
+	// usageMetricScope batches so flushed canonical counters cannot re-enter
+	// suppressMu.RLock.
+	if deriver := p.usageDeriver.Load(); deriver != nil {
+		flushCtx, cancel := context.WithTimeout(context.Background(), usageDeriverFlushTimeout)
+		if err := deriver.ForceFlush(flushCtx); err != nil {
+			deriver.recordSuppressFlushFailure()
+			log.Warn("Usage deriver flush before suppression switch failed (suppressed=%t): %v", suppress, err)
+		}
+		cancel()
+	}
+	p.suppressDirectOTel.Store(suppress)
+	log.Info("Direct container export of canonical usage counters suppressed=%t", suppress)
 }
 
 func (p *Pipeline) now() time.Time {
@@ -174,6 +248,9 @@ const (
 	UsageActivationAlreadyActive UsageActivation = "native usage derivation is already active"
 	// UsageActivationNoHarnessRule means SCION_HARNESS has no native rule.
 	UsageActivationNoHarnessRule UsageActivation = "harness has no native usage rule"
+	// UsageActivationAnalyticsDisabled means sqlite_native could not start
+	// because no analytics outbox sink is active.
+	UsageActivationAnalyticsDisabled UsageActivation = "analytics outbox is not enabled"
 )
 
 // ActivateUsageSource enables native usage derivation on an already-running
@@ -201,7 +278,7 @@ const (
 // It returns UsageActivated when a new deriver was stored, and otherwise the
 // reason it was skipped.
 func (p *Pipeline) ActivateUsageSource(ctx context.Context, source string) (UsageActivation, error) {
-	if source != UsageSourceNative {
+	if source != UsageSourceNative && source != telemetrycontract.UsageSourceSQLiteNative {
 		return UsageActivationNotNative, nil
 	}
 	// Known limitation (predates ptone/scion#3391): the supervisor applies
@@ -223,6 +300,21 @@ func (p *Pipeline) ActivateUsageSource(ctx context.Context, source string) (Usag
 	if !p.running {
 		return UsageActivationNotRunning, nil
 	}
+	if source == telemetrycontract.UsageSourceSQLiteNative {
+		if os.Getenv("SCION_HARNESS") != "antigravity" {
+			return UsageActivationNoHarnessRule, nil
+		}
+		if p.agyTailer.Load() != nil {
+			return UsageActivationAlreadyActive, nil
+		}
+		if p.analytics.sqliteNative == nil {
+			return UsageActivationAnalyticsDisabled, nil
+		}
+		if err := p.startAgySQLiteTailerLocked(ctx); err != nil {
+			return "", fmt.Errorf("starting antigravity sqlite tailer: %w", err)
+		}
+		return UsageActivated, nil
+	}
 	if current := p.usageDeriver.Load(); current != nil && len(current.rules) > 0 {
 		return UsageActivationAlreadyActive, nil
 	}
@@ -237,6 +329,7 @@ func (p *Pipeline) ActivateUsageSource(ctx context.Context, source string) (Usag
 	deriver.sessionUsage = p.forwardSessionUsage
 	deriver.apiOutcome = p.forwardAPIOutcome
 	deriver.analytics = p.analytics.native
+	deriver.suppressGuard = p.withSuppressReadLock
 	if len(deriver.rules) == 0 {
 		return UsageActivationNoHarnessRule, nil
 	}
@@ -246,6 +339,44 @@ func (p *Pipeline) ActivateUsageSource(ctx context.Context, source string) (Usag
 	// in-flight request that loaded the old no-op deriver derives nothing.
 	p.usageDeriver.Store(deriver)
 	return UsageActivated, nil
+}
+
+// startAgySQLiteTailerLocked starts the Antigravity local SQLite usage tailer
+// whenever an analytics sink (Hub usage outbox and/or GCP analytics) is active.
+// Neither nativeMeteringOnly nor cloudInitDegraded blocks it:
+//   - nativeMeteringOnly only suppresses forwarding non-sciontool OTLP signals
+//     to the cloud exporter; the SQLite tailer emits only sciontool's own
+//     agent.usage metering events, which are intended to flow under metering
+//     policy.
+//   - cloudInitDegraded means cloud export failed/was misconfigured at Start
+//     while the Hub usage sink kept the pipeline running; Hub-only metering
+//     (including sqlite_native) intentionally continues operating while
+//     deliveryState remains "degraded".
+func (p *Pipeline) startAgySQLiteTailerLocked(ctx context.Context) error {
+	if p.analytics.sqliteNative == nil {
+		log.Debug("Antigravity SQLite tailer not started: analytics outbox is disabled")
+		return nil
+	}
+	agentHome := p.analytics.agentHome
+	if agentHome == "" {
+		agentHome, _ = os.UserHomeDir()
+	}
+	hasCloudExporter := p.exporter != nil
+	tailer := NewAntigravitySQLiteTailer(AntigravitySQLiteConfig{
+		AgentHome:      agentHome,
+		WakeOwner:      p.analytics.owner,
+		Analytics:      p.analytics.sqliteNative,
+		LoopbackConfig: p.loopbackConfig.Load(),
+		OTelExportActive: func() bool {
+			return hasCloudExporter && !p.SuppressDirectOTel()
+		},
+		SessionUsage: p.forwardSessionUsage,
+	})
+	if err := tailer.Start(ctx); err != nil {
+		return err
+	}
+	p.agyTailer.Store(tailer)
+	return nil
 }
 
 // Start starts the telemetry pipeline.
@@ -400,6 +531,9 @@ func (p *Pipeline) Start(ctx context.Context) error {
 		gcpExporter = p.exporter.gcpExporter
 	}
 	p.analytics.supportedSignals = p.supportedUsageSignals
+	p.analytics.onSuppressChanged = p.setSuppressDirectOTel
+	p.analytics.isSuppressed = p.SuppressDirectOTel
+	p.analytics.schemaDrift = p.schemaDriftDetected
 	p.analytics.start(ctx, gcpExporter)
 
 	// Create receiver with span and metric handlers
@@ -445,11 +579,19 @@ func (p *Pipeline) Start(ctx context.Context) error {
 		deriver.sessionUsage = p.forwardSessionUsage
 		deriver.apiOutcome = p.forwardAPIOutcome
 		deriver.analytics = p.analytics.native
+		deriver.suppressGuard = p.withSuppressReadLock
 		p.usageDeriver.Store(deriver)
 	}
 
 	p.cloudInitDegraded = cloudInitDegraded
+	p.agyActiveAtStop.Store(false)
+	p.driftLatched.Store(false)
 	p.running = true
+	if os.Getenv("SCION_HARNESS") == "antigravity" && os.Getenv("SCION_USAGE_SOURCE") == telemetrycontract.UsageSourceSQLiteNative {
+		if err := p.startAgySQLiteTailerLocked(ctx); err != nil {
+			log.Error("Failed to start antigravity SQLite tailer: %v", err)
+		}
+	}
 	if cloudInitDegraded {
 		p.deliveryState.Store("degraded")
 	} else {
@@ -514,6 +656,21 @@ func (p *Pipeline) Stop(ctx context.Context) error {
 		}
 		cancel()
 		p.captureFinalUsage(deriver)
+	}
+	// Shut the Antigravity SQLite tailer down before intake/receiver close so
+	// its final PollOnce appends any last DB rows to the still-open analytics
+	// outbox AND flushes any buffered scion.usage.tokens increments over
+	// loopback into the still-open receiver before flushMetricsOnStop runs.
+	// Capture active status and drift latch before clearing agyTailer so the
+	// final health event and heartbeat remain accurate.
+	if tailer := p.agyTailer.Swap(nil); tailer != nil {
+		p.agyActiveAtStop.Store(true)
+		if err := tailer.Stop(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Debug("Antigravity SQLite tailer shutdown error: %v", err)
+		}
+		if tailer.SchemaDriftDetected() {
+			p.driftLatched.Store(true)
+		}
 	}
 
 	var errs []error
@@ -1003,6 +1160,15 @@ func (p *Pipeline) handleMetrics(ctx context.Context, resourceMetrics []*metricp
 		if dropped := before - countMetricPoints(processed); dropped > 0 {
 			p.metricDiagnostics.filtered.Add(int64(dropped))
 		}
+	}
+	if p.suppressDirectOTel.Load() {
+		// Tokenomics P2.2 (D3): when the Hub usage sink is active and the Hub
+		// re-emits canonical counters to a configured sink, suppress direct
+		// container export of gen_ai.api.calls and scion.usage.tokens while
+		// keeping traces, logs, non-canonical metrics, and raw native metrics
+		// policy unchanged. Runs after nativeMeteringOnly so sciontool-derived
+		// canonical counters remain subject to suppression in metering-only mode.
+		processed = stripMatchedUsageMetrics(processed, canonicalUsageCounterMetrics)
 	}
 	if len(processed) == 0 {
 		return nil

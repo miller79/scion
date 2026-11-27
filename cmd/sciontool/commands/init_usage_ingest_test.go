@@ -121,6 +121,7 @@ func TestProbeAndConfigureUsageIngest_PositiveWithoutGCPExporter(t *testing.T) {
 	t.Setenv("SCION_AGENT_ID", "agent-1")
 	t.Setenv("SCION_HARNESS", "claude")
 	t.Setenv("SCION_USAGE_SOURCE", "native")
+	t.Setenv(hub.EnvLaunchID, "")
 	t.Setenv(telemetry.EnvUsageHubIngest, "")
 
 	var mu sync.Mutex
@@ -139,7 +140,7 @@ func TestProbeAndConfigureUsageIngest_PositiveWithoutGCPExporter(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(telemetrycontract.UsageCapabilitiesResponse{
 				UsageIngestEnabled:   true,
-				SuppressDirectOTel:   true, // ignored in P1.2
+				SuppressDirectOTel:   true,
 				MaxBatchEvents:       500,
 				MaxBatchBytes:        262144,
 				HeartbeatIntervalSec: 60,
@@ -159,6 +160,10 @@ func TestProbeAndConfigureUsageIngest_PositiveWithoutGCPExporter(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(telemetrycontract.UsageIngestResponse{
 				Accepted: len(req.Events),
+				// Echo suppress_direct_otel=true consistently with the capabilities
+				// probe above so the background drainer's startup heartbeat does not
+				// revalidate suppression back to false before the assertion below.
+				SuppressDirectOTel: true,
 			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -188,6 +193,9 @@ func TestProbeAndConfigureUsageIngest_PositiveWithoutGCPExporter(t *testing.T) {
 
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Pipeline.Start: %v", err)
+	}
+	if !p.SuppressDirectOTel() {
+		t.Error("expected Pipeline.SuppressDirectOTel() = true when capabilities probe returned suppress_direct_otel=true")
 	}
 	if _, ok, reason := p.AnalyticsDiagnostics(); !ok || reason != "" {
 		t.Fatalf("AnalyticsDiagnostics() = ok:%v reason:%q, want ok:true reason:\"\"", ok, reason)

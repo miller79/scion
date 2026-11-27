@@ -212,6 +212,14 @@ const (
 	// sequence is atomic, preventing over-allocation.
 	LockQuotaEnforcement AdvisoryLockKey = 0x5C101002
 
+	// LockNeverSuspendQuota is the CLASS ID for per-project row-only
+	// max_never_suspend_agents_per_project quota enforcement locks
+	// (pg_try_advisory_lock(classid, StableProjectHash(projectID))). Keeping it
+	// distinct from LockQuotaEnforcement prevents never-suspend creates, PATCHes,
+	// and restores from contending with concurrent max_agents_per_project
+	// Reserve calls in the same project on Postgres.
+	LockNeverSuspendQuota AdvisoryLockKey = 0x5C10100A
+
 	// LockBrokerQuotaReconcile guards the periodic (and startup, tick 0)
 	// reconcile of stale max_agents_per_broker reservations (ptone/scion#1963)
 	// — rows left with released_at IS NULL for agents that are no longer in a
@@ -337,6 +345,12 @@ const (
 	// retention window.
 	LockDecisionRetention AdvisoryLockKey = 0x5C100036
 
+	// LockUsageRetention guards the Track 1 usage-ledger bounded retention
+	// sweeper ("usage-retention", ptone/scion#9237), so at most one replica
+	// runs batched retention deletes across usage_events, rollups, scope
+	// counters, meter_health, and run_attribution at a time.
+	LockUsageRetention AdvisoryLockKey = 0x5C100037
+
 	// LockPendingSecretOwnerWrite is the CLASS ID for the per-owner pending
 	// secret write lock: a transaction-scoped
 	// pg_advisory_xact_lock(classid, objid) with objid
@@ -388,6 +402,15 @@ const (
 	// (1000) waiting-fire caps. In the per-object range; not taken through
 	// AdvisoryLocker.
 	LockTriggerOfflineQueue AdvisoryLockKey = 0x5C101009
+
+	// LockCommandRequestQuota is the CLASS ID for per-agent pending command-request
+	// cap serialization (ptone/scion#9285, design §4.5): a transaction-scoped
+	// pg_advisory_xact_lock(classid, objid) with objid StableProjectHash(agentID),
+	// taken by CreateCommandRequestPrompt before counting and inserting so
+	// concurrent sends with distinct keys cannot bypass the 10-pending cap on
+	// PostgreSQL under READ COMMITTED. In the per-object range; not taken through
+	// AdvisoryLocker.
+	LockCommandRequestQuota AdvisoryLockKey = 0x5C10100B
 )
 
 // AdvisoryLocker is implemented by backends that can take a cluster-wide

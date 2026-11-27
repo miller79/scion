@@ -64,8 +64,12 @@ func TestDispatchExperimentNames_CoverPlatformSkillGates(t *testing.T) {
 	if len(refs) == 0 {
 		t.Fatal("no embedded platform skill names an experiment; the scan is broken or the Choices content was removed")
 	}
+	// Experiments dispatched conditionally by dispatchExperiments() under the
+	// Conduit-served branch (pkg/hub/experiments.go) rather than unconditionally
+	// via dispatchExperimentNames.
+	conduitDispatched := []string{experiments.CommandRequests}
 	for id, files := range refs {
-		if !slices.Contains(dispatchExperimentNames, id) {
+		if !slices.Contains(dispatchExperimentNames, id) && !slices.Contains(conduitDispatched, id) {
 			t.Errorf("platform skill file(s) %v gate on experiment %q, which is not in dispatchExperimentNames (pkg/hub/experiments.go); add it so the broker sees its state", files, id)
 		}
 	}
@@ -83,16 +87,18 @@ func TestDispatchExperimentNames_CoverPlatformSkillGates(t *testing.T) {
 
 // web.decisions, hub.artifacts, hub.message_policies and hub.agent_secrets are
 // dispatched (for the scion-messaging, scion-cli-operations and scion-artifacts
-// skill gates) and are off by default, so a fresh hub still dispatches no
-// experiments.
+// skill gates). hub.artifacts is on by default (ptone/scion#9486); the other
+// three remain off by default so a fresh hub only dispatches approved
+// default-on experiments.
 func TestSkillGateExperiments_Dispatched(t *testing.T) {
 	for _, id := range []string{experiments.Decisions, experiments.Artifacts, experiments.MessagePolicies, experiments.AgentSecrets} {
 		exp, ok := experiments.Default().Lookup(id)
 		if !ok {
 			t.Fatalf("%s is not registered", id)
 		}
-		if exp.Default {
-			t.Errorf("%s must stay off by default, or a fresh hub dispatches experiments", id)
+		wantDefault := id == experiments.Artifacts
+		if exp.Default != wantDefault {
+			t.Errorf("%s Default = %v, want %v", id, exp.Default, wantDefault)
 		}
 		if !exp.HasLayer(experiments.LayerServer) {
 			t.Errorf("%s must be a server-layer experiment to be dispatched", id)

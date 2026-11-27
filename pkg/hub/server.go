@@ -894,7 +894,11 @@ func (s *Server) idleSuspendDeliveryGateActive() bool {
 }
 
 func (s *Server) deliveryMarker() agentDeliveryMarker {
-	return gatedDeliveryMarker{store: s.store, gate: s.idleSuspendDeliveryGateActive}
+	return gatedDeliveryMarker{
+		store:          s.store,
+		gate:           s.idleSuspendDeliveryGateActive,
+		autoSuspending: s.autoSuspending.activeReason,
+	}
 }
 
 // brokerQuotasEnforced reports whether the per-broker agent quota cap
@@ -2225,6 +2229,7 @@ type RemoteAgentInfo struct {
 	MaxTurns              int      `json:"maxTurns,omitempty"`
 	MaxModelCalls         int      `json:"maxModelCalls,omitempty"`
 	MaxDuration           string   `json:"maxDuration,omitempty"`
+	RunDeadline           string   `json:"runDeadline,omitempty"`
 	LimitsClampedBy       []string `json:"limitsClampedBy,omitempty"`
 }
 
@@ -2319,6 +2324,14 @@ type Server struct {
 	// portViewClock replaces time.Now on the page view route (tests only).
 	portViewClock func() time.Time
 
+	// Track 2 trajectory segment test overrides (zero values use defaults).
+	trajectoryCapturePolicyOverride func(context.Context, *store.Project) string
+	trajectoryMaxSegmentRawBytes    int64
+	trajectoryMaxRunRawBytes        int64
+	trajectoryPrepareTTL            time.Duration
+	trajectoryUploadURLExpiry       time.Duration
+	trajectoryCommitAfterVerifyHook func(context.Context, *store.TrajectorySegment)
+
 	// chatSpacesBatch sets the GET /chat/spaces rollup batch sizes; the
 	// zero value uses the defaults (handlers_chat_v2.go).
 	chatSpacesBatch chatSpacesBatchSizes
@@ -2342,10 +2355,19 @@ type Server struct {
 	// inboxWaitingLimitForTest, when positive (tests only), overrides the
 	// default waiting-agent window limit (inboxWaitingLimit).
 	inboxWaitingLimitForTest int
+	// inboxChatStarredScanBudgetForTest, when positive (tests only), overrides
+	// the default starred-conversation scan budget (inboxChatStarredScanBudget).
+	inboxChatStarredScanBudgetForTest int
 	// maxProfileDecisionProjectsForTest, when positive (tests only), overrides
 	// maxProfileDecisionProjects so truncation paths can be pinned without
 	// seeding >200 projects.
 	maxProfileDecisionProjectsForTest int
+	// actionInboxMaxProjectsForTest, actionInboxScanCapForTest, and
+	// actionInboxResolvedBatchForTest, when positive (tests only), override
+	// action-inbox pagination and scan caps.
+	actionInboxMaxProjectsForTest   int
+	actionInboxScanCapForTest       int
+	actionInboxResolvedBatchForTest int
 
 	// Conduit stream grant key ring cache (conduit_grants.go); created on
 	// first use behind the hub.conduit experiment.
@@ -2561,7 +2583,8 @@ type Server struct {
 
 	// autoSuspend is the auto-suspend worker the stalled-detection and
 	// idle-suspend sweeps hand eligible agents to (auto_suspend_worker.go).
-	autoSuspend autoSuspendWorker
+	autoSuspend    autoSuspendWorker
+	autoSuspending autoSuspendTracker
 
 	// autoWakeWork admits and joins background auto-wakes, and autoWakes
 	// holds the one in flight per agent (auto_wake.go, ptone/scion#7826).
@@ -3315,6 +3338,15 @@ type Server struct {
 	// background goroutine lifecycle (usage_ledger.go).
 	usageLedger usageLedgerRuntime
 
+	// usageOTelMetrics re-emits canonical Track 1 usage counters and exposes
+	// scion.usage.meter_stale on the Hub MeterProvider when a metrics sink is
+	// configured (usage_otel.go).
+	usageOTelMetrics *UsageOTelMetrics
+
+	// usageRetention holds the bounded Hub DB retention sweeper for Track 1
+	// usage tables (usage_retention.go).
+	usageRetention *UsageRetentionSweeper
+
 	// triggers holds the shared trigger.event durablequeue handle and
 	// background drainer state (trigger_dispatch.go).
 	triggers triggerRuntime
@@ -3981,7 +4013,10 @@ func New(cfg ServerConfig, s store.Store) (_ *Server, retErr error) {
 		s, srv.authzService,
 		logging.Subsystem("hub.project-deletion"),
 	)
-	srv.deletionService.onProjectDeleted = srv.invalidateTriggerRuleCacheForProject
+	srv.deletionService.onProjectDeleted = func(projectID string) {
+		srv.invalidateTriggerRuleCacheForProject(projectID)
+		srv.refreshDecisionRetentionAfterProjectChange(projectID)
+	}
 
 	// RS4: Initialize user access token service with authorization, audit, and
 	// transactional support via the bounded domain service pattern.
@@ -5721,6 +5756,22 @@ func (s *Server) SetGCPTokenMetrics(m GCPTokenMetricsRecorder) {
 	s.gcpTokenMetrics = m
 }
 
+// SetUsageOTelMetrics wires the Hub Track 1 usage OTel re-emitter. Callers
+// must call this before Start, not concurrently with serving requests.
+func (s *Server) SetUsageOTelMetrics(m *UsageOTelMetrics) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.usageOTelMetrics = m
+}
+
+// UsageOTelMetrics returns the configured Hub Track 1 usage OTel re-emitter,
+// or nil when none is wired.
+func (s *Server) UsageOTelMetrics() *UsageOTelMetrics {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.usageOTelMetrics
+}
+
 // SetAgentRunScopeMetrics wires the agent token run-scope counter. It does
 // nothing when server.auth.agent_run_scope is off.
 func (s *Server) SetAgentRunScopeMetrics(m *OTelAgentRunScopeMetrics) {
@@ -6696,6 +6747,8 @@ func (s *Server) autoSuspendAgent(ctx context.Context, dispatcher AgentDispatche
 			return false
 		}
 	}
+	endAutoSuspend := s.autoSuspending.begin(agent.ID, reason)
+	defer endAutoSuspend()
 	stopRunID := agent.RunID
 	if agent.RuntimeBrokerID != "" {
 		// As for stop and suspend, the dispatch is bounded by
@@ -6802,6 +6855,7 @@ func (s *Server) autoSuspendAgent(ctx context.Context, dispatcher AgentDispatche
 	if claimedIdle {
 		s.clearIdleSuspendClaimBestEffort(ctx, agent.ID)
 	}
+	endAutoSuspend()
 	// Non-blocking in-memory publish; final step of auto-suspend.
 	s.events.PublishAgentStatus(ctx, agent)
 	return true
@@ -7652,6 +7706,16 @@ func (s *Server) registerSchedulerHandlers() {
 	// enabled, and a retention window are all active and tick_interval_minutes
 	// have elapsed.
 	s.scheduler.RegisterRecurringSingleton("decision-retention", 1, store.LockDecisionRetention, s.decisionRetentionHandler())
+	// Bounded Hub DB usage-ledger retention (tokenomics.usage_ledger, ptone/scion#9237):
+	// checked every minute as a single-leader singleton (LockUsageRetention);
+	// enforces sweep_interval between completed passes and continues across
+	// ticks within a bounded per-tick budget until every target drains.
+	s.scheduler.RegisterRecurringSingleton(
+		usageRetentionJobName,
+		1,
+		store.LockUsageRetention,
+		s.usageRetentionHandler(),
+	)
 	s.scheduler.RegisterRecurringSingleton("exposed-ports-sweep", 5, store.LockExposedPortsSweep, s.exposedPortsSweepHandler())
 	s.scheduler.RegisterRecurringSingleton("notification-dispatch-sweep", 5, store.LockNotificationDispatchSweep, s.notificationDispatchSweepHandler())
 	s.scheduler.RegisterRecurringSingleton("notification-orphan-gc", 60, store.LockNotificationOrphanGC, s.notificationOrphanGCHandler())
@@ -8576,6 +8640,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/users/me/decisions", s.guarded("/api/v1/users/me/decisions", s.withDecisionsBellReconcile(s.handleUserMeDecisions)))
 	s.mux.HandleFunc("/api/v1/users/me/decisions/suggestions", s.guarded("/api/v1/users/me/decisions/suggestions", s.handleUserMeDecisionSuggestions))
 
+	// Profile secret requests roll-up across member projects and DMs (/users/me/secret-requests)
+	s.mux.HandleFunc("/api/v1/users/me/secret-requests", s.guarded("/api/v1/users/me/secret-requests", s.handleUserMeActionInbox(&secretRequestActionInboxKind{srv: s})))
+
 	// Profile inbox summary across categories (/users/me/inbox/summary)
 	s.mux.HandleFunc("/api/v1/users/me/inbox/summary", s.guarded("/api/v1/users/me/inbox/summary", s.handleUserMeInboxSummary))
 
@@ -8673,6 +8740,11 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/admin/usage/", s.guarded("/api/v1/admin/usage/", s.handleAdminUsageByLimit))
 	s.mux.HandleFunc("/api/v1/usage/me", s.guarded("/api/v1/usage/me", s.handleUsageMe))
 
+	// Tokenomics Track 1 usage read APIs (distinct from /api/v1/usage/me quota usage).
+	// /api/v1/usage is an exact-match pattern (no trailing slash) so it never shadows /api/v1/usage/me.
+	s.mux.HandleFunc("/api/v1/usage", s.guarded("/api/v1/usage", s.handleGlobalUsage))
+	s.mux.HandleFunc("/api/v1/me/usage", s.guarded("/api/v1/me/usage", s.handleMeUsage))
+
 	// Role management (PR-C1)
 	s.mux.HandleFunc("/api/v1/admin/roles", s.guarded("/api/v1/admin/roles", s.handleAdminRoles))
 	s.mux.HandleFunc("/api/v1/admin/roles/export", s.guarded("/api/v1/admin/roles/export", s.handleAdminRolesExport))
@@ -8730,7 +8802,7 @@ func (s *Server) registerRoutes() {
 		s.mux.HandleFunc("/api/v1/chat/user-prefs", s.guarded("/api/v1/chat/user-prefs", s.chatRoute(s.handleChatUserPrefs)))
 		s.mux.HandleFunc("/api/v1/chat/presence", s.guarded("/api/v1/chat/presence", s.chatRoute(s.handleChatPresence)))
 		s.mux.HandleFunc("/api/v1/chat/search", s.guarded("/api/v1/chat/search", s.chatRoute(s.handleChatSearch)))
-		// Starred messages (web.chat_starred_messages; 404 while off).
+		// Starred messages.
 		s.mux.HandleFunc("/api/v1/chat/stars", s.guarded("/api/v1/chat/stars", s.chatRoute(s.handleChatStars)))
 		s.mux.HandleFunc("/api/v1/chat/stars/", s.guarded("/api/v1/chat/stars/", s.chatRoute(s.handleChatStarRoutes)))
 		s.mux.HandleFunc("/api/v1/chat/starred-conversations", s.guarded("/api/v1/chat/starred-conversations", s.chatRoute(s.handleChatStarredConversations)))
@@ -8772,8 +8844,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/agent/secret-requests", s.guarded("/api/v1/agent/secret-requests", s.handleAgentSecretRequestRoutes))
 	s.mux.HandleFunc("/api/v1/agent/secret-requests/", s.guarded("/api/v1/agent/secret-requests/", s.handleAgentSecretRequestRoutes))
 
-	// Agent self-service command-request list (agent token auth; 404 when hub.command_requests is off)
+	// Agent self-service command-request list and withdraw (agent token auth; 404 when hub.command_requests is off)
 	s.mux.HandleFunc("/api/v1/agent/command-requests", s.guarded("/api/v1/agent/command-requests", s.handleAgentCommandRequestRoutes))
+	s.mux.HandleFunc("/api/v1/agent/command-requests/", s.guarded("/api/v1/agent/command-requests/", s.handleAgentCommandRequestRoutes))
 
 	// Public settings endpoint (no auth required for telemetry default, etc.)
 	s.mux.HandleFunc("/api/v1/settings/public", s.guarded("/api/v1/settings/public", s.handlePublicSettings))

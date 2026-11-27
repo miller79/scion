@@ -15,6 +15,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1077,6 +1078,11 @@ func quotaRefusal(limitName string, err error) (string, map[string]interface{}) 
 				quotaExceededMessage(exceeded.Limit), exceeded.ScopeID, exceeded.Count, exceeded.Max),
 			map[string]interface{}{"projectId": exceeded.ScopeID, "count": exceeded.Count, "limit": exceeded.Max}
 	}
+	if exceeded.Limit == store.LimitMaxNeverSuspendAgentsPerProject && exceeded.ScopeType == store.QuotaScopeProject {
+		return fmt.Sprintf("%s (project %s: %d of %d never-suspend agents in use); clear suspendPolicy or delete a never-suspend agent in this project to free a slot",
+				quotaExceededMessage(exceeded.Limit), exceeded.ScopeID, exceeded.Count, exceeded.Max),
+			map[string]interface{}{"projectId": exceeded.ScopeID, "count": exceeded.Count, "limit": exceeded.Max}
+	}
 	if exceeded.Limit == store.LimitMaxAgentsPerBroker && exceeded.ScopeType == store.QuotaScopeBroker {
 		if exceeded.Max > 0 {
 			details := map[string]interface{}{"count": exceeded.Count, "limit": exceeded.Max}
@@ -1862,6 +1868,16 @@ func (s *Server) createAgentInProject(
 		return
 	}
 
+	// When telemetry is enforced by the hub operator, refuse requester-level
+	// attempts to disable it (config.telemetry.enabled=false or
+	// SCION_TELEMETRY_ENABLED=false) up front at create.
+	if s.telemetryEnforced() {
+		if field, disabled := configDisablesTelemetry(req.Config); disabled {
+			writeTelemetryEnforcedRefusal(w, field)
+			return
+		}
+	}
+
 	// Resolve effective agent role using the authority lattice.
 	// Computed early (before broker resolution) so that fail-loud 403 on
 	// role over-requests fires before resource-intensive operations.
@@ -2398,13 +2414,9 @@ func (s *Server) createAgentInProject(
 			ValidationError(w, "Config contains invalid count limits", map[string]interface{}{"fields": issues})
 			return
 		}
-		if ceilings := s.agentLimitCeilings(); ceilings.MaxTurns > 0 {
-			if err := validateCreateMaxTurnsAgainstCeiling(req.Config.MaxTurns, ceilings); err != nil {
-				writeError(w, http.StatusBadRequest, ErrCodeLimitExceedsHubCeiling, err.Error(), map[string]interface{}{
-					"field":     "max_turns",
-					"ceiling":   ceilings.MaxTurns,
-					"requested": *req.Config.MaxTurns,
-				})
+		if ceilings := s.agentLimitCeilings(); !ceilings.IsEmpty() {
+			if v := validateScionConfigAgainstCeilings(req.Config, ceilings); v != nil {
+				writeLimitCeilingRefusal(w, v)
 				return
 			}
 		}
@@ -2925,6 +2937,10 @@ func (s *Server) createAgentInProject(
 		SAOrigin:     saOrigin,
 	}); err != nil {
 		s.releaseAgentQuotas(ctx, agent.ID, runtimeBrokerID)
+		if errors.Is(err, store.ErrQuotaExceeded) || errors.Is(err, ErrQuotaLockContention) {
+			writeQuotaReserveError(w, store.LimitMaxNeverSuspendAgentsPerProject, err)
+			return
+		}
 		if errors.Is(err, errInvalidDisplayName) {
 			writeError(w, http.StatusBadRequest, "invalid_name", err.Error(), nil)
 			return
@@ -4614,11 +4630,21 @@ func (s *Server) handleAgentByID(w http.ResponseWriter, r *http.Request) {
 	case AgentRouteUsageCapabilities:
 		s.handleAgentUsageCapabilities(w, r, id)
 
+	case AgentRouteTrajectoryPrepare:
+		s.handleAgentTrajectorySegmentsPrepare(w, r, id)
+	case AgentRouteTrajectoryCommit:
+		s.handleAgentTrajectorySegmentsCommit(w, r, id)
+	case AgentRouteTrajectoryContent:
+		s.handleAgentTrajectorySegmentContent(w, r, id, route.Suffix.Param)
+
 	case AgentRouteHoldLift:
 		s.handleAgentHoldLift(w, r, id)
 
 	case AgentRoutePendingConfig:
 		s.handleAgentPendingConfig(w, r, id)
+
+	case AgentRouteLabels:
+		s.handleAgentLabels(w, r, id)
 
 	case AgentRouteDelegations:
 		s.handleAgentDelegations(w, r, id)
@@ -4820,6 +4846,7 @@ func (s *Server) writeAgentResponse(w http.ResponseWriter, r *http.Request, agen
 		HarnessCapabilities: &harnessCaps,
 		HarnessVendor:       harness.Vendor(resolvedHarness),
 		ModelSize:           agentModelSize(agent),
+		EffectiveConfig:     agentEffectiveConfigView(agent.EffectiveConfig),
 		CloudLogging:        s.logQueryService != nil,
 		SSHHostKey:          s.agentSSHHostKey(agent),
 	}
@@ -4974,6 +5001,33 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request, id string) 
 func (s *Server) applyAgentUpdate(w http.ResponseWriter, r *http.Request, agent *store.Agent) {
 	ctx := r.Context()
 
+	// Agents may never modify agent labels (ptone/scion#9521). Check explicitly
+	// before general authorization when the caller is an agent principal and
+	// the request includes a labels field, without altering non-label behavior.
+	// Bound the pre-auth read with http.MaxBytesReader so an agent caller cannot
+	// force unbounded buffering before authorization runs.
+	var preReadBody []byte
+	var bodyPreRead bool
+	if isAgentDerivedCaller(ctx) && r.Body != nil {
+		var err error
+		preReadBody, err = io.ReadAll(http.MaxBytesReader(w, r.Body, maxSettingsBodySize))
+		if err != nil {
+			if isMaxBytesError(err) {
+				writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large",
+					"request body exceeds maximum size", nil)
+				return
+			}
+			BadRequest(w, "Invalid request body: "+err.Error())
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(preReadBody))
+		bodyPreRead = true
+		if patchBodyHasLabelsField(preReadBody) {
+			writeForbidden(w, errMsgAgentsCannotEditLabels)
+			return
+		}
+	}
+
 	// This handler had no authorization of any kind before #591: any
 	// authenticated caller could rename, relabel and rewrite the config of any
 	// agent on the hub, including its GCP identity.
@@ -5010,10 +5064,17 @@ func (s *Server) applyAgentUpdate(w http.ResponseWriter, r *http.Request, agent 
 	// decoded to (every ScionConfig field is `omitempty`, so an omitted key
 	// and an explicit zero value are otherwise indistinguishable).
 	var body []byte
-	if r.Body != nil {
+	if bodyPreRead {
+		body = preReadBody
+	} else if r.Body != nil {
 		var err error
-		body, err = io.ReadAll(r.Body)
+		body, err = io.ReadAll(http.MaxBytesReader(w, r.Body, maxSettingsBodySize))
 		if err != nil {
+			if isMaxBytesError(err) {
+				writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large",
+					"request body exceeds maximum size", nil)
+				return
+			}
 			BadRequest(w, "Invalid request body: "+err.Error())
 			return
 		}
@@ -5482,11 +5543,16 @@ func (s *Server) applyAgentUpdate(w http.ResponseWriter, r *http.Request, agent 
 
 	var suspensionInFlight bool
 	var suspendPolicyChanged bool
-	writeSuspendPolicyTx := func(tx store.Store) error {
+	writeSuspendPolicyTx := func(tx store.Store, effectiveLimit int64) error {
 		target := *updates.SuspendPolicy
 		changed, err := tx.SetAgentSuspendPolicy(ctx, agent.ID, target)
 		if err != nil {
 			return err
+		}
+		if changed && target == store.SuspendPolicyNever && effectiveLimit > 0 {
+			if err := checkNeverSuspendQuotaAfterWriteInTx(ctx, tx, agent.ProjectID, effectiveLimit); err != nil {
+				return err
+			}
 		}
 		suspendPolicyChanged = changed
 		if changed {
@@ -5521,27 +5587,46 @@ func (s *Server) applyAgentUpdate(w http.ResponseWriter, r *http.Request, agent 
 		return nil
 	}
 
+	labelsChanged := updates.Labels != nil && !maps.Equal(before.labels, agent.Labels)
+
 	if updates.SuspendPolicy != nil {
-		err := s.store.WithTx(ctx, func(tx store.Store) error {
-			if needsRowUpdate {
-				if err := tx.UpdateAgent(ctx, agent); err != nil {
-					return err
-				}
-				if updates.Name != "" {
-					keys := api.IdentityKeysFor(agent.Slug, agent.Name)
-					if err := tx.ReplaceAgentIdentityKeys(ctx, agent.ID, agent.ProjectID, keys); err != nil {
+		runPatchTx := func(effectiveLimit int64) error {
+			return s.store.WithTx(ctx, func(tx store.Store) error {
+				if needsRowUpdate {
+					if err := tx.UpdateAgent(ctx, agent); err != nil {
 						return err
 					}
-				}
-				if saWrite != nil {
-					if err := saWrite.apply(r, tx, agent.ID); err != nil {
-						return err
+					if updates.Name != "" {
+						keys := api.IdentityKeysFor(agent.Slug, agent.Name)
+						if err := tx.ReplaceAgentIdentityKeys(ctx, agent.ID, agent.ProjectID, keys); err != nil {
+							return err
+						}
+					}
+					if saWrite != nil {
+						if err := saWrite.apply(r, tx, agent.ID); err != nil {
+							return err
+						}
+					}
+					if labelsChanged {
+						if err := writeAgentLabelsAuditTx(ctx, tx, agent.ID, before.labels, agent.Labels); err != nil {
+							return err
+						}
 					}
 				}
-			}
-			return writeSuspendPolicyTx(tx)
-		})
+				return writeSuspendPolicyTx(tx, effectiveLimit)
+			})
+		}
+		var err error
+		if *updates.SuspendPolicy == store.SuspendPolicyNever {
+			err = s.withNeverSuspendQuotaLock(ctx, projectQuotaSubject(agent), agent.ProjectID, runPatchTx)
+		} else {
+			err = runPatchTx(0)
+		}
 		if err != nil {
+			if errors.Is(err, store.ErrQuotaExceeded) || errors.Is(err, ErrQuotaLockContention) {
+				writeQuotaReserveError(w, store.LimitMaxNeverSuspendAgentsPerProject, err)
+				return
+			}
 			writeErrorFromErr(w, err, "")
 			return
 		}
@@ -5576,7 +5661,14 @@ func (s *Server) applyAgentUpdate(w http.ResponseWriter, r *http.Request, agent 
 				return err
 			}
 			if saWrite != nil {
-				return saWrite.apply(r, tx, agent.ID)
+				if err := saWrite.apply(r, tx, agent.ID); err != nil {
+					return err
+				}
+			}
+			if labelsChanged {
+				if err := writeAgentLabelsAuditTx(ctx, tx, agent.ID, before.labels, agent.Labels); err != nil {
+					return err
+				}
 			}
 			return nil
 		})
@@ -5591,7 +5683,26 @@ func (s *Server) applyAgentUpdate(w http.ResponseWriter, r *http.Request, agent 
 			if err := tx.UpdateAgent(ctx, agent); err != nil {
 				return err
 			}
-			return saWrite.apply(r, tx, agent.ID)
+			if err := saWrite.apply(r, tx, agent.ID); err != nil {
+				return err
+			}
+			if labelsChanged {
+				if err := writeAgentLabelsAuditTx(ctx, tx, agent.ID, before.labels, agent.Labels); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			writeErrorFromErr(w, err, "")
+			return
+		}
+	} else if labelsChanged {
+		err := s.store.WithTx(ctx, func(tx store.Store) error {
+			if err := tx.UpdateAgent(ctx, agent); err != nil {
+				return err
+			}
+			return writeAgentLabelsAuditTx(ctx, tx, agent.ID, before.labels, agent.Labels)
 		})
 		if err != nil {
 			writeErrorFromErr(w, err, "")

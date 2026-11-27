@@ -634,6 +634,9 @@ type Store interface {
 	// Tokenomics Track 1 operational usage ledger (ptone/scion#9233)
 	UsageLedgerStore
 
+	// Tokenomics Track 2 raw trajectory segments (ptone/scion#9250)
+	TrajectorySegmentStore
+
 	// Pre-suspend terminal screen snapshots (ptone/scion#8530)
 	AgentSuspendScreenStore
 }
@@ -716,6 +719,22 @@ type AgentStore interface {
 	// in the running phase with suspend_policy = "never", grouped by project
 	// and runtime broker.
 	CountRunningNeverSuspendAgents(ctx context.Context) ([]RunningNeverSuspendCount, error)
+
+	// CountNeverSuspendAgentsInProject returns the number of non-deleted agents
+	// (in any phase) in projectID with suspend_policy = "never". Used for
+	// row-only enforcement of LimitMaxNeverSuspendAgentsPerProject inside the
+	// writer transaction.
+	CountNeverSuspendAgentsInProject(ctx context.Context, projectID string) (int64, error)
+
+	// CountNeverSuspendAgents returns the total number of non-deleted agents
+	// (in any phase) across all projects with suspend_policy = "never". Used
+	// by the admin usage summary view.
+	CountNeverSuspendAgents(ctx context.Context) (int64, error)
+
+	// ListNeverSuspendAgents returns a narrow summary of every non-deleted
+	// agent (in any phase) with suspend_policy = "never". Used by the admin
+	// usage-by-limit view.
+	ListNeverSuspendAgents(ctx context.Context) ([]NeverSuspendAgentSummary, error)
 
 	// DeleteAgent removes an agent by ID.
 	// It does not deactivate the agent's delegation edges or service-account
@@ -4602,6 +4621,41 @@ type AgentSessionMetricsStore interface {
 	// CountDistinctAgentsByProject returns the number of distinct agents with
 	// session metrics in a project.
 	CountDistinctAgentsByProject(ctx context.Context, projectID string) (int, error)
+
+	// CountSessionMetrics computes exact distinct session counts
+	// (COUNT(DISTINCT (agent_id, session_id))) over [Since, Until], optionally
+	// returning distinct (agent_id, session_id, started_at) rows for
+	// timezone-aware per-day deduplication.
+	CountSessionMetrics(ctx context.Context, q SessionMetricsCountQuery) (*SessionMetricsCountResult, error)
+}
+
+// SessionMetricsCountQuery scopes distinct session counts over agent_session_metrics.
+type SessionMetricsCountQuery struct {
+	Since         time.Time
+	Until         time.Time
+	ProjectID     string
+	IncludeEvents bool
+	// Limit bounds the number of session start rows returned when IncludeEvents
+	// is true (0 uses the store default). TotalSessions is always exact.
+	Limit int
+}
+
+// SessionStartRef identifies one session segment start timestamp for
+// timezone-aware daily session deduplication.
+type SessionStartRef struct {
+	AgentID   string
+	SessionID string
+	StartedAt time.Time
+}
+
+// SessionMetricsCountResult holds exact distinct session counts over a window.
+// TotalSessions is COUNT(DISTINCT (agent_id, session_id)) over [Since, Until]
+// and is never derived by summing per-bucket counts.
+type SessionMetricsCountResult struct {
+	TotalSessions int64
+	Sessions      []SessionStartRef
+	// Truncated is true when session start rows exceeded Limit (newest retained).
+	Truncated bool
 }
 
 // =============================================================================

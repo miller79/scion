@@ -79,6 +79,7 @@ func TestUserMeInboxSummary_FlagOffAndMethodCheck(t *testing.T) {
 func TestUserMeInboxSummary_AuthAndValidation(t *testing.T) {
 	f := newChatFixture(t)
 	setInboxDashboardExperiment(t, f.srv, true)
+	setServerExperimentDefault(t, f.srv, experiments.Artifacts, false)
 	ctx := context.Background()
 
 	memberUser, err := f.s.GetUser(ctx, f.member)
@@ -139,7 +140,7 @@ func TestUserMeInboxSummary_AuthAndValidation(t *testing.T) {
 	uatHubResp := decodeInboxSummary(t, uatHubRec)
 	assert.Equal(t, "no-store", uatHubRec.Header().Get("Cache-Control"))
 	assert.Equal(t, 0, uatHubResp.Total)
-	require.Len(t, uatHubResp.Categories, 5)
+	require.Len(t, uatHubResp.Categories, 6)
 	assert.Equal(t, InboxStateUnavailable, uatHubResp.Categories[InboxCategoryPendingSecrets].State)
 	assert.Equal(t, 0, uatHubResp.Categories[InboxCategoryPendingSecrets].Count)
 	assert.False(t, uatHubResp.Categories[InboxCategoryPendingSecrets].CountsTowardTotal, "unavailable category must not count toward total")
@@ -151,14 +152,14 @@ func TestUserMeInboxSummary_AuthAndValidation(t *testing.T) {
 	assert.Equal(t, 0, uatProjResp.Total)
 	assert.Equal(t, InboxStateUnavailable, uatProjResp.Categories[InboxCategoryPendingSecrets].State)
 
-	// 8. Session user -> 200 with all five category keys, pending_secrets ok with count 1.
+	// 8. Session user -> 200 with all six category keys, pending_secrets ok with count 1.
 	sessRec := doRequestAsUser(t, f.srv, memberUser, http.MethodGet, userMeInboxSummaryPath, nil)
 	sessResp := decodeInboxSummary(t, sessRec)
 	assert.Equal(t, "no-store", sessRec.Header().Get("Cache-Control"))
 	assert.NotEmpty(t, sessResp.GeneratedAt)
 	assert.Equal(t, 1, sessResp.Total)
 	assert.False(t, sessResp.TotalCapped)
-	for _, key := range []string{InboxCategoryDecisions, InboxCategoryWaiting, InboxCategoryReviews, InboxCategoryPendingSecrets, InboxCategoryChat} {
+	for _, key := range []string{InboxCategoryDecisions, InboxCategoryAgentSecrets, InboxCategoryWaiting, InboxCategoryReviews, InboxCategoryPendingSecrets, InboxCategoryChat} {
 		assert.Contains(t, sessResp.Categories, key)
 	}
 	assert.Equal(t, InboxStateOK, sessResp.Categories[InboxCategoryPendingSecrets].State)
@@ -176,7 +177,7 @@ func TestUserMeInboxSummary_AuthAndValidation(t *testing.T) {
 	assert.Equal(t, InboxStateOK, chatCat.State)
 	assert.Equal(t, 0, chatCat.Count)
 	assert.Empty(t, chatCat.Previews)
-	assert.Equal(t, map[string]int{"dms": 0, "mentions": 0, "unreadConversations": 0}, chatCat.Breakdown)
+	assert.Equal(t, map[string]int{"dms": 0, "mentions": 0, "projects": 0, "starredMessages": 0, "unreadConversations": 0}, chatCat.Breakdown)
 
 	// Verify raw JSON wire shape: waiting always emits "agentIds": [] when state=="ok"
 	// and count==0, while other categories omit "agentIds".
@@ -455,7 +456,7 @@ func TestUserMeInboxSummary_SourceErrorIsolation(t *testing.T) {
 					State:             InboxStateError,
 					Count:             0,
 					CountsTowardTotal: false,
-					Href:              "/artifacts?review_pending=1&owner=me",
+					Href:              "/artifacts?review_on_latest=1&owner=me",
 					ErrorCode:         inboxCategoryErrorCode(ctx, errors.New("boom")),
 					Previews:          []any{},
 				}
@@ -598,7 +599,7 @@ func TestUserMeInboxSummary_SingleflightCoalescing(t *testing.T) {
 			},
 		},
 		{key: InboxCategoryWaiting, run: inboxDisabledCategory("/agents")},
-		{key: InboxCategoryReviews, run: inboxDisabledCategory("/artifacts?review_pending=1&owner=me")},
+		{key: InboxCategoryReviews, run: inboxDisabledCategory("/artifacts?review_on_latest=1&owner=me")},
 		{key: InboxCategoryChat, run: inboxDisabledCategory("/chat?filter=unread")},
 		{key: InboxCategoryDecisions, run: inboxDisabledCategory("/profile/decisions?tab=pending")},
 	}
@@ -659,7 +660,7 @@ func TestUserMeInboxSummary_SingleflightDistinctTokensDoNotCoalesce(t *testing.T
 			},
 		},
 		{key: InboxCategoryWaiting, run: inboxDisabledCategory("/agents")},
-		{key: InboxCategoryReviews, run: inboxDisabledCategory("/artifacts?review_pending=1&owner=me")},
+		{key: InboxCategoryReviews, run: inboxDisabledCategory("/artifacts?review_on_latest=1&owner=me")},
 		{key: InboxCategoryChat, run: inboxDisabledCategory("/chat?filter=unread")},
 		{key: InboxCategoryDecisions, run: inboxDisabledCategory("/profile/decisions?tab=pending")},
 	}

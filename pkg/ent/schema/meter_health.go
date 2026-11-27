@@ -54,6 +54,10 @@ func (MeterHealth) Fields() []ent.Field {
 			Default(0),
 		field.JSON("missing_ranges", []store.SeqRange{}).
 			Optional(),
+		field.Int64("rejected_count").
+			Default(0),
+		field.JSON("rejected_ranges", []store.SeqRange{}).
+			Optional(),
 		field.Time("last_source_activity_at").
 			Optional().
 			Nillable(),
@@ -79,6 +83,9 @@ func (MeterHealth) Indexes() []ent.Index {
 			StorageKey("meter_health_agent_run_epoch"),
 		index.Fields("run_id"),
 		index.Fields("final_state", "updated_at"),
+		index.Fields("updated_at"),
+		// Covering index for global GetUsageScopeCoverage window-activity scan.
+		index.Fields("last_receipt_at", "agent_id"),
 	}
 }
 

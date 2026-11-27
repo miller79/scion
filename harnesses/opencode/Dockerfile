@@ -21,8 +21,19 @@ RUN mkdir -p /home/scion/.local/share/opencode && \
 
 # Install OpenCode
 # RUN curl -fsSL https://opencode.ai/install | bash
+ARG OPENCODE_VERSION
+ARG OPENCODE_URL
+ARG OPENCODE_SHA256
+ARG OPENCODE_INTEGRITY
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
-    npm install -g opencode-ai \
+    if [ -n "${OPENCODE_URL}${OPENCODE_SHA256}${OPENCODE_INTEGRITY}" ]; then \
+      sh /opt/scion-image-build/lib/install-pinned-npm.sh \
+        "${OPENCODE_VERSION}" "${OPENCODE_URL}" "${OPENCODE_SHA256}" "${OPENCODE_INTEGRITY}"; \
+    elif [ -n "${OPENCODE_VERSION}" ]; then \
+      npm install -g "opencode-ai@${OPENCODE_VERSION}"; \
+    else \
+      npm install -g opencode-ai; \
+    fi \
   && npm cache clean --force
 # Ensure opencode is in PATH
 # ENV PATH="/home/scion/.opencode/bin:${PATH}"

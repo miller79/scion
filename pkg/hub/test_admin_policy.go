@@ -649,6 +649,14 @@ var testAdminSettingsKeyPolicy = map[string]testAdminPolicy{
 	"telemetry.filter.sampling":                        testAdminPolicyDeny,
 	"telemetry.filter.sampling.default":                testAdminPolicyDeny,
 	"telemetry.filter.sampling.rates":                  testAdminPolicyDeny,
+	"telemetry.retention":                              testAdminPolicyDeny,
+	"telemetry.retention.usage_events_days":            testAdminPolicyDeny,
+	"telemetry.retention.hourly_rollups_days":          testAdminPolicyDeny,
+	"telemetry.retention.daily_rollups_days":           testAdminPolicyDeny,
+	"telemetry.retention.scope_counters_days":          testAdminPolicyDeny,
+	"telemetry.retention.meter_health_days":            testAdminPolicyDeny,
+	"telemetry.retention.sweep_interval":               testAdminPolicyDeny,
+	"telemetry.retention.batch_size":                   testAdminPolicyDeny,
 	"telemetry.resource":                               testAdminPolicyDeny,
 	"auto_expose_ports.enabled":                        testAdminPolicyDeny,
 	"quotas.enforce_broker_quotas":                     testAdminPolicyDeny,
@@ -722,8 +730,6 @@ var testAdminExperimentPolicy = map[string]testAdminPolicy{
 	"hub.conduit":                               testAdminPolicyDeny,
 	experiments.ConduitDeliver:                  testAdminPolicyDeny,
 	experiments.ExecSchedules:                   testAdminPolicyDeny,
-	experiments.ChatScheduledSend:               testAdminPolicyDeny,
-	experiments.ChatStarredMessages:             testAdminPolicyDeny,
 	experiments.Decisions:                       testAdminPolicyDeny,
 	experiments.InboxDashboard:                  testAdminPolicyDeny,
 	experiments.ChatRetention:                   testAdminPolicyDeny,
@@ -780,6 +786,7 @@ var testAdminExperimentPolicy = map[string]testAdminPolicy{
 	experiments.TokenomicsTrajectoryCapture:     testAdminPolicyDeny,
 	experiments.AgentPolicyLimitCeilings:        testAdminPolicyDeny,
 	experiments.AgentPolicyTelemetryEnforcement: testAdminPolicyDeny,
+	experiments.AgentPolicyDurationBackstop:     testAdminPolicyDeny,
 }
 
 // testAdminPolicyInputs are the vocabularies the classification must cover.

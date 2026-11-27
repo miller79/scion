@@ -780,7 +780,7 @@ var errProjectOwnerBinding = errors.New("project owner binding")
 // provenance cannot be resolved fails the create with an error wrapping
 // errFixtureRootUnresolved.
 func (s *Server) createProjectWithOwner(ctx context.Context, project *store.Project, ownerID string) error {
-	return s.store.WithTx(ctx, func(tx store.Store) error {
+	if err := s.store.WithTx(ctx, func(tx store.Store) error {
 		if err := stampProject(ctx, tx, project, fixturePrincipalFromContext(ctx)); err != nil {
 			return err
 		}
@@ -794,7 +794,18 @@ func (s *Server) createProjectWithOwner(ctx context.Context, project *store.Proj
 			return fmt.Errorf("%w: %w", errProjectOwnerBinding, err)
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	// Only refresh operational settings after create when the local cache held
+	// a leftover override for this UUID, avoiding a full ListHubSettings read
+	// on normal project creates while still clearing cached pre-fix leftovers.
+	if ops := s.GetOperationalSettings(); ops != nil {
+		if _, hasLeftover := ops.DecisionRetention().ProjectOverrides[project.ID]; hasLeftover {
+			s.refreshDecisionRetentionAfterProjectChange(project.ID)
+		}
+	}
+	return nil
 }
 
 // createProjectOwnerRoleBindingTx writes the project-owner role binding for
@@ -2889,6 +2900,16 @@ func (s *Server) handleProjectRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Tokenomics Track 1 project usage summary (GET /api/v1/projects/{id}/usage).
+	if subPath == "usage" {
+		s.handleProjectUsage(w, r, projectID)
+		return
+	}
+	if strings.HasPrefix(subPath, "usage/") {
+		NotFound(w, "Project usage route")
+		return
+	}
+
 	// Check for nested /metrics/summary path (DB-backed session metrics summary)
 	if subPath == "metrics/summary" {
 		s.handleProjectSessionMetricsSummary(w, r, projectID)
@@ -3100,6 +3121,9 @@ func (s *Server) handleProjectAgents(w http.ResponseWriter, r *http.Request, pro
 		default:
 			MethodNotAllowed(w, http.MethodGet, http.MethodPatch, http.MethodDelete)
 		}
+
+	case ProjectAgentRouteLabels:
+		s.handleProjectAgentLabels(w, r, project.ID, agentIDRaw)
 
 	default:
 		action, ok := projectAgentRouteActions[route.RouteID]

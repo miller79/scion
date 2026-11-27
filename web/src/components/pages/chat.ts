@@ -45,14 +45,17 @@ import { customElement, property, state, query } from 'lit/decorators.js';
 import type { PageData, Agent, Project, DeletionInfo } from '../../shared/types.js';
 import { apiFetch, parseApiError } from '../../client/api.js';
 import { navigateTo, pushRoute, replaceRoute, stateManager } from '../../client/main.js';
-import { browserPath, stripBasePath } from '../../client/navigation.js';
+import { browserPath, replaceSearch, stripBasePath } from '../../client/navigation.js';
 import { agentIndexOf, agentStore } from '../../client/agent-store.js';
 import {
+  RAIL_FILTER_STORAGE_KEY,
   dmPeerFromKey,
+  hydrateRailFilterFromSearch,
   isChatConversationPath,
   messageFilterFromSearch,
   searchWithMessageFilter,
   type ChatMessageFilter,
+  type ChatUrlRailFilter,
 } from '../../client/chat-routes.js';
 import type { AgentListSnapshot } from '../../client/agent-store.js';
 import type { SeedEpochToken } from '../../client/state.js';
@@ -123,11 +126,7 @@ import type { StarredMessageOpenDetail } from '../shared/chat/chat-starred-list.
 import '../shared/chat/chat-open-decisions.js';
 import type { OpenDecisionOpenDetail } from '../shared/chat/chat-open-decisions.js';
 import { decisionsEnabled } from '../../utils/feature-flags.js';
-import {
-  conversationSupportsStars,
-  fetchStarDetail,
-  starredMessagesEnabled,
-} from '../../client/chat-stars.js';
+import { conversationSupportsStars, fetchStarDetail } from '../../client/chat-stars.js';
 import { showToast } from '../../utils/toast.js';
 import type {
   MessageFilterChangeDetail,
@@ -2188,6 +2187,16 @@ export class ScionPageChat extends LitElement {
     if (changedProperties.has('pageData') && this.pageData) {
       this.parseV2Route();
     }
+    if (this._pendingUrlRailFilter && this.v2SpaceRailLoaded) {
+      const rail = this.shadowRoot?.querySelector('scion-chat-space-rail') as
+        | (HTMLElement & { applyUrlFilter?: (f: ChatUrlRailFilter) => void })
+        | null;
+      if (rail?.applyUrlFilter) {
+        const pending = this._pendingUrlRailFilter;
+        this._pendingUrlRailFilter = null;
+        rail.applyUrlFilter(pending);
+      }
+    }
     // A message arriving in the conversation already on screen should not
     // also pop a desktop notification about it. Reported from updated()
     // rather than from each of the many places v2Conversation is assigned.
@@ -2550,12 +2559,45 @@ export class ScionPageChat extends LitElement {
     return this.isConnected && !!match && decodeURIComponent(match[1]) === peerId;
   }
 
+  private _pendingUrlRailFilter: ChatUrlRailFilter | null = null;
+
+  /**
+   * Hydrate the rail filter from `?filter=unread|mentions|starred` on any chat
+   * route, persist it to localStorage, and strip `filter` from the URL via
+   * `replaceSearch` (design §7.1, §14.4). Invalid values are ignored and stripped.
+   */
+  private hydrateRailFilterFromUrl(): void {
+    hydrateRailFilterFromSearch({
+      search: window.location.search,
+      replaceSearch,
+      persistFilter: (filter) => {
+        try {
+          localStorage.setItem(RAIL_FILTER_STORAGE_KEY, filter);
+        } catch {
+          // Ignore storage errors.
+        }
+      },
+      applyFilter: (filter) => {
+        const rail = this.shadowRoot?.querySelector('scion-chat-space-rail') as
+          | (HTMLElement & { applyUrlFilter?: (f: ChatUrlRailFilter) => void })
+          | null;
+        if (rail?.applyUrlFilter) {
+          rail.applyUrlFilter(filter);
+          this._pendingUrlRailFilter = null;
+        } else {
+          this._pendingUrlRailFilter = filter;
+        }
+      },
+    });
+  }
+
   private parseV2Route(): void {
     // Always use the browser URL as the source of truth. pushState
     // navigations (handleThreadSelect, handleMemberClick) update the
     // browser URL without updating pageData, so pageData.path can be
     // stale when this is called from handleRailLoaded after a reload.
     const path = window.location.pathname;
+    this.hydrateRailFilterFromUrl();
     this.syncMessageFilterFromUrl();
 
     // Match legacy /chat/space/{projectId}/thread/{topicId} (backward compat)
@@ -3519,9 +3561,9 @@ export class ScionPageChat extends LitElement {
     );
   }
 
-  /** The center filter a rail selection asks for (only while the experiment is on). */
+  /** The center filter a rail selection asks for. */
   private railSelectionFilter(requested: 'starred' | undefined): ChatMessageFilter {
-    return requested === 'starred' && starredMessagesEnabled() ? 'starred' : '';
+    return requested === 'starred' ? 'starred' : '';
   }
 
   /**
@@ -7201,6 +7243,7 @@ export class ScionPageChat extends LitElement {
             <scion-chat-thread
               conversationKey=${conv.conversationKey}
               projectId=${conv.projectId}
+              projectName=${conv.projectSlug || ''}
               threadName=${conv.threadName}
               .defaultAgent=${conv.defaultAgent}
               ?isDM=${conv.isDM}
@@ -7244,12 +7287,12 @@ export class ScionPageChat extends LitElement {
   }
 
   /**
-   * Whether the header shows the starred-messages button: the experiment is
-   * on and the conversation supports stars (threads and both DM kinds). It
-   * sits in the always-visible action area, not the secondary span.
+   * Whether the header shows the starred-messages button: the conversation
+   * supports stars (threads and both DM kinds). It sits in the
+   * always-visible action area, not the secondary span.
    */
   private headerShowsStars(conv: V2ConversationState): boolean {
-    return starredMessagesEnabled() && conversationSupportsStars(conv.conversationKey);
+    return conversationSupportsStars(conv.conversationKey);
   }
 
   /**
@@ -7347,32 +7390,25 @@ export class ScionPageChat extends LitElement {
 
   /**
    * The center message filter the current URL asks for, if it may apply:
-   * only on a conversation route and only while the experiment is on.
+   * only on a conversation route.
    */
   private urlMessageFilter(): ChatMessageFilter {
     const requested = messageFilterFromSearch(window.location.search);
     if (!requested) return '';
     const path = stripBasePath(window.location.pathname);
-    return isChatConversationPath(path) && starredMessagesEnabled() ? requested : '';
+    return isChatConversationPath(path) ? requested : '';
   }
 
   /**
    * Take the center message filter from the URL. A filter on a route that
-   * is not one conversation, or while the experiment is off, is dropped
-   * from the URL in place, so it is never carried on to another route;
-   * while the experiment is off a notice says the full history is shown.
+   * is not one conversation is dropped from the URL in place, so it is
+   * never carried on to another route.
    */
   private syncMessageFilterFromUrl(): void {
     const filter = this.urlMessageFilter();
     if (this.centerMessageFilter !== filter) this.centerMessageFilter = filter;
     if (filter || !messageFilterFromSearch(window.location.search)) return;
     const path = stripBasePath(window.location.pathname);
-    // On a conversation route the filter was dropped because the
-    // experiment is off: say so, so the full history is not taken for the
-    // starred messages, before the URL changes.
-    if (isChatConversationPath(path)) {
-      showToast('Starred messages are not available. Showing all messages.', 'warning');
-    }
     const search = searchWithMessageFilter(window.location.search, '');
     window.history.replaceState(
       window.history.state,
@@ -7392,7 +7428,7 @@ export class ScionPageChat extends LitElement {
     const detail = (e as CustomEvent<MessageFilterChangeDetail>).detail;
     const path = stripBasePath(window.location.pathname);
     if (!detail || !isChatConversationPath(path)) return;
-    const filter = detail.filter === 'starred' && starredMessagesEnabled() ? 'starred' : '';
+    const filter = detail.filter === 'starred' ? 'starred' : '';
     const search = searchWithMessageFilter(window.location.search, filter);
     const hash = detail.messageId ? `#msg-${encodeURIComponent(detail.messageId)}` : '';
     ++this._userNavSeq;

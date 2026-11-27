@@ -332,6 +332,10 @@ var routeMetadataTable = map[string]RouteMetadata{
 		Pattern: "/api/v1/users/me/decisions/suggestions", RouteID: "users.me.decisions.suggestions",
 		Classification: RouteAuthenticated,
 	},
+	"/api/v1/users/me/secret-requests": {
+		Pattern: "/api/v1/users/me/secret-requests", RouteID: "users.me.secretRequests",
+		Classification: RouteAuthenticated,
+	},
 	"/api/v1/users/me/inbox/summary": {
 		Pattern: "/api/v1/users/me/inbox/summary", RouteID: "users.me.inbox.summary",
 		Classification: RouteAuthenticated,
@@ -1176,6 +1180,11 @@ var routeMetadataTable = map[string]RouteMetadata{
 		Classification: RouteHubAdmin,
 		Permission:     "hub.metrics.read", Resource: "hub", Action: "read",
 	},
+	"/api/v1/usage": {
+		Pattern: "/api/v1/usage", RouteID: "hub.usage.read",
+		Classification: RouteHubAdmin,
+		Permission:     "hub.metrics.read", Resource: "hub", Action: "read",
+	},
 
 	// -------------------------------------------------------------------------
 	// Hub admin: Quota management (PR-B3)
@@ -1338,6 +1347,10 @@ var routeMetadataTable = map[string]RouteMetadata{
 	// -------------------------------------------------------------------------
 	"/api/v1/usage/me": {
 		Pattern: "/api/v1/usage/me", RouteID: "usage.me",
+		Classification: RouteAuthenticated,
+	},
+	"/api/v1/me/usage": {
+		Pattern: "/api/v1/me/usage", RouteID: "me.usage",
 		Classification: RouteAuthenticated,
 	},
 
@@ -1663,7 +1676,13 @@ var routeMetadataTable = map[string]RouteMetadata{
 		Pattern: "/api/v1/agent/command-requests", RouteID: "agent.commandRequests",
 		Classification:      RouteAgentToken,
 		AgentStanding:       AgentStandingExempt,
-		AgentStandingReason: "lists the calling agent's own command request metadata and run status; never executes commands or issues credentials",
+		AgentStandingReason: "lists and withdraws the calling agent's own command request metadata and run status; never executes commands or issues credentials",
+	},
+	"/api/v1/agent/command-requests/": {
+		Pattern: "/api/v1/agent/command-requests/", RouteID: "agent.commandRequestsAction",
+		Classification:      RouteAgentToken,
+		AgentStanding:       AgentStandingExempt,
+		AgentStandingReason: "lists and withdraws the calling agent's own command request metadata and run status; never executes commands or issues credentials",
 	},
 
 	// -------------------------------------------------------------------------

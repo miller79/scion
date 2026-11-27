@@ -524,6 +524,7 @@ func (s *Server) runLaunch(ctx context.Context, rec *launchRecord, lc launchCtx)
 			MaxTurns:              sr.info.EffectiveMaxTurns,
 			MaxModelCalls:         sr.info.EffectiveMaxModelCalls,
 			MaxDuration:           sr.info.EffectiveMaxDuration,
+			RunDeadline:           sr.info.EffectiveRunDeadline,
 			LimitsClampedBy:       append([]string(nil), sr.info.LimitsClampedBy...),
 		}
 	}
@@ -967,6 +968,9 @@ var launchFailureText = map[string]string{
 	api.LaunchCodePodDisrupted:                         "the agent pod was preempted, evicted or deleted while starting",
 	api.LaunchCodeLaunchTimeout:                        "launch timed out waiting for the agent pod to be ready",
 	api.LaunchCodeWorkspaceNotPermitted:                "the agent workspace path is not permitted",
+	// Hub-originated refusals (RuntimeTargetRefusal); kept here for CLI/web label parity.
+	api.LaunchCodeLimitCeilingsUnsupported:        "the runtime broker does not support hub agent limit ceilings",
+	api.LaunchCodeTelemetryEnforcementUnsupported: "the runtime broker does not support enforced telemetry; upgrade the broker",
 }
 
 // maxLaunchReasonLen bounds the runtime reason a failure message carries.

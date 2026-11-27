@@ -217,6 +217,12 @@ type Version struct {
 	// FailReason constants), or "" for a version that is not failed or was
 	// failed before reasons were recorded.
 	FailReason string
+	// SourceAttachmentID is the attachment artifact id this version was
+	// published from by reference, or "" for an ordinary publish.
+	SourceAttachmentID string
+	// SourceMessageID is the message id the source attachment was bound to
+	// when published by reference, or "" when none.
+	SourceMessageID string
 }
 
 // Reasons a version stopped being pending without becoming ready
@@ -299,8 +305,17 @@ type Store interface {
 
 	// CreatePublished writes a new artifact together with its first,
 	// ready version, that version's files and the given grants, in one
-	// transaction. The artifact's CurrentSeq is set to v.Seq.
+	// transaction. The artifact's CurrentSeq is set to v.Seq. When another
+	// live artifact already holds a's key for the same owner and scope, it
+	// returns ErrConflict.
 	CreatePublished(ctx context.Context, a *Artifact, v *Version, files []File, grants []Grant) error
+
+	// AppendPublishedVersion appends the ready version v and its files to an
+	// existing live non-attachment artifact, assigning v.Seq (one above the
+	// artifact's highest seq) and advancing CurrentSeq to v.Seq, in one
+	// transaction. It returns ErrNotFound when the artifact is absent or
+	// deleted and ErrAttachmentNotShareable when it is an attachment.
+	AppendPublishedVersion(ctx context.Context, v *Version, files []File) (*Artifact, error)
 
 	// CreatePending writes a new artifact together with its first version,
 	// which must be pending, that version's manifest and the given grants,
@@ -362,7 +377,15 @@ type Store interface {
 	// advances the current version; on either error nothing changes.
 	// Pending review versions do not count: a review never shadows another
 	// version, because its own base check refuses it.
+	// For kind: review versions, it also fulfils the finalizing reviewer's
+	// open review request and deletes their saved review draft in the same
+	// transaction.
 	FinalizeVersion(ctx context.Context, artifactID string, seq int, claim time.Time, extra []File, base int) (*Artifact, error)
+
+	// FinalizeVersionWithEffects behaves like FinalizeVersion and also
+	// reports review-request and draft side effects committed in the same
+	// transaction.
+	FinalizeVersionWithEffects(ctx context.Context, artifactID string, seq int, claim time.Time, extra []File, base int) (*Artifact, FinalizeEffects, error)
 
 	// DiscardFinalize fails the claimed (finalizing) version seq of an
 	// artifact and drops its manifest, for a finalize that rejected the
@@ -417,17 +440,27 @@ type Store interface {
 	// PutReviewDraft writes d when the stored revision equals expectRev (0
 	// creates a new row with Rev = 1; a positive expectRev updates an
 	// existing row to expectRev + 1), setting UpdatedAt = now, and returns
-	// the stored row. A revision mismatch returns a *DraftConflictError
-	// wrapping ErrDraftConflict with the stored row's revision, save time
-	// and base version (or zero values when expectRev > 0 and no row
-	// exists), never its body or note. An insert when the principal already
-	// holds maxPerPrincipal drafts returns ErrTooManyDrafts and writes
-	// nothing.
-	PutReviewDraft(ctx context.Context, d ReviewDraft, expectRev int, now time.Time, maxPerPrincipal int) (ReviewDraft, error)
+	// the stored row and whether a new row was inserted (created). A revision
+	// mismatch returns a *DraftConflictError wrapping ErrDraftConflict with
+	// the stored row's revision, save time and base version (or zero values
+	// when expectRev > 0 and no row exists), never its body or note. An insert
+	// when the principal already holds maxPerPrincipal drafts returns
+	// ErrTooManyDrafts and writes nothing.
+	PutReviewDraft(ctx context.Context, d ReviewDraft, expectRev int, now time.Time, maxPerPrincipal int) (ReviewDraft, bool, error)
 
 	// GetReviewDraft returns the principal's saved draft of the artifact,
 	// or ErrNotFound.
 	GetReviewDraft(ctx context.Context, artifactID, kind, ref string) (ReviewDraft, error)
+
+	// GetReviewDraftSummary returns the base version and last save time of
+	// the principal's saved draft of the artifact without reading its body or
+	// note, or ErrNotFound.
+	GetReviewDraftSummary(ctx context.Context, artifactID, kind, ref string) (*ReviewDraftSummary, error)
+
+	// CountOpenRequestReviewDrafts returns the number of saved review drafts
+	// on artifactID held by principals who currently have an open review
+	// request on artifactID. It never reads or exposes draft content.
+	CountOpenRequestReviewDrafts(ctx context.Context, artifactID string) (int, error)
 
 	// DeleteReviewDraft deletes the principal's saved draft of the artifact
 	// and reports whether a row was deleted. When expectRev is 0, any
@@ -438,8 +471,8 @@ type Store interface {
 	DeleteReviewDraft(ctx context.Context, artifactID, kind, ref string, expectRev int) (bool, error)
 
 	// ReapReviewDrafts deletes at most limit review drafts last saved
-	// (updated_at) before cutoff and returns how many it deleted.
-	ReapReviewDrafts(ctx context.Context, cutoff time.Time, limit int) (int, error)
+	// (updated_at) before cutoff and returns the keys of the deleted rows.
+	ReapReviewDrafts(ctx context.Context, cutoff time.Time, limit int) ([]ReviewDraftKey, error)
 
 	// ListReviewDraftKeys returns up to limit saved review draft keys ordered
 	// by (artifact_id, principal_kind, principal_ref), strictly after after
@@ -673,6 +706,12 @@ type Store interface {
 	// creation. Messages without attachments are absent from the map.
 	ListMessageAttachments(ctx context.Context, messageIDs []string) (map[string][]AttachmentRow, error)
 
+	// ListArtifactsBySourceAttachments returns the distinct live
+	// (deleted_at IS NULL) non-attachment artifacts whose versions record a
+	// source_attachment_id in attIDs, keyed by source_attachment_id and
+	// ordered by artifact.created_at DESC (with artifact.id DESC as tie-breaker).
+	ListArtifactsBySourceAttachments(ctx context.Context, attIDs []string) (map[string][]*Artifact, error)
+
 	// RetireScope soft-deletes, through DeleteArtifact, every live artifact
 	// in the scope (kind, ref), up to limit, recording actor, and returns
 	// how many it deleted.
@@ -713,8 +752,10 @@ type Store interface {
 	// existing open request if remindCooldown has elapsed since its last
 	// reminder (or if it has never been reminded). Runs under
 	// lockLiveArtifact and sets requested_seq = current_seq at commit.
-	// Returns the row and the outcome (created, reminded, unchanged).
-	CreateOrRemindReviewRequest(ctx context.Context, req ReviewRequest, remindCooldown time.Duration, now time.Time, actor *Actor) (ReviewRequest, string, error)
+	// When grantOpt is non-nil, raises the reviewer's principal grant to
+	// review in the same transaction. Returns the row and the outcome
+	// (created, reminded, unchanged).
+	CreateOrRemindReviewRequest(ctx context.Context, req ReviewRequest, remindCooldown time.Duration, now time.Time, actor *Actor, grantOpt *ReviewRequestGrantOption) (ReviewRequest, string, error)
 
 	// DismissReviewRequest transitions the caller's open review request on
 	// artifactID to dismissed using a CAS on state='open'. Returns
@@ -725,6 +766,52 @@ type Store interface {
 	// GetOpenReviewRequest returns the open review request for
 	// (artifactID, reviewerKind, reviewerRef), or ErrNotFound.
 	GetOpenReviewRequest(ctx context.Context, artifactID, reviewerKind, reviewerRef string) (*ReviewRequest, error)
+
+	// GetOpenReviewRequestsFor returns the open review request addressed to
+	// (reviewerKind, reviewerRef) for each artifact ID in artifactIDs, keyed by
+	// artifact ID. At most MaxGrantsForIDs ids may be given.
+	GetOpenReviewRequestsFor(ctx context.Context, artifactIDs []string, reviewerKind, reviewerRef string) (map[string]ReviewRequest, error)
+
+	// GetReviewRequest returns the review request with id requestID on
+	// artifactID, or ErrNotFound.
+	GetReviewRequest(ctx context.Context, artifactID, requestID string) (*ReviewRequest, error)
+
+	// ListReviewRequests returns all open review requests for artifactID
+	// (newest first) followed by up to closedLimit most recent closed rows.
+	ListReviewRequests(ctx context.Context, artifactID string, closedLimit int) ([]ReviewRequest, error)
+
+	// ListReviewRequestsForReviewer returns all open review requests for
+	// (artifactID, reviewerKind, reviewerRef) followed by up to closedLimit
+	// most recent closed rows.
+	ListReviewRequestsForReviewer(ctx context.Context, artifactID, reviewerKind, reviewerRef string, closedLimit int) ([]ReviewRequest, error)
+
+	// WithdrawReviewRequest transitions an open review request to withdrawn
+	// under lockLiveArtifact + CAS on state='open'. Returns ErrNotFound if
+	// missing or ErrRequestClosed if already closed.
+	WithdrawReviewRequest(ctx context.Context, artifactID, requestID string, now time.Time, actor *Actor) (ReviewRequest, error)
+
+	// ListOpenReviewRequests walks open review requests in (artifact_id, id)
+	// order for the maintenance reaper.
+	ListOpenReviewRequests(ctx context.Context, after *ReviewRequestKey, limit int) ([]ReviewRequest, error)
+
+	// ExpireReviewRequest CAS-transitions an open review request to expired
+	// only if state is still 'open' and updated_at matches expectUpdatedAt.
+	ExpireReviewRequest(ctx context.Context, artifactID, requestID string, expectUpdatedAt time.Time, reason string, now time.Time, actor *Actor) (bool, error)
+
+	// PurgeClosedReviewRequests deletes up to limit closed review request
+	// rows whose resolved_at is at or before resolvedBefore.
+	PurgeClosedReviewRequests(ctx context.Context, resolvedBefore time.Time, limit int) (int, error)
+
+	// ListReviewDraftPrincipals returns the principal keys of all saved
+	// review drafts on artifactID without reading draft content.
+	ListReviewDraftPrincipals(ctx context.Context, artifactID string) ([]ReviewDraftKey, error)
+}
+
+// FinalizeEffects reports review-request and draft side effects committed
+// inside FinalizeVersion's transaction for a kind: review version.
+type FinalizeEffects struct {
+	FulfilledRequestID string
+	DraftDeleted       bool
 }
 
 // TransferOptions qualifies Store.TransferOwner.
@@ -802,8 +889,8 @@ type CandidateQuery struct {
 	ScopeRefs []string
 	// OwnedOnly keeps only rows the principal owns; grants are ignored.
 	OwnedOnly bool
-	// ReviewPending keeps only rows whose current version is a review.
-	ReviewPending bool
+	// ReviewOnLatest keeps only rows whose current version is a review.
+	ReviewOnLatest bool
 	// RequestedOnly keeps only rows with an open review request addressed to
 	// the caller (when ReviewRequestsEnabled is true; matches nothing when
 	// false).
@@ -812,6 +899,13 @@ type CandidateQuery struct {
 	// enabled for this query. When false, RequestedOnly and is:requested match
 	// nothing and Candidate.RequestedByMe is always false.
 	ReviewRequestsEnabled bool
+	// DraftsOnly keeps only rows where the caller has a saved review draft
+	// (when ReviewDraftsEnabled is true; matches nothing when false).
+	DraftsOnly bool
+	// ReviewDraftsEnabled reports whether hub.artifacts_review_drafts is
+	// enabled for this query. When false, DraftsOnly and is:draft match
+	// nothing and Candidate.MyDraft is always false.
+	ReviewDraftsEnabled bool
 	// HomeScope, when set, keeps only rows homed in this project, and
 	// with ScopeShares also those carrying an unexpired read, write or
 	// admin scope grant to it. It narrows the other conditions and never
@@ -865,6 +959,7 @@ type Candidate struct {
 	Artifact
 	CurrentKind   string
 	RequestedByMe bool
+	MyDraft       bool
 }
 
 // NewStore returns the Store for db. driverName selects the SQL dialect:

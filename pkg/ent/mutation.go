@@ -121,6 +121,7 @@ import (
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/testinframarker"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/threadgroup"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/threadgroupmember"
+	"github.com/GoogleCloudPlatform/scion/pkg/ent/trajectorysegment"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/trigger"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/triggerevent"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/triggerfire"
@@ -128,6 +129,7 @@ import (
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/usageevent"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/usagereservation"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/usagerollupdaily"
+	"github.com/GoogleCloudPlatform/scion/pkg/ent/usagerolluphourly"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/usagescopecounterdaily"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/user"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/useraccesstoken"
@@ -257,6 +259,7 @@ const (
 	TypeTestInfraMarker               = "TestInfraMarker"
 	TypeThreadGroup                   = "ThreadGroup"
 	TypeThreadGroupMember             = "ThreadGroupMember"
+	TypeTrajectorySegment             = "TrajectorySegment"
 	TypeTrigger                       = "Trigger"
 	TypeTriggerEvent                  = "TriggerEvent"
 	TypeTriggerFire                   = "TriggerFire"
@@ -264,6 +267,7 @@ const (
 	TypeUsageEvent                    = "UsageEvent"
 	TypeUsageReservation              = "UsageReservation"
 	TypeUsageRollupDaily              = "UsageRollupDaily"
+	TypeUsageRollupHourly             = "UsageRollupHourly"
 	TypeUsageScopeCounterDaily        = "UsageScopeCounterDaily"
 	TypeUser                          = "User"
 	TypeUserAccessToken               = "UserAccessToken"
@@ -26229,6 +26233,7 @@ type AgentSessionMetricsMutation struct {
 	languages           *[]string
 	appendlanguages     []string
 	created_at          *time.Time
+	converted_at        *time.Time
 	clearedFields       map[string]struct{}
 	done                bool
 	oldValue            func(context.Context) (*AgentSessionMetrics, error)
@@ -27130,6 +27135,55 @@ func (m *AgentSessionMetricsMutation) ResetCreatedAt() {
 	m.created_at = nil
 }
 
+// SetConvertedAt sets the "converted_at" field.
+func (m *AgentSessionMetricsMutation) SetConvertedAt(t time.Time) {
+	m.converted_at = &t
+}
+
+// ConvertedAt returns the value of the "converted_at" field in the mutation.
+func (m *AgentSessionMetricsMutation) ConvertedAt() (r time.Time, exists bool) {
+	v := m.converted_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldConvertedAt returns the old "converted_at" field's value of the AgentSessionMetrics entity.
+// If the AgentSessionMetrics object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AgentSessionMetricsMutation) OldConvertedAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldConvertedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldConvertedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldConvertedAt: %w", err)
+	}
+	return oldValue.ConvertedAt, nil
+}
+
+// ClearConvertedAt clears the value of the "converted_at" field.
+func (m *AgentSessionMetricsMutation) ClearConvertedAt() {
+	m.converted_at = nil
+	m.clearedFields[agentsessionmetrics.FieldConvertedAt] = struct{}{}
+}
+
+// ConvertedAtCleared returns if the "converted_at" field was cleared in this mutation.
+func (m *AgentSessionMetricsMutation) ConvertedAtCleared() bool {
+	_, ok := m.clearedFields[agentsessionmetrics.FieldConvertedAt]
+	return ok
+}
+
+// ResetConvertedAt resets all changes to the "converted_at" field.
+func (m *AgentSessionMetricsMutation) ResetConvertedAt() {
+	m.converted_at = nil
+	delete(m.clearedFields, agentsessionmetrics.FieldConvertedAt)
+}
+
 // Where appends a list predicates to the AgentSessionMetricsMutation builder.
 func (m *AgentSessionMetricsMutation) Where(ps ...predicate.AgentSessionMetrics) {
 	m.predicates = append(m.predicates, ps...)
@@ -27164,7 +27218,7 @@ func (m *AgentSessionMetricsMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *AgentSessionMetricsMutation) Fields() []string {
-	fields := make([]string, 0, 15)
+	fields := make([]string, 0, 16)
 	if m.agent_id != nil {
 		fields = append(fields, agentsessionmetrics.FieldAgentID)
 	}
@@ -27210,6 +27264,9 @@ func (m *AgentSessionMetricsMutation) Fields() []string {
 	if m.created_at != nil {
 		fields = append(fields, agentsessionmetrics.FieldCreatedAt)
 	}
+	if m.converted_at != nil {
+		fields = append(fields, agentsessionmetrics.FieldConvertedAt)
+	}
 	return fields
 }
 
@@ -27248,6 +27305,8 @@ func (m *AgentSessionMetricsMutation) Field(name string) (ent.Value, bool) {
 		return m.Languages()
 	case agentsessionmetrics.FieldCreatedAt:
 		return m.CreatedAt()
+	case agentsessionmetrics.FieldConvertedAt:
+		return m.ConvertedAt()
 	}
 	return nil, false
 }
@@ -27287,6 +27346,8 @@ func (m *AgentSessionMetricsMutation) OldField(ctx context.Context, name string)
 		return m.OldLanguages(ctx)
 	case agentsessionmetrics.FieldCreatedAt:
 		return m.OldCreatedAt(ctx)
+	case agentsessionmetrics.FieldConvertedAt:
+		return m.OldConvertedAt(ctx)
 	}
 	return nil, fmt.Errorf("unknown AgentSessionMetrics field %s", name)
 }
@@ -27400,6 +27461,13 @@ func (m *AgentSessionMetricsMutation) SetField(name string, value ent.Value) err
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetCreatedAt(v)
+		return nil
+	case agentsessionmetrics.FieldConvertedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetConvertedAt(v)
 		return nil
 	}
 	return fmt.Errorf("unknown AgentSessionMetrics field %s", name)
@@ -27524,6 +27592,9 @@ func (m *AgentSessionMetricsMutation) ClearedFields() []string {
 	if m.FieldCleared(agentsessionmetrics.FieldLanguages) {
 		fields = append(fields, agentsessionmetrics.FieldLanguages)
 	}
+	if m.FieldCleared(agentsessionmetrics.FieldConvertedAt) {
+		fields = append(fields, agentsessionmetrics.FieldConvertedAt)
+	}
 	return fields
 }
 
@@ -27567,6 +27638,9 @@ func (m *AgentSessionMetricsMutation) ClearField(name string) error {
 		return nil
 	case agentsessionmetrics.FieldLanguages:
 		m.ClearLanguages()
+		return nil
+	case agentsessionmetrics.FieldConvertedAt:
+		m.ClearConvertedAt()
 		return nil
 	}
 	return fmt.Errorf("unknown AgentSessionMetrics nullable field %s", name)
@@ -27620,6 +27694,9 @@ func (m *AgentSessionMetricsMutation) ResetField(name string) error {
 		return nil
 	case agentsessionmetrics.FieldCreatedAt:
 		m.ResetCreatedAt()
+		return nil
+	case agentsessionmetrics.FieldConvertedAt:
+		m.ResetConvertedAt()
 		return nil
 	}
 	return fmt.Errorf("unknown AgentSessionMetrics field %s", name)
@@ -81942,6 +82019,10 @@ type MeterHealthMutation struct {
 	addmax_seq_seen         *int64
 	missing_ranges          *[]store.SeqRange
 	appendmissing_ranges    []store.SeqRange
+	rejected_count          *int64
+	addrejected_count       *int64
+	rejected_ranges         *[]store.SeqRange
+	appendrejected_ranges   []store.SeqRange
 	last_source_activity_at *time.Time
 	supported_signals       *[]string
 	appendsupported_signals []string
@@ -82381,6 +82462,127 @@ func (m *MeterHealthMutation) ResetMissingRanges() {
 	delete(m.clearedFields, meterhealth.FieldMissingRanges)
 }
 
+// SetRejectedCount sets the "rejected_count" field.
+func (m *MeterHealthMutation) SetRejectedCount(i int64) {
+	m.rejected_count = &i
+	m.addrejected_count = nil
+}
+
+// RejectedCount returns the value of the "rejected_count" field in the mutation.
+func (m *MeterHealthMutation) RejectedCount() (r int64, exists bool) {
+	v := m.rejected_count
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRejectedCount returns the old "rejected_count" field's value of the MeterHealth entity.
+// If the MeterHealth object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *MeterHealthMutation) OldRejectedCount(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRejectedCount is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRejectedCount requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRejectedCount: %w", err)
+	}
+	return oldValue.RejectedCount, nil
+}
+
+// AddRejectedCount adds i to the "rejected_count" field.
+func (m *MeterHealthMutation) AddRejectedCount(i int64) {
+	if m.addrejected_count != nil {
+		*m.addrejected_count += i
+	} else {
+		m.addrejected_count = &i
+	}
+}
+
+// AddedRejectedCount returns the value that was added to the "rejected_count" field in this mutation.
+func (m *MeterHealthMutation) AddedRejectedCount() (r int64, exists bool) {
+	v := m.addrejected_count
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetRejectedCount resets all changes to the "rejected_count" field.
+func (m *MeterHealthMutation) ResetRejectedCount() {
+	m.rejected_count = nil
+	m.addrejected_count = nil
+}
+
+// SetRejectedRanges sets the "rejected_ranges" field.
+func (m *MeterHealthMutation) SetRejectedRanges(sr []store.SeqRange) {
+	m.rejected_ranges = &sr
+	m.appendrejected_ranges = nil
+}
+
+// RejectedRanges returns the value of the "rejected_ranges" field in the mutation.
+func (m *MeterHealthMutation) RejectedRanges() (r []store.SeqRange, exists bool) {
+	v := m.rejected_ranges
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRejectedRanges returns the old "rejected_ranges" field's value of the MeterHealth entity.
+// If the MeterHealth object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *MeterHealthMutation) OldRejectedRanges(ctx context.Context) (v []store.SeqRange, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRejectedRanges is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRejectedRanges requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRejectedRanges: %w", err)
+	}
+	return oldValue.RejectedRanges, nil
+}
+
+// AppendRejectedRanges adds sr to the "rejected_ranges" field.
+func (m *MeterHealthMutation) AppendRejectedRanges(sr []store.SeqRange) {
+	m.appendrejected_ranges = append(m.appendrejected_ranges, sr...)
+}
+
+// AppendedRejectedRanges returns the list of values that were appended to the "rejected_ranges" field in this mutation.
+func (m *MeterHealthMutation) AppendedRejectedRanges() ([]store.SeqRange, bool) {
+	if len(m.appendrejected_ranges) == 0 {
+		return nil, false
+	}
+	return m.appendrejected_ranges, true
+}
+
+// ClearRejectedRanges clears the value of the "rejected_ranges" field.
+func (m *MeterHealthMutation) ClearRejectedRanges() {
+	m.rejected_ranges = nil
+	m.appendrejected_ranges = nil
+	m.clearedFields[meterhealth.FieldRejectedRanges] = struct{}{}
+}
+
+// RejectedRangesCleared returns if the "rejected_ranges" field was cleared in this mutation.
+func (m *MeterHealthMutation) RejectedRangesCleared() bool {
+	_, ok := m.clearedFields[meterhealth.FieldRejectedRanges]
+	return ok
+}
+
+// ResetRejectedRanges resets all changes to the "rejected_ranges" field.
+func (m *MeterHealthMutation) ResetRejectedRanges() {
+	m.rejected_ranges = nil
+	m.appendrejected_ranges = nil
+	delete(m.clearedFields, meterhealth.FieldRejectedRanges)
+}
+
 // SetLastSourceActivityAt sets the "last_source_activity_at" field.
 func (m *MeterHealthMutation) SetLastSourceActivityAt(t time.Time) {
 	m.last_source_activity_at = &t
@@ -82693,7 +82895,7 @@ func (m *MeterHealthMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *MeterHealthMutation) Fields() []string {
-	fields := make([]string, 0, 13)
+	fields := make([]string, 0, 15)
 	if m.agent_id != nil {
 		fields = append(fields, meterhealth.FieldAgentID)
 	}
@@ -82714,6 +82916,12 @@ func (m *MeterHealthMutation) Fields() []string {
 	}
 	if m.missing_ranges != nil {
 		fields = append(fields, meterhealth.FieldMissingRanges)
+	}
+	if m.rejected_count != nil {
+		fields = append(fields, meterhealth.FieldRejectedCount)
+	}
+	if m.rejected_ranges != nil {
+		fields = append(fields, meterhealth.FieldRejectedRanges)
 	}
 	if m.last_source_activity_at != nil {
 		fields = append(fields, meterhealth.FieldLastSourceActivityAt)
@@ -82755,6 +82963,10 @@ func (m *MeterHealthMutation) Field(name string) (ent.Value, bool) {
 		return m.MaxSeqSeen()
 	case meterhealth.FieldMissingRanges:
 		return m.MissingRanges()
+	case meterhealth.FieldRejectedCount:
+		return m.RejectedCount()
+	case meterhealth.FieldRejectedRanges:
+		return m.RejectedRanges()
 	case meterhealth.FieldLastSourceActivityAt:
 		return m.LastSourceActivityAt()
 	case meterhealth.FieldSupportedSignals:
@@ -82790,6 +83002,10 @@ func (m *MeterHealthMutation) OldField(ctx context.Context, name string) (ent.Va
 		return m.OldMaxSeqSeen(ctx)
 	case meterhealth.FieldMissingRanges:
 		return m.OldMissingRanges(ctx)
+	case meterhealth.FieldRejectedCount:
+		return m.OldRejectedCount(ctx)
+	case meterhealth.FieldRejectedRanges:
+		return m.OldRejectedRanges(ctx)
 	case meterhealth.FieldLastSourceActivityAt:
 		return m.OldLastSourceActivityAt(ctx)
 	case meterhealth.FieldSupportedSignals:
@@ -82860,6 +83076,20 @@ func (m *MeterHealthMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetMissingRanges(v)
 		return nil
+	case meterhealth.FieldRejectedCount:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRejectedCount(v)
+		return nil
+	case meterhealth.FieldRejectedRanges:
+		v, ok := value.([]store.SeqRange)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRejectedRanges(v)
+		return nil
 	case meterhealth.FieldLastSourceActivityAt:
 		v, ok := value.(time.Time)
 		if !ok {
@@ -82916,6 +83146,9 @@ func (m *MeterHealthMutation) AddedFields() []string {
 	if m.addmax_seq_seen != nil {
 		fields = append(fields, meterhealth.FieldMaxSeqSeen)
 	}
+	if m.addrejected_count != nil {
+		fields = append(fields, meterhealth.FieldRejectedCount)
+	}
 	if m.addanomalous_count != nil {
 		fields = append(fields, meterhealth.FieldAnomalousCount)
 	}
@@ -82931,6 +83164,8 @@ func (m *MeterHealthMutation) AddedField(name string) (ent.Value, bool) {
 		return m.AddedLastContiguousSeq()
 	case meterhealth.FieldMaxSeqSeen:
 		return m.AddedMaxSeqSeen()
+	case meterhealth.FieldRejectedCount:
+		return m.AddedRejectedCount()
 	case meterhealth.FieldAnomalousCount:
 		return m.AddedAnomalousCount()
 	}
@@ -82956,6 +83191,13 @@ func (m *MeterHealthMutation) AddField(name string, value ent.Value) error {
 		}
 		m.AddMaxSeqSeen(v)
 		return nil
+	case meterhealth.FieldRejectedCount:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddRejectedCount(v)
+		return nil
 	case meterhealth.FieldAnomalousCount:
 		v, ok := value.(int64)
 		if !ok {
@@ -82973,6 +83215,9 @@ func (m *MeterHealthMutation) ClearedFields() []string {
 	var fields []string
 	if m.FieldCleared(meterhealth.FieldMissingRanges) {
 		fields = append(fields, meterhealth.FieldMissingRanges)
+	}
+	if m.FieldCleared(meterhealth.FieldRejectedRanges) {
+		fields = append(fields, meterhealth.FieldRejectedRanges)
 	}
 	if m.FieldCleared(meterhealth.FieldLastSourceActivityAt) {
 		fields = append(fields, meterhealth.FieldLastSourceActivityAt)
@@ -82996,6 +83241,9 @@ func (m *MeterHealthMutation) ClearField(name string) error {
 	switch name {
 	case meterhealth.FieldMissingRanges:
 		m.ClearMissingRanges()
+		return nil
+	case meterhealth.FieldRejectedRanges:
+		m.ClearRejectedRanges()
 		return nil
 	case meterhealth.FieldLastSourceActivityAt:
 		m.ClearLastSourceActivityAt()
@@ -83031,6 +83279,12 @@ func (m *MeterHealthMutation) ResetField(name string) error {
 		return nil
 	case meterhealth.FieldMissingRanges:
 		m.ResetMissingRanges()
+		return nil
+	case meterhealth.FieldRejectedCount:
+		m.ResetRejectedCount()
+		return nil
+	case meterhealth.FieldRejectedRanges:
+		m.ResetRejectedRanges()
 		return nil
 	case meterhealth.FieldLastSourceActivityAt:
 		m.ResetLastSourceActivityAt()
@@ -128431,6 +128685,1740 @@ func (m *ThreadGroupMemberMutation) ResetEdge(name string) error {
 	return fmt.Errorf("unknown ThreadGroupMember edge %s", name)
 }
 
+// TrajectorySegmentMutation represents an operation that mutates the TrajectorySegment nodes in the graph.
+type TrajectorySegmentMutation struct {
+	config
+	op                   Op
+	typ                  string
+	id                   *string
+	hub_id               *string
+	origin_hub_id        *string
+	project_id           *string
+	agent_id             *string
+	run_id               *string
+	harness              *string
+	native_relative_path *string
+	artifact_kind        *string
+	generation           *int
+	addgeneration        *int
+	byte_start           *int64
+	addbyte_start        *int64
+	byte_end             *int64
+	addbyte_end          *int64
+	raw_sha256           *string
+	compressed_size      *int64
+	addcompressed_size   *int64
+	compressed_sha256    *string
+	incomplete_tail      *bool
+	session_id           *string
+	object_path          *string
+	manifest_path        *string
+	status               *string
+	normalize_status     *string
+	created_at           *time.Time
+	committed_at         *time.Time
+	prepare_expires_at   *time.Time
+	clearedFields        map[string]struct{}
+	done                 bool
+	oldValue             func(context.Context) (*TrajectorySegment, error)
+	predicates           []predicate.TrajectorySegment
+}
+
+var _ ent.Mutation = (*TrajectorySegmentMutation)(nil)
+
+// trajectorysegmentOption allows management of the mutation configuration using functional options.
+type trajectorysegmentOption func(*TrajectorySegmentMutation)
+
+// newTrajectorySegmentMutation creates new mutation for the TrajectorySegment entity.
+func newTrajectorySegmentMutation(c config, op Op, opts ...trajectorysegmentOption) *TrajectorySegmentMutation {
+	m := &TrajectorySegmentMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeTrajectorySegment,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withTrajectorySegmentID sets the ID field of the mutation.
+func withTrajectorySegmentID(id string) trajectorysegmentOption {
+	return func(m *TrajectorySegmentMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *TrajectorySegment
+		)
+		m.oldValue = func(ctx context.Context) (*TrajectorySegment, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().TrajectorySegment.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withTrajectorySegment sets the old TrajectorySegment of the mutation.
+func withTrajectorySegment(node *TrajectorySegment) trajectorysegmentOption {
+	return func(m *TrajectorySegmentMutation) {
+		m.oldValue = func(context.Context) (*TrajectorySegment, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m TrajectorySegmentMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m TrajectorySegmentMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// SetID sets the value of the id field. Note that this
+// operation is only accepted on creation of TrajectorySegment entities.
+func (m *TrajectorySegmentMutation) SetID(id string) {
+	m.id = &id
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *TrajectorySegmentMutation) ID() (id string, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *TrajectorySegmentMutation) IDs(ctx context.Context) ([]string, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []string{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().TrajectorySegment.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetHubID sets the "hub_id" field.
+func (m *TrajectorySegmentMutation) SetHubID(s string) {
+	m.hub_id = &s
+}
+
+// HubID returns the value of the "hub_id" field in the mutation.
+func (m *TrajectorySegmentMutation) HubID() (r string, exists bool) {
+	v := m.hub_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldHubID returns the old "hub_id" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldHubID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldHubID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldHubID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldHubID: %w", err)
+	}
+	return oldValue.HubID, nil
+}
+
+// ResetHubID resets all changes to the "hub_id" field.
+func (m *TrajectorySegmentMutation) ResetHubID() {
+	m.hub_id = nil
+}
+
+// SetOriginHubID sets the "origin_hub_id" field.
+func (m *TrajectorySegmentMutation) SetOriginHubID(s string) {
+	m.origin_hub_id = &s
+}
+
+// OriginHubID returns the value of the "origin_hub_id" field in the mutation.
+func (m *TrajectorySegmentMutation) OriginHubID() (r string, exists bool) {
+	v := m.origin_hub_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldOriginHubID returns the old "origin_hub_id" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldOriginHubID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldOriginHubID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldOriginHubID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldOriginHubID: %w", err)
+	}
+	return oldValue.OriginHubID, nil
+}
+
+// ClearOriginHubID clears the value of the "origin_hub_id" field.
+func (m *TrajectorySegmentMutation) ClearOriginHubID() {
+	m.origin_hub_id = nil
+	m.clearedFields[trajectorysegment.FieldOriginHubID] = struct{}{}
+}
+
+// OriginHubIDCleared returns if the "origin_hub_id" field was cleared in this mutation.
+func (m *TrajectorySegmentMutation) OriginHubIDCleared() bool {
+	_, ok := m.clearedFields[trajectorysegment.FieldOriginHubID]
+	return ok
+}
+
+// ResetOriginHubID resets all changes to the "origin_hub_id" field.
+func (m *TrajectorySegmentMutation) ResetOriginHubID() {
+	m.origin_hub_id = nil
+	delete(m.clearedFields, trajectorysegment.FieldOriginHubID)
+}
+
+// SetProjectID sets the "project_id" field.
+func (m *TrajectorySegmentMutation) SetProjectID(s string) {
+	m.project_id = &s
+}
+
+// ProjectID returns the value of the "project_id" field in the mutation.
+func (m *TrajectorySegmentMutation) ProjectID() (r string, exists bool) {
+	v := m.project_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldProjectID returns the old "project_id" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldProjectID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldProjectID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldProjectID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldProjectID: %w", err)
+	}
+	return oldValue.ProjectID, nil
+}
+
+// ResetProjectID resets all changes to the "project_id" field.
+func (m *TrajectorySegmentMutation) ResetProjectID() {
+	m.project_id = nil
+}
+
+// SetAgentID sets the "agent_id" field.
+func (m *TrajectorySegmentMutation) SetAgentID(s string) {
+	m.agent_id = &s
+}
+
+// AgentID returns the value of the "agent_id" field in the mutation.
+func (m *TrajectorySegmentMutation) AgentID() (r string, exists bool) {
+	v := m.agent_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldAgentID returns the old "agent_id" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldAgentID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldAgentID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldAgentID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldAgentID: %w", err)
+	}
+	return oldValue.AgentID, nil
+}
+
+// ResetAgentID resets all changes to the "agent_id" field.
+func (m *TrajectorySegmentMutation) ResetAgentID() {
+	m.agent_id = nil
+}
+
+// SetRunID sets the "run_id" field.
+func (m *TrajectorySegmentMutation) SetRunID(s string) {
+	m.run_id = &s
+}
+
+// RunID returns the value of the "run_id" field in the mutation.
+func (m *TrajectorySegmentMutation) RunID() (r string, exists bool) {
+	v := m.run_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRunID returns the old "run_id" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldRunID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRunID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRunID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRunID: %w", err)
+	}
+	return oldValue.RunID, nil
+}
+
+// ResetRunID resets all changes to the "run_id" field.
+func (m *TrajectorySegmentMutation) ResetRunID() {
+	m.run_id = nil
+}
+
+// SetHarness sets the "harness" field.
+func (m *TrajectorySegmentMutation) SetHarness(s string) {
+	m.harness = &s
+}
+
+// Harness returns the value of the "harness" field in the mutation.
+func (m *TrajectorySegmentMutation) Harness() (r string, exists bool) {
+	v := m.harness
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldHarness returns the old "harness" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldHarness(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldHarness is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldHarness requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldHarness: %w", err)
+	}
+	return oldValue.Harness, nil
+}
+
+// ResetHarness resets all changes to the "harness" field.
+func (m *TrajectorySegmentMutation) ResetHarness() {
+	m.harness = nil
+}
+
+// SetNativeRelativePath sets the "native_relative_path" field.
+func (m *TrajectorySegmentMutation) SetNativeRelativePath(s string) {
+	m.native_relative_path = &s
+}
+
+// NativeRelativePath returns the value of the "native_relative_path" field in the mutation.
+func (m *TrajectorySegmentMutation) NativeRelativePath() (r string, exists bool) {
+	v := m.native_relative_path
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldNativeRelativePath returns the old "native_relative_path" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldNativeRelativePath(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldNativeRelativePath is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldNativeRelativePath requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldNativeRelativePath: %w", err)
+	}
+	return oldValue.NativeRelativePath, nil
+}
+
+// ResetNativeRelativePath resets all changes to the "native_relative_path" field.
+func (m *TrajectorySegmentMutation) ResetNativeRelativePath() {
+	m.native_relative_path = nil
+}
+
+// SetArtifactKind sets the "artifact_kind" field.
+func (m *TrajectorySegmentMutation) SetArtifactKind(s string) {
+	m.artifact_kind = &s
+}
+
+// ArtifactKind returns the value of the "artifact_kind" field in the mutation.
+func (m *TrajectorySegmentMutation) ArtifactKind() (r string, exists bool) {
+	v := m.artifact_kind
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldArtifactKind returns the old "artifact_kind" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldArtifactKind(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldArtifactKind is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldArtifactKind requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldArtifactKind: %w", err)
+	}
+	return oldValue.ArtifactKind, nil
+}
+
+// ResetArtifactKind resets all changes to the "artifact_kind" field.
+func (m *TrajectorySegmentMutation) ResetArtifactKind() {
+	m.artifact_kind = nil
+}
+
+// SetGeneration sets the "generation" field.
+func (m *TrajectorySegmentMutation) SetGeneration(i int) {
+	m.generation = &i
+	m.addgeneration = nil
+}
+
+// Generation returns the value of the "generation" field in the mutation.
+func (m *TrajectorySegmentMutation) Generation() (r int, exists bool) {
+	v := m.generation
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGeneration returns the old "generation" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldGeneration(ctx context.Context) (v int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGeneration is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGeneration requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGeneration: %w", err)
+	}
+	return oldValue.Generation, nil
+}
+
+// AddGeneration adds i to the "generation" field.
+func (m *TrajectorySegmentMutation) AddGeneration(i int) {
+	if m.addgeneration != nil {
+		*m.addgeneration += i
+	} else {
+		m.addgeneration = &i
+	}
+}
+
+// AddedGeneration returns the value that was added to the "generation" field in this mutation.
+func (m *TrajectorySegmentMutation) AddedGeneration() (r int, exists bool) {
+	v := m.addgeneration
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetGeneration resets all changes to the "generation" field.
+func (m *TrajectorySegmentMutation) ResetGeneration() {
+	m.generation = nil
+	m.addgeneration = nil
+}
+
+// SetByteStart sets the "byte_start" field.
+func (m *TrajectorySegmentMutation) SetByteStart(i int64) {
+	m.byte_start = &i
+	m.addbyte_start = nil
+}
+
+// ByteStart returns the value of the "byte_start" field in the mutation.
+func (m *TrajectorySegmentMutation) ByteStart() (r int64, exists bool) {
+	v := m.byte_start
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldByteStart returns the old "byte_start" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldByteStart(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldByteStart is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldByteStart requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldByteStart: %w", err)
+	}
+	return oldValue.ByteStart, nil
+}
+
+// AddByteStart adds i to the "byte_start" field.
+func (m *TrajectorySegmentMutation) AddByteStart(i int64) {
+	if m.addbyte_start != nil {
+		*m.addbyte_start += i
+	} else {
+		m.addbyte_start = &i
+	}
+}
+
+// AddedByteStart returns the value that was added to the "byte_start" field in this mutation.
+func (m *TrajectorySegmentMutation) AddedByteStart() (r int64, exists bool) {
+	v := m.addbyte_start
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetByteStart resets all changes to the "byte_start" field.
+func (m *TrajectorySegmentMutation) ResetByteStart() {
+	m.byte_start = nil
+	m.addbyte_start = nil
+}
+
+// SetByteEnd sets the "byte_end" field.
+func (m *TrajectorySegmentMutation) SetByteEnd(i int64) {
+	m.byte_end = &i
+	m.addbyte_end = nil
+}
+
+// ByteEnd returns the value of the "byte_end" field in the mutation.
+func (m *TrajectorySegmentMutation) ByteEnd() (r int64, exists bool) {
+	v := m.byte_end
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldByteEnd returns the old "byte_end" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldByteEnd(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldByteEnd is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldByteEnd requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldByteEnd: %w", err)
+	}
+	return oldValue.ByteEnd, nil
+}
+
+// AddByteEnd adds i to the "byte_end" field.
+func (m *TrajectorySegmentMutation) AddByteEnd(i int64) {
+	if m.addbyte_end != nil {
+		*m.addbyte_end += i
+	} else {
+		m.addbyte_end = &i
+	}
+}
+
+// AddedByteEnd returns the value that was added to the "byte_end" field in this mutation.
+func (m *TrajectorySegmentMutation) AddedByteEnd() (r int64, exists bool) {
+	v := m.addbyte_end
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetByteEnd resets all changes to the "byte_end" field.
+func (m *TrajectorySegmentMutation) ResetByteEnd() {
+	m.byte_end = nil
+	m.addbyte_end = nil
+}
+
+// SetRawSha256 sets the "raw_sha256" field.
+func (m *TrajectorySegmentMutation) SetRawSha256(s string) {
+	m.raw_sha256 = &s
+}
+
+// RawSha256 returns the value of the "raw_sha256" field in the mutation.
+func (m *TrajectorySegmentMutation) RawSha256() (r string, exists bool) {
+	v := m.raw_sha256
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRawSha256 returns the old "raw_sha256" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldRawSha256(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRawSha256 is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRawSha256 requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRawSha256: %w", err)
+	}
+	return oldValue.RawSha256, nil
+}
+
+// ResetRawSha256 resets all changes to the "raw_sha256" field.
+func (m *TrajectorySegmentMutation) ResetRawSha256() {
+	m.raw_sha256 = nil
+}
+
+// SetCompressedSize sets the "compressed_size" field.
+func (m *TrajectorySegmentMutation) SetCompressedSize(i int64) {
+	m.compressed_size = &i
+	m.addcompressed_size = nil
+}
+
+// CompressedSize returns the value of the "compressed_size" field in the mutation.
+func (m *TrajectorySegmentMutation) CompressedSize() (r int64, exists bool) {
+	v := m.compressed_size
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCompressedSize returns the old "compressed_size" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldCompressedSize(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCompressedSize is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCompressedSize requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCompressedSize: %w", err)
+	}
+	return oldValue.CompressedSize, nil
+}
+
+// AddCompressedSize adds i to the "compressed_size" field.
+func (m *TrajectorySegmentMutation) AddCompressedSize(i int64) {
+	if m.addcompressed_size != nil {
+		*m.addcompressed_size += i
+	} else {
+		m.addcompressed_size = &i
+	}
+}
+
+// AddedCompressedSize returns the value that was added to the "compressed_size" field in this mutation.
+func (m *TrajectorySegmentMutation) AddedCompressedSize() (r int64, exists bool) {
+	v := m.addcompressed_size
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetCompressedSize resets all changes to the "compressed_size" field.
+func (m *TrajectorySegmentMutation) ResetCompressedSize() {
+	m.compressed_size = nil
+	m.addcompressed_size = nil
+}
+
+// SetCompressedSha256 sets the "compressed_sha256" field.
+func (m *TrajectorySegmentMutation) SetCompressedSha256(s string) {
+	m.compressed_sha256 = &s
+}
+
+// CompressedSha256 returns the value of the "compressed_sha256" field in the mutation.
+func (m *TrajectorySegmentMutation) CompressedSha256() (r string, exists bool) {
+	v := m.compressed_sha256
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCompressedSha256 returns the old "compressed_sha256" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldCompressedSha256(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCompressedSha256 is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCompressedSha256 requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCompressedSha256: %w", err)
+	}
+	return oldValue.CompressedSha256, nil
+}
+
+// ResetCompressedSha256 resets all changes to the "compressed_sha256" field.
+func (m *TrajectorySegmentMutation) ResetCompressedSha256() {
+	m.compressed_sha256 = nil
+}
+
+// SetIncompleteTail sets the "incomplete_tail" field.
+func (m *TrajectorySegmentMutation) SetIncompleteTail(b bool) {
+	m.incomplete_tail = &b
+}
+
+// IncompleteTail returns the value of the "incomplete_tail" field in the mutation.
+func (m *TrajectorySegmentMutation) IncompleteTail() (r bool, exists bool) {
+	v := m.incomplete_tail
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldIncompleteTail returns the old "incomplete_tail" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldIncompleteTail(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldIncompleteTail is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldIncompleteTail requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldIncompleteTail: %w", err)
+	}
+	return oldValue.IncompleteTail, nil
+}
+
+// ResetIncompleteTail resets all changes to the "incomplete_tail" field.
+func (m *TrajectorySegmentMutation) ResetIncompleteTail() {
+	m.incomplete_tail = nil
+}
+
+// SetSessionID sets the "session_id" field.
+func (m *TrajectorySegmentMutation) SetSessionID(s string) {
+	m.session_id = &s
+}
+
+// SessionID returns the value of the "session_id" field in the mutation.
+func (m *TrajectorySegmentMutation) SessionID() (r string, exists bool) {
+	v := m.session_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldSessionID returns the old "session_id" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldSessionID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldSessionID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldSessionID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldSessionID: %w", err)
+	}
+	return oldValue.SessionID, nil
+}
+
+// ClearSessionID clears the value of the "session_id" field.
+func (m *TrajectorySegmentMutation) ClearSessionID() {
+	m.session_id = nil
+	m.clearedFields[trajectorysegment.FieldSessionID] = struct{}{}
+}
+
+// SessionIDCleared returns if the "session_id" field was cleared in this mutation.
+func (m *TrajectorySegmentMutation) SessionIDCleared() bool {
+	_, ok := m.clearedFields[trajectorysegment.FieldSessionID]
+	return ok
+}
+
+// ResetSessionID resets all changes to the "session_id" field.
+func (m *TrajectorySegmentMutation) ResetSessionID() {
+	m.session_id = nil
+	delete(m.clearedFields, trajectorysegment.FieldSessionID)
+}
+
+// SetObjectPath sets the "object_path" field.
+func (m *TrajectorySegmentMutation) SetObjectPath(s string) {
+	m.object_path = &s
+}
+
+// ObjectPath returns the value of the "object_path" field in the mutation.
+func (m *TrajectorySegmentMutation) ObjectPath() (r string, exists bool) {
+	v := m.object_path
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldObjectPath returns the old "object_path" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldObjectPath(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldObjectPath is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldObjectPath requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldObjectPath: %w", err)
+	}
+	return oldValue.ObjectPath, nil
+}
+
+// ResetObjectPath resets all changes to the "object_path" field.
+func (m *TrajectorySegmentMutation) ResetObjectPath() {
+	m.object_path = nil
+}
+
+// SetManifestPath sets the "manifest_path" field.
+func (m *TrajectorySegmentMutation) SetManifestPath(s string) {
+	m.manifest_path = &s
+}
+
+// ManifestPath returns the value of the "manifest_path" field in the mutation.
+func (m *TrajectorySegmentMutation) ManifestPath() (r string, exists bool) {
+	v := m.manifest_path
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldManifestPath returns the old "manifest_path" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldManifestPath(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldManifestPath is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldManifestPath requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldManifestPath: %w", err)
+	}
+	return oldValue.ManifestPath, nil
+}
+
+// ClearManifestPath clears the value of the "manifest_path" field.
+func (m *TrajectorySegmentMutation) ClearManifestPath() {
+	m.manifest_path = nil
+	m.clearedFields[trajectorysegment.FieldManifestPath] = struct{}{}
+}
+
+// ManifestPathCleared returns if the "manifest_path" field was cleared in this mutation.
+func (m *TrajectorySegmentMutation) ManifestPathCleared() bool {
+	_, ok := m.clearedFields[trajectorysegment.FieldManifestPath]
+	return ok
+}
+
+// ResetManifestPath resets all changes to the "manifest_path" field.
+func (m *TrajectorySegmentMutation) ResetManifestPath() {
+	m.manifest_path = nil
+	delete(m.clearedFields, trajectorysegment.FieldManifestPath)
+}
+
+// SetStatus sets the "status" field.
+func (m *TrajectorySegmentMutation) SetStatus(s string) {
+	m.status = &s
+}
+
+// Status returns the value of the "status" field in the mutation.
+func (m *TrajectorySegmentMutation) Status() (r string, exists bool) {
+	v := m.status
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldStatus returns the old "status" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldStatus(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldStatus is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldStatus requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldStatus: %w", err)
+	}
+	return oldValue.Status, nil
+}
+
+// ResetStatus resets all changes to the "status" field.
+func (m *TrajectorySegmentMutation) ResetStatus() {
+	m.status = nil
+}
+
+// SetNormalizeStatus sets the "normalize_status" field.
+func (m *TrajectorySegmentMutation) SetNormalizeStatus(s string) {
+	m.normalize_status = &s
+}
+
+// NormalizeStatus returns the value of the "normalize_status" field in the mutation.
+func (m *TrajectorySegmentMutation) NormalizeStatus() (r string, exists bool) {
+	v := m.normalize_status
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldNormalizeStatus returns the old "normalize_status" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldNormalizeStatus(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldNormalizeStatus is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldNormalizeStatus requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldNormalizeStatus: %w", err)
+	}
+	return oldValue.NormalizeStatus, nil
+}
+
+// ResetNormalizeStatus resets all changes to the "normalize_status" field.
+func (m *TrajectorySegmentMutation) ResetNormalizeStatus() {
+	m.normalize_status = nil
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *TrajectorySegmentMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *TrajectorySegmentMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *TrajectorySegmentMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// SetCommittedAt sets the "committed_at" field.
+func (m *TrajectorySegmentMutation) SetCommittedAt(t time.Time) {
+	m.committed_at = &t
+}
+
+// CommittedAt returns the value of the "committed_at" field in the mutation.
+func (m *TrajectorySegmentMutation) CommittedAt() (r time.Time, exists bool) {
+	v := m.committed_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCommittedAt returns the old "committed_at" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldCommittedAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCommittedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCommittedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCommittedAt: %w", err)
+	}
+	return oldValue.CommittedAt, nil
+}
+
+// ClearCommittedAt clears the value of the "committed_at" field.
+func (m *TrajectorySegmentMutation) ClearCommittedAt() {
+	m.committed_at = nil
+	m.clearedFields[trajectorysegment.FieldCommittedAt] = struct{}{}
+}
+
+// CommittedAtCleared returns if the "committed_at" field was cleared in this mutation.
+func (m *TrajectorySegmentMutation) CommittedAtCleared() bool {
+	_, ok := m.clearedFields[trajectorysegment.FieldCommittedAt]
+	return ok
+}
+
+// ResetCommittedAt resets all changes to the "committed_at" field.
+func (m *TrajectorySegmentMutation) ResetCommittedAt() {
+	m.committed_at = nil
+	delete(m.clearedFields, trajectorysegment.FieldCommittedAt)
+}
+
+// SetPrepareExpiresAt sets the "prepare_expires_at" field.
+func (m *TrajectorySegmentMutation) SetPrepareExpiresAt(t time.Time) {
+	m.prepare_expires_at = &t
+}
+
+// PrepareExpiresAt returns the value of the "prepare_expires_at" field in the mutation.
+func (m *TrajectorySegmentMutation) PrepareExpiresAt() (r time.Time, exists bool) {
+	v := m.prepare_expires_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldPrepareExpiresAt returns the old "prepare_expires_at" field's value of the TrajectorySegment entity.
+// If the TrajectorySegment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *TrajectorySegmentMutation) OldPrepareExpiresAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldPrepareExpiresAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldPrepareExpiresAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldPrepareExpiresAt: %w", err)
+	}
+	return oldValue.PrepareExpiresAt, nil
+}
+
+// ResetPrepareExpiresAt resets all changes to the "prepare_expires_at" field.
+func (m *TrajectorySegmentMutation) ResetPrepareExpiresAt() {
+	m.prepare_expires_at = nil
+}
+
+// Where appends a list predicates to the TrajectorySegmentMutation builder.
+func (m *TrajectorySegmentMutation) Where(ps ...predicate.TrajectorySegment) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the TrajectorySegmentMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *TrajectorySegmentMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.TrajectorySegment, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *TrajectorySegmentMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *TrajectorySegmentMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (TrajectorySegment).
+func (m *TrajectorySegmentMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *TrajectorySegmentMutation) Fields() []string {
+	fields := make([]string, 0, 23)
+	if m.hub_id != nil {
+		fields = append(fields, trajectorysegment.FieldHubID)
+	}
+	if m.origin_hub_id != nil {
+		fields = append(fields, trajectorysegment.FieldOriginHubID)
+	}
+	if m.project_id != nil {
+		fields = append(fields, trajectorysegment.FieldProjectID)
+	}
+	if m.agent_id != nil {
+		fields = append(fields, trajectorysegment.FieldAgentID)
+	}
+	if m.run_id != nil {
+		fields = append(fields, trajectorysegment.FieldRunID)
+	}
+	if m.harness != nil {
+		fields = append(fields, trajectorysegment.FieldHarness)
+	}
+	if m.native_relative_path != nil {
+		fields = append(fields, trajectorysegment.FieldNativeRelativePath)
+	}
+	if m.artifact_kind != nil {
+		fields = append(fields, trajectorysegment.FieldArtifactKind)
+	}
+	if m.generation != nil {
+		fields = append(fields, trajectorysegment.FieldGeneration)
+	}
+	if m.byte_start != nil {
+		fields = append(fields, trajectorysegment.FieldByteStart)
+	}
+	if m.byte_end != nil {
+		fields = append(fields, trajectorysegment.FieldByteEnd)
+	}
+	if m.raw_sha256 != nil {
+		fields = append(fields, trajectorysegment.FieldRawSha256)
+	}
+	if m.compressed_size != nil {
+		fields = append(fields, trajectorysegment.FieldCompressedSize)
+	}
+	if m.compressed_sha256 != nil {
+		fields = append(fields, trajectorysegment.FieldCompressedSha256)
+	}
+	if m.incomplete_tail != nil {
+		fields = append(fields, trajectorysegment.FieldIncompleteTail)
+	}
+	if m.session_id != nil {
+		fields = append(fields, trajectorysegment.FieldSessionID)
+	}
+	if m.object_path != nil {
+		fields = append(fields, trajectorysegment.FieldObjectPath)
+	}
+	if m.manifest_path != nil {
+		fields = append(fields, trajectorysegment.FieldManifestPath)
+	}
+	if m.status != nil {
+		fields = append(fields, trajectorysegment.FieldStatus)
+	}
+	if m.normalize_status != nil {
+		fields = append(fields, trajectorysegment.FieldNormalizeStatus)
+	}
+	if m.created_at != nil {
+		fields = append(fields, trajectorysegment.FieldCreatedAt)
+	}
+	if m.committed_at != nil {
+		fields = append(fields, trajectorysegment.FieldCommittedAt)
+	}
+	if m.prepare_expires_at != nil {
+		fields = append(fields, trajectorysegment.FieldPrepareExpiresAt)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *TrajectorySegmentMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case trajectorysegment.FieldHubID:
+		return m.HubID()
+	case trajectorysegment.FieldOriginHubID:
+		return m.OriginHubID()
+	case trajectorysegment.FieldProjectID:
+		return m.ProjectID()
+	case trajectorysegment.FieldAgentID:
+		return m.AgentID()
+	case trajectorysegment.FieldRunID:
+		return m.RunID()
+	case trajectorysegment.FieldHarness:
+		return m.Harness()
+	case trajectorysegment.FieldNativeRelativePath:
+		return m.NativeRelativePath()
+	case trajectorysegment.FieldArtifactKind:
+		return m.ArtifactKind()
+	case trajectorysegment.FieldGeneration:
+		return m.Generation()
+	case trajectorysegment.FieldByteStart:
+		return m.ByteStart()
+	case trajectorysegment.FieldByteEnd:
+		return m.ByteEnd()
+	case trajectorysegment.FieldRawSha256:
+		return m.RawSha256()
+	case trajectorysegment.FieldCompressedSize:
+		return m.CompressedSize()
+	case trajectorysegment.FieldCompressedSha256:
+		return m.CompressedSha256()
+	case trajectorysegment.FieldIncompleteTail:
+		return m.IncompleteTail()
+	case trajectorysegment.FieldSessionID:
+		return m.SessionID()
+	case trajectorysegment.FieldObjectPath:
+		return m.ObjectPath()
+	case trajectorysegment.FieldManifestPath:
+		return m.ManifestPath()
+	case trajectorysegment.FieldStatus:
+		return m.Status()
+	case trajectorysegment.FieldNormalizeStatus:
+		return m.NormalizeStatus()
+	case trajectorysegment.FieldCreatedAt:
+		return m.CreatedAt()
+	case trajectorysegment.FieldCommittedAt:
+		return m.CommittedAt()
+	case trajectorysegment.FieldPrepareExpiresAt:
+		return m.PrepareExpiresAt()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *TrajectorySegmentMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case trajectorysegment.FieldHubID:
+		return m.OldHubID(ctx)
+	case trajectorysegment.FieldOriginHubID:
+		return m.OldOriginHubID(ctx)
+	case trajectorysegment.FieldProjectID:
+		return m.OldProjectID(ctx)
+	case trajectorysegment.FieldAgentID:
+		return m.OldAgentID(ctx)
+	case trajectorysegment.FieldRunID:
+		return m.OldRunID(ctx)
+	case trajectorysegment.FieldHarness:
+		return m.OldHarness(ctx)
+	case trajectorysegment.FieldNativeRelativePath:
+		return m.OldNativeRelativePath(ctx)
+	case trajectorysegment.FieldArtifactKind:
+		return m.OldArtifactKind(ctx)
+	case trajectorysegment.FieldGeneration:
+		return m.OldGeneration(ctx)
+	case trajectorysegment.FieldByteStart:
+		return m.OldByteStart(ctx)
+	case trajectorysegment.FieldByteEnd:
+		return m.OldByteEnd(ctx)
+	case trajectorysegment.FieldRawSha256:
+		return m.OldRawSha256(ctx)
+	case trajectorysegment.FieldCompressedSize:
+		return m.OldCompressedSize(ctx)
+	case trajectorysegment.FieldCompressedSha256:
+		return m.OldCompressedSha256(ctx)
+	case trajectorysegment.FieldIncompleteTail:
+		return m.OldIncompleteTail(ctx)
+	case trajectorysegment.FieldSessionID:
+		return m.OldSessionID(ctx)
+	case trajectorysegment.FieldObjectPath:
+		return m.OldObjectPath(ctx)
+	case trajectorysegment.FieldManifestPath:
+		return m.OldManifestPath(ctx)
+	case trajectorysegment.FieldStatus:
+		return m.OldStatus(ctx)
+	case trajectorysegment.FieldNormalizeStatus:
+		return m.OldNormalizeStatus(ctx)
+	case trajectorysegment.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	case trajectorysegment.FieldCommittedAt:
+		return m.OldCommittedAt(ctx)
+	case trajectorysegment.FieldPrepareExpiresAt:
+		return m.OldPrepareExpiresAt(ctx)
+	}
+	return nil, fmt.Errorf("unknown TrajectorySegment field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *TrajectorySegmentMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case trajectorysegment.FieldHubID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetHubID(v)
+		return nil
+	case trajectorysegment.FieldOriginHubID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetOriginHubID(v)
+		return nil
+	case trajectorysegment.FieldProjectID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetProjectID(v)
+		return nil
+	case trajectorysegment.FieldAgentID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetAgentID(v)
+		return nil
+	case trajectorysegment.FieldRunID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRunID(v)
+		return nil
+	case trajectorysegment.FieldHarness:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetHarness(v)
+		return nil
+	case trajectorysegment.FieldNativeRelativePath:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetNativeRelativePath(v)
+		return nil
+	case trajectorysegment.FieldArtifactKind:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetArtifactKind(v)
+		return nil
+	case trajectorysegment.FieldGeneration:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGeneration(v)
+		return nil
+	case trajectorysegment.FieldByteStart:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetByteStart(v)
+		return nil
+	case trajectorysegment.FieldByteEnd:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetByteEnd(v)
+		return nil
+	case trajectorysegment.FieldRawSha256:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRawSha256(v)
+		return nil
+	case trajectorysegment.FieldCompressedSize:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCompressedSize(v)
+		return nil
+	case trajectorysegment.FieldCompressedSha256:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCompressedSha256(v)
+		return nil
+	case trajectorysegment.FieldIncompleteTail:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetIncompleteTail(v)
+		return nil
+	case trajectorysegment.FieldSessionID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetSessionID(v)
+		return nil
+	case trajectorysegment.FieldObjectPath:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetObjectPath(v)
+		return nil
+	case trajectorysegment.FieldManifestPath:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetManifestPath(v)
+		return nil
+	case trajectorysegment.FieldStatus:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetStatus(v)
+		return nil
+	case trajectorysegment.FieldNormalizeStatus:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetNormalizeStatus(v)
+		return nil
+	case trajectorysegment.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	case trajectorysegment.FieldCommittedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCommittedAt(v)
+		return nil
+	case trajectorysegment.FieldPrepareExpiresAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetPrepareExpiresAt(v)
+		return nil
+	}
+	return fmt.Errorf("unknown TrajectorySegment field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *TrajectorySegmentMutation) AddedFields() []string {
+	var fields []string
+	if m.addgeneration != nil {
+		fields = append(fields, trajectorysegment.FieldGeneration)
+	}
+	if m.addbyte_start != nil {
+		fields = append(fields, trajectorysegment.FieldByteStart)
+	}
+	if m.addbyte_end != nil {
+		fields = append(fields, trajectorysegment.FieldByteEnd)
+	}
+	if m.addcompressed_size != nil {
+		fields = append(fields, trajectorysegment.FieldCompressedSize)
+	}
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *TrajectorySegmentMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	case trajectorysegment.FieldGeneration:
+		return m.AddedGeneration()
+	case trajectorysegment.FieldByteStart:
+		return m.AddedByteStart()
+	case trajectorysegment.FieldByteEnd:
+		return m.AddedByteEnd()
+	case trajectorysegment.FieldCompressedSize:
+		return m.AddedCompressedSize()
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *TrajectorySegmentMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	case trajectorysegment.FieldGeneration:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddGeneration(v)
+		return nil
+	case trajectorysegment.FieldByteStart:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddByteStart(v)
+		return nil
+	case trajectorysegment.FieldByteEnd:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddByteEnd(v)
+		return nil
+	case trajectorysegment.FieldCompressedSize:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddCompressedSize(v)
+		return nil
+	}
+	return fmt.Errorf("unknown TrajectorySegment numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *TrajectorySegmentMutation) ClearedFields() []string {
+	var fields []string
+	if m.FieldCleared(trajectorysegment.FieldOriginHubID) {
+		fields = append(fields, trajectorysegment.FieldOriginHubID)
+	}
+	if m.FieldCleared(trajectorysegment.FieldSessionID) {
+		fields = append(fields, trajectorysegment.FieldSessionID)
+	}
+	if m.FieldCleared(trajectorysegment.FieldManifestPath) {
+		fields = append(fields, trajectorysegment.FieldManifestPath)
+	}
+	if m.FieldCleared(trajectorysegment.FieldCommittedAt) {
+		fields = append(fields, trajectorysegment.FieldCommittedAt)
+	}
+	return fields
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *TrajectorySegmentMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *TrajectorySegmentMutation) ClearField(name string) error {
+	switch name {
+	case trajectorysegment.FieldOriginHubID:
+		m.ClearOriginHubID()
+		return nil
+	case trajectorysegment.FieldSessionID:
+		m.ClearSessionID()
+		return nil
+	case trajectorysegment.FieldManifestPath:
+		m.ClearManifestPath()
+		return nil
+	case trajectorysegment.FieldCommittedAt:
+		m.ClearCommittedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown TrajectorySegment nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *TrajectorySegmentMutation) ResetField(name string) error {
+	switch name {
+	case trajectorysegment.FieldHubID:
+		m.ResetHubID()
+		return nil
+	case trajectorysegment.FieldOriginHubID:
+		m.ResetOriginHubID()
+		return nil
+	case trajectorysegment.FieldProjectID:
+		m.ResetProjectID()
+		return nil
+	case trajectorysegment.FieldAgentID:
+		m.ResetAgentID()
+		return nil
+	case trajectorysegment.FieldRunID:
+		m.ResetRunID()
+		return nil
+	case trajectorysegment.FieldHarness:
+		m.ResetHarness()
+		return nil
+	case trajectorysegment.FieldNativeRelativePath:
+		m.ResetNativeRelativePath()
+		return nil
+	case trajectorysegment.FieldArtifactKind:
+		m.ResetArtifactKind()
+		return nil
+	case trajectorysegment.FieldGeneration:
+		m.ResetGeneration()
+		return nil
+	case trajectorysegment.FieldByteStart:
+		m.ResetByteStart()
+		return nil
+	case trajectorysegment.FieldByteEnd:
+		m.ResetByteEnd()
+		return nil
+	case trajectorysegment.FieldRawSha256:
+		m.ResetRawSha256()
+		return nil
+	case trajectorysegment.FieldCompressedSize:
+		m.ResetCompressedSize()
+		return nil
+	case trajectorysegment.FieldCompressedSha256:
+		m.ResetCompressedSha256()
+		return nil
+	case trajectorysegment.FieldIncompleteTail:
+		m.ResetIncompleteTail()
+		return nil
+	case trajectorysegment.FieldSessionID:
+		m.ResetSessionID()
+		return nil
+	case trajectorysegment.FieldObjectPath:
+		m.ResetObjectPath()
+		return nil
+	case trajectorysegment.FieldManifestPath:
+		m.ResetManifestPath()
+		return nil
+	case trajectorysegment.FieldStatus:
+		m.ResetStatus()
+		return nil
+	case trajectorysegment.FieldNormalizeStatus:
+		m.ResetNormalizeStatus()
+		return nil
+	case trajectorysegment.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	case trajectorysegment.FieldCommittedAt:
+		m.ResetCommittedAt()
+		return nil
+	case trajectorysegment.FieldPrepareExpiresAt:
+		m.ResetPrepareExpiresAt()
+		return nil
+	}
+	return fmt.Errorf("unknown TrajectorySegment field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *TrajectorySegmentMutation) AddedEdges() []string {
+	edges := make([]string, 0, 0)
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *TrajectorySegmentMutation) AddedIDs(name string) []ent.Value {
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *TrajectorySegmentMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 0)
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *TrajectorySegmentMutation) RemovedIDs(name string) []ent.Value {
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *TrajectorySegmentMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 0)
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *TrajectorySegmentMutation) EdgeCleared(name string) bool {
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *TrajectorySegmentMutation) ClearEdge(name string) error {
+	return fmt.Errorf("unknown TrajectorySegment unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *TrajectorySegmentMutation) ResetEdge(name string) error {
+	return fmt.Errorf("unknown TrajectorySegment edge %s", name)
+}
+
 // TriggerMutation represents an operation that mutates the Trigger nodes in the graph.
 type TriggerMutation struct {
 	config
@@ -140203,44 +142191,58 @@ func (m *UsageReservationMutation) ResetEdge(name string) error {
 // UsageRollupDailyMutation represents an operation that mutates the UsageRollupDaily nodes in the graph.
 type UsageRollupDailyMutation struct {
 	config
-	op                      Op
-	typ                     string
-	id                      *uuid.UUID
-	bucket_start            *time.Time
-	project_id              *string
-	billing_user_id         *string
-	agent_id                *string
-	harness                 *string
-	model                   *string
-	usage_source            *string
-	calls                   *int64
-	addcalls                *int64
-	error_calls             *int64
-	adderror_calls          *int64
-	input                   *int64
-	addinput                *int64
-	output                  *int64
-	addoutput               *int64
-	cache_read              *int64
-	addcache_read           *int64
-	cache_write             *int64
-	addcache_write          *int64
-	cache_write_1h          *int64
-	addcache_write_1h       *int64
-	reasoning               *int64
-	addreasoning            *int64
-	reported_cost_micros    *int64
-	addreported_cost_micros *int64
-	events                  *int64
-	addevents               *int64
-	null_token_events       *int64
-	addnull_token_events    *int64
-	first_event_ts          *time.Time
-	last_event_ts           *time.Time
-	clearedFields           map[string]struct{}
-	done                    bool
-	oldValue                func(context.Context) (*UsageRollupDaily, error)
-	predicates              []predicate.UsageRollupDaily
+	op                             Op
+	typ                            string
+	id                             *uuid.UUID
+	bucket_start                   *time.Time
+	project_id                     *string
+	billing_user_id                *string
+	agent_id                       *string
+	harness                        *string
+	model                          *string
+	usage_source                   *string
+	calls                          *int64
+	addcalls                       *int64
+	error_calls                    *int64
+	adderror_calls                 *int64
+	input                          *int64
+	addinput                       *int64
+	output                         *int64
+	addoutput                      *int64
+	cache_read                     *int64
+	addcache_read                  *int64
+	cache_write                    *int64
+	addcache_write                 *int64
+	cache_write_1h                 *int64
+	addcache_write_1h              *int64
+	reasoning                      *int64
+	addreasoning                   *int64
+	reported_cost_micros           *int64
+	addreported_cost_micros        *int64
+	events                         *int64
+	addevents                      *int64
+	null_token_events              *int64
+	addnull_token_events           *int64
+	input_known_events             *int64
+	addinput_known_events          *int64
+	output_known_events            *int64
+	addoutput_known_events         *int64
+	cache_read_known_events        *int64
+	addcache_read_known_events     *int64
+	cache_write_known_events       *int64
+	addcache_write_known_events    *int64
+	cache_write_1h_known_events    *int64
+	addcache_write_1h_known_events *int64
+	reasoning_known_events         *int64
+	addreasoning_known_events      *int64
+	presence_tracked_events        *int64
+	addpresence_tracked_events     *int64
+	first_event_ts                 *time.Time
+	last_event_ts                  *time.Time
+	clearedFields                  map[string]struct{}
+	done                           bool
+	oldValue                       func(context.Context) (*UsageRollupDaily, error)
+	predicates                     []predicate.UsageRollupDaily
 }
 
 var _ ent.Mutation = (*UsageRollupDailyMutation)(nil)
@@ -141215,6 +143217,398 @@ func (m *UsageRollupDailyMutation) ResetNullTokenEvents() {
 	m.addnull_token_events = nil
 }
 
+// SetInputKnownEvents sets the "input_known_events" field.
+func (m *UsageRollupDailyMutation) SetInputKnownEvents(i int64) {
+	m.input_known_events = &i
+	m.addinput_known_events = nil
+}
+
+// InputKnownEvents returns the value of the "input_known_events" field in the mutation.
+func (m *UsageRollupDailyMutation) InputKnownEvents() (r int64, exists bool) {
+	v := m.input_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldInputKnownEvents returns the old "input_known_events" field's value of the UsageRollupDaily entity.
+// If the UsageRollupDaily object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupDailyMutation) OldInputKnownEvents(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldInputKnownEvents is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldInputKnownEvents requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldInputKnownEvents: %w", err)
+	}
+	return oldValue.InputKnownEvents, nil
+}
+
+// AddInputKnownEvents adds i to the "input_known_events" field.
+func (m *UsageRollupDailyMutation) AddInputKnownEvents(i int64) {
+	if m.addinput_known_events != nil {
+		*m.addinput_known_events += i
+	} else {
+		m.addinput_known_events = &i
+	}
+}
+
+// AddedInputKnownEvents returns the value that was added to the "input_known_events" field in this mutation.
+func (m *UsageRollupDailyMutation) AddedInputKnownEvents() (r int64, exists bool) {
+	v := m.addinput_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetInputKnownEvents resets all changes to the "input_known_events" field.
+func (m *UsageRollupDailyMutation) ResetInputKnownEvents() {
+	m.input_known_events = nil
+	m.addinput_known_events = nil
+}
+
+// SetOutputKnownEvents sets the "output_known_events" field.
+func (m *UsageRollupDailyMutation) SetOutputKnownEvents(i int64) {
+	m.output_known_events = &i
+	m.addoutput_known_events = nil
+}
+
+// OutputKnownEvents returns the value of the "output_known_events" field in the mutation.
+func (m *UsageRollupDailyMutation) OutputKnownEvents() (r int64, exists bool) {
+	v := m.output_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldOutputKnownEvents returns the old "output_known_events" field's value of the UsageRollupDaily entity.
+// If the UsageRollupDaily object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupDailyMutation) OldOutputKnownEvents(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldOutputKnownEvents is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldOutputKnownEvents requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldOutputKnownEvents: %w", err)
+	}
+	return oldValue.OutputKnownEvents, nil
+}
+
+// AddOutputKnownEvents adds i to the "output_known_events" field.
+func (m *UsageRollupDailyMutation) AddOutputKnownEvents(i int64) {
+	if m.addoutput_known_events != nil {
+		*m.addoutput_known_events += i
+	} else {
+		m.addoutput_known_events = &i
+	}
+}
+
+// AddedOutputKnownEvents returns the value that was added to the "output_known_events" field in this mutation.
+func (m *UsageRollupDailyMutation) AddedOutputKnownEvents() (r int64, exists bool) {
+	v := m.addoutput_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetOutputKnownEvents resets all changes to the "output_known_events" field.
+func (m *UsageRollupDailyMutation) ResetOutputKnownEvents() {
+	m.output_known_events = nil
+	m.addoutput_known_events = nil
+}
+
+// SetCacheReadKnownEvents sets the "cache_read_known_events" field.
+func (m *UsageRollupDailyMutation) SetCacheReadKnownEvents(i int64) {
+	m.cache_read_known_events = &i
+	m.addcache_read_known_events = nil
+}
+
+// CacheReadKnownEvents returns the value of the "cache_read_known_events" field in the mutation.
+func (m *UsageRollupDailyMutation) CacheReadKnownEvents() (r int64, exists bool) {
+	v := m.cache_read_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCacheReadKnownEvents returns the old "cache_read_known_events" field's value of the UsageRollupDaily entity.
+// If the UsageRollupDaily object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupDailyMutation) OldCacheReadKnownEvents(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCacheReadKnownEvents is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCacheReadKnownEvents requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCacheReadKnownEvents: %w", err)
+	}
+	return oldValue.CacheReadKnownEvents, nil
+}
+
+// AddCacheReadKnownEvents adds i to the "cache_read_known_events" field.
+func (m *UsageRollupDailyMutation) AddCacheReadKnownEvents(i int64) {
+	if m.addcache_read_known_events != nil {
+		*m.addcache_read_known_events += i
+	} else {
+		m.addcache_read_known_events = &i
+	}
+}
+
+// AddedCacheReadKnownEvents returns the value that was added to the "cache_read_known_events" field in this mutation.
+func (m *UsageRollupDailyMutation) AddedCacheReadKnownEvents() (r int64, exists bool) {
+	v := m.addcache_read_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetCacheReadKnownEvents resets all changes to the "cache_read_known_events" field.
+func (m *UsageRollupDailyMutation) ResetCacheReadKnownEvents() {
+	m.cache_read_known_events = nil
+	m.addcache_read_known_events = nil
+}
+
+// SetCacheWriteKnownEvents sets the "cache_write_known_events" field.
+func (m *UsageRollupDailyMutation) SetCacheWriteKnownEvents(i int64) {
+	m.cache_write_known_events = &i
+	m.addcache_write_known_events = nil
+}
+
+// CacheWriteKnownEvents returns the value of the "cache_write_known_events" field in the mutation.
+func (m *UsageRollupDailyMutation) CacheWriteKnownEvents() (r int64, exists bool) {
+	v := m.cache_write_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCacheWriteKnownEvents returns the old "cache_write_known_events" field's value of the UsageRollupDaily entity.
+// If the UsageRollupDaily object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupDailyMutation) OldCacheWriteKnownEvents(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCacheWriteKnownEvents is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCacheWriteKnownEvents requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCacheWriteKnownEvents: %w", err)
+	}
+	return oldValue.CacheWriteKnownEvents, nil
+}
+
+// AddCacheWriteKnownEvents adds i to the "cache_write_known_events" field.
+func (m *UsageRollupDailyMutation) AddCacheWriteKnownEvents(i int64) {
+	if m.addcache_write_known_events != nil {
+		*m.addcache_write_known_events += i
+	} else {
+		m.addcache_write_known_events = &i
+	}
+}
+
+// AddedCacheWriteKnownEvents returns the value that was added to the "cache_write_known_events" field in this mutation.
+func (m *UsageRollupDailyMutation) AddedCacheWriteKnownEvents() (r int64, exists bool) {
+	v := m.addcache_write_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetCacheWriteKnownEvents resets all changes to the "cache_write_known_events" field.
+func (m *UsageRollupDailyMutation) ResetCacheWriteKnownEvents() {
+	m.cache_write_known_events = nil
+	m.addcache_write_known_events = nil
+}
+
+// SetCacheWrite1hKnownEvents sets the "cache_write_1h_known_events" field.
+func (m *UsageRollupDailyMutation) SetCacheWrite1hKnownEvents(i int64) {
+	m.cache_write_1h_known_events = &i
+	m.addcache_write_1h_known_events = nil
+}
+
+// CacheWrite1hKnownEvents returns the value of the "cache_write_1h_known_events" field in the mutation.
+func (m *UsageRollupDailyMutation) CacheWrite1hKnownEvents() (r int64, exists bool) {
+	v := m.cache_write_1h_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCacheWrite1hKnownEvents returns the old "cache_write_1h_known_events" field's value of the UsageRollupDaily entity.
+// If the UsageRollupDaily object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupDailyMutation) OldCacheWrite1hKnownEvents(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCacheWrite1hKnownEvents is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCacheWrite1hKnownEvents requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCacheWrite1hKnownEvents: %w", err)
+	}
+	return oldValue.CacheWrite1hKnownEvents, nil
+}
+
+// AddCacheWrite1hKnownEvents adds i to the "cache_write_1h_known_events" field.
+func (m *UsageRollupDailyMutation) AddCacheWrite1hKnownEvents(i int64) {
+	if m.addcache_write_1h_known_events != nil {
+		*m.addcache_write_1h_known_events += i
+	} else {
+		m.addcache_write_1h_known_events = &i
+	}
+}
+
+// AddedCacheWrite1hKnownEvents returns the value that was added to the "cache_write_1h_known_events" field in this mutation.
+func (m *UsageRollupDailyMutation) AddedCacheWrite1hKnownEvents() (r int64, exists bool) {
+	v := m.addcache_write_1h_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetCacheWrite1hKnownEvents resets all changes to the "cache_write_1h_known_events" field.
+func (m *UsageRollupDailyMutation) ResetCacheWrite1hKnownEvents() {
+	m.cache_write_1h_known_events = nil
+	m.addcache_write_1h_known_events = nil
+}
+
+// SetReasoningKnownEvents sets the "reasoning_known_events" field.
+func (m *UsageRollupDailyMutation) SetReasoningKnownEvents(i int64) {
+	m.reasoning_known_events = &i
+	m.addreasoning_known_events = nil
+}
+
+// ReasoningKnownEvents returns the value of the "reasoning_known_events" field in the mutation.
+func (m *UsageRollupDailyMutation) ReasoningKnownEvents() (r int64, exists bool) {
+	v := m.reasoning_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldReasoningKnownEvents returns the old "reasoning_known_events" field's value of the UsageRollupDaily entity.
+// If the UsageRollupDaily object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupDailyMutation) OldReasoningKnownEvents(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldReasoningKnownEvents is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldReasoningKnownEvents requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldReasoningKnownEvents: %w", err)
+	}
+	return oldValue.ReasoningKnownEvents, nil
+}
+
+// AddReasoningKnownEvents adds i to the "reasoning_known_events" field.
+func (m *UsageRollupDailyMutation) AddReasoningKnownEvents(i int64) {
+	if m.addreasoning_known_events != nil {
+		*m.addreasoning_known_events += i
+	} else {
+		m.addreasoning_known_events = &i
+	}
+}
+
+// AddedReasoningKnownEvents returns the value that was added to the "reasoning_known_events" field in this mutation.
+func (m *UsageRollupDailyMutation) AddedReasoningKnownEvents() (r int64, exists bool) {
+	v := m.addreasoning_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetReasoningKnownEvents resets all changes to the "reasoning_known_events" field.
+func (m *UsageRollupDailyMutation) ResetReasoningKnownEvents() {
+	m.reasoning_known_events = nil
+	m.addreasoning_known_events = nil
+}
+
+// SetPresenceTrackedEvents sets the "presence_tracked_events" field.
+func (m *UsageRollupDailyMutation) SetPresenceTrackedEvents(i int64) {
+	m.presence_tracked_events = &i
+	m.addpresence_tracked_events = nil
+}
+
+// PresenceTrackedEvents returns the value of the "presence_tracked_events" field in the mutation.
+func (m *UsageRollupDailyMutation) PresenceTrackedEvents() (r int64, exists bool) {
+	v := m.presence_tracked_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldPresenceTrackedEvents returns the old "presence_tracked_events" field's value of the UsageRollupDaily entity.
+// If the UsageRollupDaily object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupDailyMutation) OldPresenceTrackedEvents(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldPresenceTrackedEvents is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldPresenceTrackedEvents requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldPresenceTrackedEvents: %w", err)
+	}
+	return oldValue.PresenceTrackedEvents, nil
+}
+
+// AddPresenceTrackedEvents adds i to the "presence_tracked_events" field.
+func (m *UsageRollupDailyMutation) AddPresenceTrackedEvents(i int64) {
+	if m.addpresence_tracked_events != nil {
+		*m.addpresence_tracked_events += i
+	} else {
+		m.addpresence_tracked_events = &i
+	}
+}
+
+// AddedPresenceTrackedEvents returns the value that was added to the "presence_tracked_events" field in this mutation.
+func (m *UsageRollupDailyMutation) AddedPresenceTrackedEvents() (r int64, exists bool) {
+	v := m.addpresence_tracked_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetPresenceTrackedEvents resets all changes to the "presence_tracked_events" field.
+func (m *UsageRollupDailyMutation) ResetPresenceTrackedEvents() {
+	m.presence_tracked_events = nil
+	m.addpresence_tracked_events = nil
+}
+
 // SetFirstEventTs sets the "first_event_ts" field.
 func (m *UsageRollupDailyMutation) SetFirstEventTs(t time.Time) {
 	m.first_event_ts = &t
@@ -141321,7 +143715,7 @@ func (m *UsageRollupDailyMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *UsageRollupDailyMutation) Fields() []string {
-	fields := make([]string, 0, 20)
+	fields := make([]string, 0, 27)
 	if m.bucket_start != nil {
 		fields = append(fields, usagerollupdaily.FieldBucketStart)
 	}
@@ -141376,6 +143770,27 @@ func (m *UsageRollupDailyMutation) Fields() []string {
 	if m.null_token_events != nil {
 		fields = append(fields, usagerollupdaily.FieldNullTokenEvents)
 	}
+	if m.input_known_events != nil {
+		fields = append(fields, usagerollupdaily.FieldInputKnownEvents)
+	}
+	if m.output_known_events != nil {
+		fields = append(fields, usagerollupdaily.FieldOutputKnownEvents)
+	}
+	if m.cache_read_known_events != nil {
+		fields = append(fields, usagerollupdaily.FieldCacheReadKnownEvents)
+	}
+	if m.cache_write_known_events != nil {
+		fields = append(fields, usagerollupdaily.FieldCacheWriteKnownEvents)
+	}
+	if m.cache_write_1h_known_events != nil {
+		fields = append(fields, usagerollupdaily.FieldCacheWrite1hKnownEvents)
+	}
+	if m.reasoning_known_events != nil {
+		fields = append(fields, usagerollupdaily.FieldReasoningKnownEvents)
+	}
+	if m.presence_tracked_events != nil {
+		fields = append(fields, usagerollupdaily.FieldPresenceTrackedEvents)
+	}
 	if m.first_event_ts != nil {
 		fields = append(fields, usagerollupdaily.FieldFirstEventTs)
 	}
@@ -141426,6 +143841,20 @@ func (m *UsageRollupDailyMutation) Field(name string) (ent.Value, bool) {
 		return m.Events()
 	case usagerollupdaily.FieldNullTokenEvents:
 		return m.NullTokenEvents()
+	case usagerollupdaily.FieldInputKnownEvents:
+		return m.InputKnownEvents()
+	case usagerollupdaily.FieldOutputKnownEvents:
+		return m.OutputKnownEvents()
+	case usagerollupdaily.FieldCacheReadKnownEvents:
+		return m.CacheReadKnownEvents()
+	case usagerollupdaily.FieldCacheWriteKnownEvents:
+		return m.CacheWriteKnownEvents()
+	case usagerollupdaily.FieldCacheWrite1hKnownEvents:
+		return m.CacheWrite1hKnownEvents()
+	case usagerollupdaily.FieldReasoningKnownEvents:
+		return m.ReasoningKnownEvents()
+	case usagerollupdaily.FieldPresenceTrackedEvents:
+		return m.PresenceTrackedEvents()
 	case usagerollupdaily.FieldFirstEventTs:
 		return m.FirstEventTs()
 	case usagerollupdaily.FieldLastEventTs:
@@ -141475,6 +143904,20 @@ func (m *UsageRollupDailyMutation) OldField(ctx context.Context, name string) (e
 		return m.OldEvents(ctx)
 	case usagerollupdaily.FieldNullTokenEvents:
 		return m.OldNullTokenEvents(ctx)
+	case usagerollupdaily.FieldInputKnownEvents:
+		return m.OldInputKnownEvents(ctx)
+	case usagerollupdaily.FieldOutputKnownEvents:
+		return m.OldOutputKnownEvents(ctx)
+	case usagerollupdaily.FieldCacheReadKnownEvents:
+		return m.OldCacheReadKnownEvents(ctx)
+	case usagerollupdaily.FieldCacheWriteKnownEvents:
+		return m.OldCacheWriteKnownEvents(ctx)
+	case usagerollupdaily.FieldCacheWrite1hKnownEvents:
+		return m.OldCacheWrite1hKnownEvents(ctx)
+	case usagerollupdaily.FieldReasoningKnownEvents:
+		return m.OldReasoningKnownEvents(ctx)
+	case usagerollupdaily.FieldPresenceTrackedEvents:
+		return m.OldPresenceTrackedEvents(ctx)
 	case usagerollupdaily.FieldFirstEventTs:
 		return m.OldFirstEventTs(ctx)
 	case usagerollupdaily.FieldLastEventTs:
@@ -141614,6 +144057,55 @@ func (m *UsageRollupDailyMutation) SetField(name string, value ent.Value) error 
 		}
 		m.SetNullTokenEvents(v)
 		return nil
+	case usagerollupdaily.FieldInputKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetInputKnownEvents(v)
+		return nil
+	case usagerollupdaily.FieldOutputKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetOutputKnownEvents(v)
+		return nil
+	case usagerollupdaily.FieldCacheReadKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCacheReadKnownEvents(v)
+		return nil
+	case usagerollupdaily.FieldCacheWriteKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCacheWriteKnownEvents(v)
+		return nil
+	case usagerollupdaily.FieldCacheWrite1hKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCacheWrite1hKnownEvents(v)
+		return nil
+	case usagerollupdaily.FieldReasoningKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetReasoningKnownEvents(v)
+		return nil
+	case usagerollupdaily.FieldPresenceTrackedEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetPresenceTrackedEvents(v)
+		return nil
 	case usagerollupdaily.FieldFirstEventTs:
 		v, ok := value.(time.Time)
 		if !ok {
@@ -141669,6 +144161,27 @@ func (m *UsageRollupDailyMutation) AddedFields() []string {
 	if m.addnull_token_events != nil {
 		fields = append(fields, usagerollupdaily.FieldNullTokenEvents)
 	}
+	if m.addinput_known_events != nil {
+		fields = append(fields, usagerollupdaily.FieldInputKnownEvents)
+	}
+	if m.addoutput_known_events != nil {
+		fields = append(fields, usagerollupdaily.FieldOutputKnownEvents)
+	}
+	if m.addcache_read_known_events != nil {
+		fields = append(fields, usagerollupdaily.FieldCacheReadKnownEvents)
+	}
+	if m.addcache_write_known_events != nil {
+		fields = append(fields, usagerollupdaily.FieldCacheWriteKnownEvents)
+	}
+	if m.addcache_write_1h_known_events != nil {
+		fields = append(fields, usagerollupdaily.FieldCacheWrite1hKnownEvents)
+	}
+	if m.addreasoning_known_events != nil {
+		fields = append(fields, usagerollupdaily.FieldReasoningKnownEvents)
+	}
+	if m.addpresence_tracked_events != nil {
+		fields = append(fields, usagerollupdaily.FieldPresenceTrackedEvents)
+	}
 	return fields
 }
 
@@ -141699,6 +144212,20 @@ func (m *UsageRollupDailyMutation) AddedField(name string) (ent.Value, bool) {
 		return m.AddedEvents()
 	case usagerollupdaily.FieldNullTokenEvents:
 		return m.AddedNullTokenEvents()
+	case usagerollupdaily.FieldInputKnownEvents:
+		return m.AddedInputKnownEvents()
+	case usagerollupdaily.FieldOutputKnownEvents:
+		return m.AddedOutputKnownEvents()
+	case usagerollupdaily.FieldCacheReadKnownEvents:
+		return m.AddedCacheReadKnownEvents()
+	case usagerollupdaily.FieldCacheWriteKnownEvents:
+		return m.AddedCacheWriteKnownEvents()
+	case usagerollupdaily.FieldCacheWrite1hKnownEvents:
+		return m.AddedCacheWrite1hKnownEvents()
+	case usagerollupdaily.FieldReasoningKnownEvents:
+		return m.AddedReasoningKnownEvents()
+	case usagerollupdaily.FieldPresenceTrackedEvents:
+		return m.AddedPresenceTrackedEvents()
 	}
 	return nil, false
 }
@@ -141785,6 +144312,55 @@ func (m *UsageRollupDailyMutation) AddField(name string, value ent.Value) error 
 		}
 		m.AddNullTokenEvents(v)
 		return nil
+	case usagerollupdaily.FieldInputKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddInputKnownEvents(v)
+		return nil
+	case usagerollupdaily.FieldOutputKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddOutputKnownEvents(v)
+		return nil
+	case usagerollupdaily.FieldCacheReadKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddCacheReadKnownEvents(v)
+		return nil
+	case usagerollupdaily.FieldCacheWriteKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddCacheWriteKnownEvents(v)
+		return nil
+	case usagerollupdaily.FieldCacheWrite1hKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddCacheWrite1hKnownEvents(v)
+		return nil
+	case usagerollupdaily.FieldReasoningKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddReasoningKnownEvents(v)
+		return nil
+	case usagerollupdaily.FieldPresenceTrackedEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddPresenceTrackedEvents(v)
+		return nil
 	}
 	return fmt.Errorf("unknown UsageRollupDaily numeric field %s", name)
 }
@@ -141866,6 +144442,27 @@ func (m *UsageRollupDailyMutation) ResetField(name string) error {
 	case usagerollupdaily.FieldNullTokenEvents:
 		m.ResetNullTokenEvents()
 		return nil
+	case usagerollupdaily.FieldInputKnownEvents:
+		m.ResetInputKnownEvents()
+		return nil
+	case usagerollupdaily.FieldOutputKnownEvents:
+		m.ResetOutputKnownEvents()
+		return nil
+	case usagerollupdaily.FieldCacheReadKnownEvents:
+		m.ResetCacheReadKnownEvents()
+		return nil
+	case usagerollupdaily.FieldCacheWriteKnownEvents:
+		m.ResetCacheWriteKnownEvents()
+		return nil
+	case usagerollupdaily.FieldCacheWrite1hKnownEvents:
+		m.ResetCacheWrite1hKnownEvents()
+		return nil
+	case usagerollupdaily.FieldReasoningKnownEvents:
+		m.ResetReasoningKnownEvents()
+		return nil
+	case usagerollupdaily.FieldPresenceTrackedEvents:
+		m.ResetPresenceTrackedEvents()
+		return nil
 	case usagerollupdaily.FieldFirstEventTs:
 		m.ResetFirstEventTs()
 		return nil
@@ -141922,6 +144519,2339 @@ func (m *UsageRollupDailyMutation) ClearEdge(name string) error {
 // It returns an error if the edge is not defined in the schema.
 func (m *UsageRollupDailyMutation) ResetEdge(name string) error {
 	return fmt.Errorf("unknown UsageRollupDaily edge %s", name)
+}
+
+// UsageRollupHourlyMutation represents an operation that mutates the UsageRollupHourly nodes in the graph.
+type UsageRollupHourlyMutation struct {
+	config
+	op                             Op
+	typ                            string
+	id                             *uuid.UUID
+	bucket_start                   *time.Time
+	project_id                     *string
+	billing_user_id                *string
+	agent_id                       *string
+	harness                        *string
+	model                          *string
+	usage_source                   *string
+	calls                          *int64
+	addcalls                       *int64
+	error_calls                    *int64
+	adderror_calls                 *int64
+	input                          *int64
+	addinput                       *int64
+	output                         *int64
+	addoutput                      *int64
+	cache_read                     *int64
+	addcache_read                  *int64
+	cache_write                    *int64
+	addcache_write                 *int64
+	cache_write_1h                 *int64
+	addcache_write_1h              *int64
+	reasoning                      *int64
+	addreasoning                   *int64
+	reported_cost_micros           *int64
+	addreported_cost_micros        *int64
+	events                         *int64
+	addevents                      *int64
+	null_token_events              *int64
+	addnull_token_events           *int64
+	input_known_events             *int64
+	addinput_known_events          *int64
+	output_known_events            *int64
+	addoutput_known_events         *int64
+	cache_read_known_events        *int64
+	addcache_read_known_events     *int64
+	cache_write_known_events       *int64
+	addcache_write_known_events    *int64
+	cache_write_1h_known_events    *int64
+	addcache_write_1h_known_events *int64
+	reasoning_known_events         *int64
+	addreasoning_known_events      *int64
+	presence_tracked_events        *int64
+	addpresence_tracked_events     *int64
+	first_event_ts                 *time.Time
+	last_event_ts                  *time.Time
+	clearedFields                  map[string]struct{}
+	done                           bool
+	oldValue                       func(context.Context) (*UsageRollupHourly, error)
+	predicates                     []predicate.UsageRollupHourly
+}
+
+var _ ent.Mutation = (*UsageRollupHourlyMutation)(nil)
+
+// usagerolluphourlyOption allows management of the mutation configuration using functional options.
+type usagerolluphourlyOption func(*UsageRollupHourlyMutation)
+
+// newUsageRollupHourlyMutation creates new mutation for the UsageRollupHourly entity.
+func newUsageRollupHourlyMutation(c config, op Op, opts ...usagerolluphourlyOption) *UsageRollupHourlyMutation {
+	m := &UsageRollupHourlyMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeUsageRollupHourly,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withUsageRollupHourlyID sets the ID field of the mutation.
+func withUsageRollupHourlyID(id uuid.UUID) usagerolluphourlyOption {
+	return func(m *UsageRollupHourlyMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *UsageRollupHourly
+		)
+		m.oldValue = func(ctx context.Context) (*UsageRollupHourly, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().UsageRollupHourly.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withUsageRollupHourly sets the old UsageRollupHourly of the mutation.
+func withUsageRollupHourly(node *UsageRollupHourly) usagerolluphourlyOption {
+	return func(m *UsageRollupHourlyMutation) {
+		m.oldValue = func(context.Context) (*UsageRollupHourly, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m UsageRollupHourlyMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m UsageRollupHourlyMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// SetID sets the value of the id field. Note that this
+// operation is only accepted on creation of UsageRollupHourly entities.
+func (m *UsageRollupHourlyMutation) SetID(id uuid.UUID) {
+	m.id = &id
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *UsageRollupHourlyMutation) ID() (id uuid.UUID, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *UsageRollupHourlyMutation) IDs(ctx context.Context) ([]uuid.UUID, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []uuid.UUID{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().UsageRollupHourly.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetBucketStart sets the "bucket_start" field.
+func (m *UsageRollupHourlyMutation) SetBucketStart(t time.Time) {
+	m.bucket_start = &t
+}
+
+// BucketStart returns the value of the "bucket_start" field in the mutation.
+func (m *UsageRollupHourlyMutation) BucketStart() (r time.Time, exists bool) {
+	v := m.bucket_start
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldBucketStart returns the old "bucket_start" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldBucketStart(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldBucketStart is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldBucketStart requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldBucketStart: %w", err)
+	}
+	return oldValue.BucketStart, nil
+}
+
+// ResetBucketStart resets all changes to the "bucket_start" field.
+func (m *UsageRollupHourlyMutation) ResetBucketStart() {
+	m.bucket_start = nil
+}
+
+// SetProjectID sets the "project_id" field.
+func (m *UsageRollupHourlyMutation) SetProjectID(s string) {
+	m.project_id = &s
+}
+
+// ProjectID returns the value of the "project_id" field in the mutation.
+func (m *UsageRollupHourlyMutation) ProjectID() (r string, exists bool) {
+	v := m.project_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldProjectID returns the old "project_id" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldProjectID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldProjectID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldProjectID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldProjectID: %w", err)
+	}
+	return oldValue.ProjectID, nil
+}
+
+// ResetProjectID resets all changes to the "project_id" field.
+func (m *UsageRollupHourlyMutation) ResetProjectID() {
+	m.project_id = nil
+}
+
+// SetBillingUserID sets the "billing_user_id" field.
+func (m *UsageRollupHourlyMutation) SetBillingUserID(s string) {
+	m.billing_user_id = &s
+}
+
+// BillingUserID returns the value of the "billing_user_id" field in the mutation.
+func (m *UsageRollupHourlyMutation) BillingUserID() (r string, exists bool) {
+	v := m.billing_user_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldBillingUserID returns the old "billing_user_id" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldBillingUserID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldBillingUserID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldBillingUserID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldBillingUserID: %w", err)
+	}
+	return oldValue.BillingUserID, nil
+}
+
+// ResetBillingUserID resets all changes to the "billing_user_id" field.
+func (m *UsageRollupHourlyMutation) ResetBillingUserID() {
+	m.billing_user_id = nil
+}
+
+// SetAgentID sets the "agent_id" field.
+func (m *UsageRollupHourlyMutation) SetAgentID(s string) {
+	m.agent_id = &s
+}
+
+// AgentID returns the value of the "agent_id" field in the mutation.
+func (m *UsageRollupHourlyMutation) AgentID() (r string, exists bool) {
+	v := m.agent_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldAgentID returns the old "agent_id" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldAgentID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldAgentID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldAgentID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldAgentID: %w", err)
+	}
+	return oldValue.AgentID, nil
+}
+
+// ResetAgentID resets all changes to the "agent_id" field.
+func (m *UsageRollupHourlyMutation) ResetAgentID() {
+	m.agent_id = nil
+}
+
+// SetHarness sets the "harness" field.
+func (m *UsageRollupHourlyMutation) SetHarness(s string) {
+	m.harness = &s
+}
+
+// Harness returns the value of the "harness" field in the mutation.
+func (m *UsageRollupHourlyMutation) Harness() (r string, exists bool) {
+	v := m.harness
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldHarness returns the old "harness" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldHarness(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldHarness is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldHarness requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldHarness: %w", err)
+	}
+	return oldValue.Harness, nil
+}
+
+// ResetHarness resets all changes to the "harness" field.
+func (m *UsageRollupHourlyMutation) ResetHarness() {
+	m.harness = nil
+}
+
+// SetModel sets the "model" field.
+func (m *UsageRollupHourlyMutation) SetModel(s string) {
+	m.model = &s
+}
+
+// Model returns the value of the "model" field in the mutation.
+func (m *UsageRollupHourlyMutation) Model() (r string, exists bool) {
+	v := m.model
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldModel returns the old "model" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldModel(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldModel is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldModel requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldModel: %w", err)
+	}
+	return oldValue.Model, nil
+}
+
+// ResetModel resets all changes to the "model" field.
+func (m *UsageRollupHourlyMutation) ResetModel() {
+	m.model = nil
+}
+
+// SetUsageSource sets the "usage_source" field.
+func (m *UsageRollupHourlyMutation) SetUsageSource(s string) {
+	m.usage_source = &s
+}
+
+// UsageSource returns the value of the "usage_source" field in the mutation.
+func (m *UsageRollupHourlyMutation) UsageSource() (r string, exists bool) {
+	v := m.usage_source
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUsageSource returns the old "usage_source" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldUsageSource(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUsageSource is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUsageSource requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUsageSource: %w", err)
+	}
+	return oldValue.UsageSource, nil
+}
+
+// ResetUsageSource resets all changes to the "usage_source" field.
+func (m *UsageRollupHourlyMutation) ResetUsageSource() {
+	m.usage_source = nil
+}
+
+// SetCalls sets the "calls" field.
+func (m *UsageRollupHourlyMutation) SetCalls(i int64) {
+	m.calls = &i
+	m.addcalls = nil
+}
+
+// Calls returns the value of the "calls" field in the mutation.
+func (m *UsageRollupHourlyMutation) Calls() (r int64, exists bool) {
+	v := m.calls
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCalls returns the old "calls" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldCalls(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCalls is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCalls requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCalls: %w", err)
+	}
+	return oldValue.Calls, nil
+}
+
+// AddCalls adds i to the "calls" field.
+func (m *UsageRollupHourlyMutation) AddCalls(i int64) {
+	if m.addcalls != nil {
+		*m.addcalls += i
+	} else {
+		m.addcalls = &i
+	}
+}
+
+// AddedCalls returns the value that was added to the "calls" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedCalls() (r int64, exists bool) {
+	v := m.addcalls
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetCalls resets all changes to the "calls" field.
+func (m *UsageRollupHourlyMutation) ResetCalls() {
+	m.calls = nil
+	m.addcalls = nil
+}
+
+// SetErrorCalls sets the "error_calls" field.
+func (m *UsageRollupHourlyMutation) SetErrorCalls(i int64) {
+	m.error_calls = &i
+	m.adderror_calls = nil
+}
+
+// ErrorCalls returns the value of the "error_calls" field in the mutation.
+func (m *UsageRollupHourlyMutation) ErrorCalls() (r int64, exists bool) {
+	v := m.error_calls
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldErrorCalls returns the old "error_calls" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldErrorCalls(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldErrorCalls is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldErrorCalls requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldErrorCalls: %w", err)
+	}
+	return oldValue.ErrorCalls, nil
+}
+
+// AddErrorCalls adds i to the "error_calls" field.
+func (m *UsageRollupHourlyMutation) AddErrorCalls(i int64) {
+	if m.adderror_calls != nil {
+		*m.adderror_calls += i
+	} else {
+		m.adderror_calls = &i
+	}
+}
+
+// AddedErrorCalls returns the value that was added to the "error_calls" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedErrorCalls() (r int64, exists bool) {
+	v := m.adderror_calls
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetErrorCalls resets all changes to the "error_calls" field.
+func (m *UsageRollupHourlyMutation) ResetErrorCalls() {
+	m.error_calls = nil
+	m.adderror_calls = nil
+}
+
+// SetInput sets the "input" field.
+func (m *UsageRollupHourlyMutation) SetInput(i int64) {
+	m.input = &i
+	m.addinput = nil
+}
+
+// Input returns the value of the "input" field in the mutation.
+func (m *UsageRollupHourlyMutation) Input() (r int64, exists bool) {
+	v := m.input
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldInput returns the old "input" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldInput(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldInput is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldInput requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldInput: %w", err)
+	}
+	return oldValue.Input, nil
+}
+
+// AddInput adds i to the "input" field.
+func (m *UsageRollupHourlyMutation) AddInput(i int64) {
+	if m.addinput != nil {
+		*m.addinput += i
+	} else {
+		m.addinput = &i
+	}
+}
+
+// AddedInput returns the value that was added to the "input" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedInput() (r int64, exists bool) {
+	v := m.addinput
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetInput resets all changes to the "input" field.
+func (m *UsageRollupHourlyMutation) ResetInput() {
+	m.input = nil
+	m.addinput = nil
+}
+
+// SetOutput sets the "output" field.
+func (m *UsageRollupHourlyMutation) SetOutput(i int64) {
+	m.output = &i
+	m.addoutput = nil
+}
+
+// Output returns the value of the "output" field in the mutation.
+func (m *UsageRollupHourlyMutation) Output() (r int64, exists bool) {
+	v := m.output
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldOutput returns the old "output" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldOutput(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldOutput is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldOutput requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldOutput: %w", err)
+	}
+	return oldValue.Output, nil
+}
+
+// AddOutput adds i to the "output" field.
+func (m *UsageRollupHourlyMutation) AddOutput(i int64) {
+	if m.addoutput != nil {
+		*m.addoutput += i
+	} else {
+		m.addoutput = &i
+	}
+}
+
+// AddedOutput returns the value that was added to the "output" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedOutput() (r int64, exists bool) {
+	v := m.addoutput
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetOutput resets all changes to the "output" field.
+func (m *UsageRollupHourlyMutation) ResetOutput() {
+	m.output = nil
+	m.addoutput = nil
+}
+
+// SetCacheRead sets the "cache_read" field.
+func (m *UsageRollupHourlyMutation) SetCacheRead(i int64) {
+	m.cache_read = &i
+	m.addcache_read = nil
+}
+
+// CacheRead returns the value of the "cache_read" field in the mutation.
+func (m *UsageRollupHourlyMutation) CacheRead() (r int64, exists bool) {
+	v := m.cache_read
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCacheRead returns the old "cache_read" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldCacheRead(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCacheRead is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCacheRead requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCacheRead: %w", err)
+	}
+	return oldValue.CacheRead, nil
+}
+
+// AddCacheRead adds i to the "cache_read" field.
+func (m *UsageRollupHourlyMutation) AddCacheRead(i int64) {
+	if m.addcache_read != nil {
+		*m.addcache_read += i
+	} else {
+		m.addcache_read = &i
+	}
+}
+
+// AddedCacheRead returns the value that was added to the "cache_read" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedCacheRead() (r int64, exists bool) {
+	v := m.addcache_read
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetCacheRead resets all changes to the "cache_read" field.
+func (m *UsageRollupHourlyMutation) ResetCacheRead() {
+	m.cache_read = nil
+	m.addcache_read = nil
+}
+
+// SetCacheWrite sets the "cache_write" field.
+func (m *UsageRollupHourlyMutation) SetCacheWrite(i int64) {
+	m.cache_write = &i
+	m.addcache_write = nil
+}
+
+// CacheWrite returns the value of the "cache_write" field in the mutation.
+func (m *UsageRollupHourlyMutation) CacheWrite() (r int64, exists bool) {
+	v := m.cache_write
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCacheWrite returns the old "cache_write" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldCacheWrite(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCacheWrite is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCacheWrite requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCacheWrite: %w", err)
+	}
+	return oldValue.CacheWrite, nil
+}
+
+// AddCacheWrite adds i to the "cache_write" field.
+func (m *UsageRollupHourlyMutation) AddCacheWrite(i int64) {
+	if m.addcache_write != nil {
+		*m.addcache_write += i
+	} else {
+		m.addcache_write = &i
+	}
+}
+
+// AddedCacheWrite returns the value that was added to the "cache_write" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedCacheWrite() (r int64, exists bool) {
+	v := m.addcache_write
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetCacheWrite resets all changes to the "cache_write" field.
+func (m *UsageRollupHourlyMutation) ResetCacheWrite() {
+	m.cache_write = nil
+	m.addcache_write = nil
+}
+
+// SetCacheWrite1h sets the "cache_write_1h" field.
+func (m *UsageRollupHourlyMutation) SetCacheWrite1h(i int64) {
+	m.cache_write_1h = &i
+	m.addcache_write_1h = nil
+}
+
+// CacheWrite1h returns the value of the "cache_write_1h" field in the mutation.
+func (m *UsageRollupHourlyMutation) CacheWrite1h() (r int64, exists bool) {
+	v := m.cache_write_1h
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCacheWrite1h returns the old "cache_write_1h" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldCacheWrite1h(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCacheWrite1h is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCacheWrite1h requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCacheWrite1h: %w", err)
+	}
+	return oldValue.CacheWrite1h, nil
+}
+
+// AddCacheWrite1h adds i to the "cache_write_1h" field.
+func (m *UsageRollupHourlyMutation) AddCacheWrite1h(i int64) {
+	if m.addcache_write_1h != nil {
+		*m.addcache_write_1h += i
+	} else {
+		m.addcache_write_1h = &i
+	}
+}
+
+// AddedCacheWrite1h returns the value that was added to the "cache_write_1h" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedCacheWrite1h() (r int64, exists bool) {
+	v := m.addcache_write_1h
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetCacheWrite1h resets all changes to the "cache_write_1h" field.
+func (m *UsageRollupHourlyMutation) ResetCacheWrite1h() {
+	m.cache_write_1h = nil
+	m.addcache_write_1h = nil
+}
+
+// SetReasoning sets the "reasoning" field.
+func (m *UsageRollupHourlyMutation) SetReasoning(i int64) {
+	m.reasoning = &i
+	m.addreasoning = nil
+}
+
+// Reasoning returns the value of the "reasoning" field in the mutation.
+func (m *UsageRollupHourlyMutation) Reasoning() (r int64, exists bool) {
+	v := m.reasoning
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldReasoning returns the old "reasoning" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldReasoning(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldReasoning is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldReasoning requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldReasoning: %w", err)
+	}
+	return oldValue.Reasoning, nil
+}
+
+// AddReasoning adds i to the "reasoning" field.
+func (m *UsageRollupHourlyMutation) AddReasoning(i int64) {
+	if m.addreasoning != nil {
+		*m.addreasoning += i
+	} else {
+		m.addreasoning = &i
+	}
+}
+
+// AddedReasoning returns the value that was added to the "reasoning" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedReasoning() (r int64, exists bool) {
+	v := m.addreasoning
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetReasoning resets all changes to the "reasoning" field.
+func (m *UsageRollupHourlyMutation) ResetReasoning() {
+	m.reasoning = nil
+	m.addreasoning = nil
+}
+
+// SetReportedCostMicros sets the "reported_cost_micros" field.
+func (m *UsageRollupHourlyMutation) SetReportedCostMicros(i int64) {
+	m.reported_cost_micros = &i
+	m.addreported_cost_micros = nil
+}
+
+// ReportedCostMicros returns the value of the "reported_cost_micros" field in the mutation.
+func (m *UsageRollupHourlyMutation) ReportedCostMicros() (r int64, exists bool) {
+	v := m.reported_cost_micros
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldReportedCostMicros returns the old "reported_cost_micros" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldReportedCostMicros(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldReportedCostMicros is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldReportedCostMicros requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldReportedCostMicros: %w", err)
+	}
+	return oldValue.ReportedCostMicros, nil
+}
+
+// AddReportedCostMicros adds i to the "reported_cost_micros" field.
+func (m *UsageRollupHourlyMutation) AddReportedCostMicros(i int64) {
+	if m.addreported_cost_micros != nil {
+		*m.addreported_cost_micros += i
+	} else {
+		m.addreported_cost_micros = &i
+	}
+}
+
+// AddedReportedCostMicros returns the value that was added to the "reported_cost_micros" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedReportedCostMicros() (r int64, exists bool) {
+	v := m.addreported_cost_micros
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetReportedCostMicros resets all changes to the "reported_cost_micros" field.
+func (m *UsageRollupHourlyMutation) ResetReportedCostMicros() {
+	m.reported_cost_micros = nil
+	m.addreported_cost_micros = nil
+}
+
+// SetEvents sets the "events" field.
+func (m *UsageRollupHourlyMutation) SetEvents(i int64) {
+	m.events = &i
+	m.addevents = nil
+}
+
+// Events returns the value of the "events" field in the mutation.
+func (m *UsageRollupHourlyMutation) Events() (r int64, exists bool) {
+	v := m.events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldEvents returns the old "events" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldEvents(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldEvents is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldEvents requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldEvents: %w", err)
+	}
+	return oldValue.Events, nil
+}
+
+// AddEvents adds i to the "events" field.
+func (m *UsageRollupHourlyMutation) AddEvents(i int64) {
+	if m.addevents != nil {
+		*m.addevents += i
+	} else {
+		m.addevents = &i
+	}
+}
+
+// AddedEvents returns the value that was added to the "events" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedEvents() (r int64, exists bool) {
+	v := m.addevents
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetEvents resets all changes to the "events" field.
+func (m *UsageRollupHourlyMutation) ResetEvents() {
+	m.events = nil
+	m.addevents = nil
+}
+
+// SetNullTokenEvents sets the "null_token_events" field.
+func (m *UsageRollupHourlyMutation) SetNullTokenEvents(i int64) {
+	m.null_token_events = &i
+	m.addnull_token_events = nil
+}
+
+// NullTokenEvents returns the value of the "null_token_events" field in the mutation.
+func (m *UsageRollupHourlyMutation) NullTokenEvents() (r int64, exists bool) {
+	v := m.null_token_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldNullTokenEvents returns the old "null_token_events" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldNullTokenEvents(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldNullTokenEvents is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldNullTokenEvents requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldNullTokenEvents: %w", err)
+	}
+	return oldValue.NullTokenEvents, nil
+}
+
+// AddNullTokenEvents adds i to the "null_token_events" field.
+func (m *UsageRollupHourlyMutation) AddNullTokenEvents(i int64) {
+	if m.addnull_token_events != nil {
+		*m.addnull_token_events += i
+	} else {
+		m.addnull_token_events = &i
+	}
+}
+
+// AddedNullTokenEvents returns the value that was added to the "null_token_events" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedNullTokenEvents() (r int64, exists bool) {
+	v := m.addnull_token_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetNullTokenEvents resets all changes to the "null_token_events" field.
+func (m *UsageRollupHourlyMutation) ResetNullTokenEvents() {
+	m.null_token_events = nil
+	m.addnull_token_events = nil
+}
+
+// SetInputKnownEvents sets the "input_known_events" field.
+func (m *UsageRollupHourlyMutation) SetInputKnownEvents(i int64) {
+	m.input_known_events = &i
+	m.addinput_known_events = nil
+}
+
+// InputKnownEvents returns the value of the "input_known_events" field in the mutation.
+func (m *UsageRollupHourlyMutation) InputKnownEvents() (r int64, exists bool) {
+	v := m.input_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldInputKnownEvents returns the old "input_known_events" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldInputKnownEvents(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldInputKnownEvents is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldInputKnownEvents requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldInputKnownEvents: %w", err)
+	}
+	return oldValue.InputKnownEvents, nil
+}
+
+// AddInputKnownEvents adds i to the "input_known_events" field.
+func (m *UsageRollupHourlyMutation) AddInputKnownEvents(i int64) {
+	if m.addinput_known_events != nil {
+		*m.addinput_known_events += i
+	} else {
+		m.addinput_known_events = &i
+	}
+}
+
+// AddedInputKnownEvents returns the value that was added to the "input_known_events" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedInputKnownEvents() (r int64, exists bool) {
+	v := m.addinput_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetInputKnownEvents resets all changes to the "input_known_events" field.
+func (m *UsageRollupHourlyMutation) ResetInputKnownEvents() {
+	m.input_known_events = nil
+	m.addinput_known_events = nil
+}
+
+// SetOutputKnownEvents sets the "output_known_events" field.
+func (m *UsageRollupHourlyMutation) SetOutputKnownEvents(i int64) {
+	m.output_known_events = &i
+	m.addoutput_known_events = nil
+}
+
+// OutputKnownEvents returns the value of the "output_known_events" field in the mutation.
+func (m *UsageRollupHourlyMutation) OutputKnownEvents() (r int64, exists bool) {
+	v := m.output_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldOutputKnownEvents returns the old "output_known_events" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldOutputKnownEvents(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldOutputKnownEvents is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldOutputKnownEvents requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldOutputKnownEvents: %w", err)
+	}
+	return oldValue.OutputKnownEvents, nil
+}
+
+// AddOutputKnownEvents adds i to the "output_known_events" field.
+func (m *UsageRollupHourlyMutation) AddOutputKnownEvents(i int64) {
+	if m.addoutput_known_events != nil {
+		*m.addoutput_known_events += i
+	} else {
+		m.addoutput_known_events = &i
+	}
+}
+
+// AddedOutputKnownEvents returns the value that was added to the "output_known_events" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedOutputKnownEvents() (r int64, exists bool) {
+	v := m.addoutput_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetOutputKnownEvents resets all changes to the "output_known_events" field.
+func (m *UsageRollupHourlyMutation) ResetOutputKnownEvents() {
+	m.output_known_events = nil
+	m.addoutput_known_events = nil
+}
+
+// SetCacheReadKnownEvents sets the "cache_read_known_events" field.
+func (m *UsageRollupHourlyMutation) SetCacheReadKnownEvents(i int64) {
+	m.cache_read_known_events = &i
+	m.addcache_read_known_events = nil
+}
+
+// CacheReadKnownEvents returns the value of the "cache_read_known_events" field in the mutation.
+func (m *UsageRollupHourlyMutation) CacheReadKnownEvents() (r int64, exists bool) {
+	v := m.cache_read_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCacheReadKnownEvents returns the old "cache_read_known_events" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldCacheReadKnownEvents(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCacheReadKnownEvents is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCacheReadKnownEvents requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCacheReadKnownEvents: %w", err)
+	}
+	return oldValue.CacheReadKnownEvents, nil
+}
+
+// AddCacheReadKnownEvents adds i to the "cache_read_known_events" field.
+func (m *UsageRollupHourlyMutation) AddCacheReadKnownEvents(i int64) {
+	if m.addcache_read_known_events != nil {
+		*m.addcache_read_known_events += i
+	} else {
+		m.addcache_read_known_events = &i
+	}
+}
+
+// AddedCacheReadKnownEvents returns the value that was added to the "cache_read_known_events" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedCacheReadKnownEvents() (r int64, exists bool) {
+	v := m.addcache_read_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetCacheReadKnownEvents resets all changes to the "cache_read_known_events" field.
+func (m *UsageRollupHourlyMutation) ResetCacheReadKnownEvents() {
+	m.cache_read_known_events = nil
+	m.addcache_read_known_events = nil
+}
+
+// SetCacheWriteKnownEvents sets the "cache_write_known_events" field.
+func (m *UsageRollupHourlyMutation) SetCacheWriteKnownEvents(i int64) {
+	m.cache_write_known_events = &i
+	m.addcache_write_known_events = nil
+}
+
+// CacheWriteKnownEvents returns the value of the "cache_write_known_events" field in the mutation.
+func (m *UsageRollupHourlyMutation) CacheWriteKnownEvents() (r int64, exists bool) {
+	v := m.cache_write_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCacheWriteKnownEvents returns the old "cache_write_known_events" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldCacheWriteKnownEvents(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCacheWriteKnownEvents is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCacheWriteKnownEvents requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCacheWriteKnownEvents: %w", err)
+	}
+	return oldValue.CacheWriteKnownEvents, nil
+}
+
+// AddCacheWriteKnownEvents adds i to the "cache_write_known_events" field.
+func (m *UsageRollupHourlyMutation) AddCacheWriteKnownEvents(i int64) {
+	if m.addcache_write_known_events != nil {
+		*m.addcache_write_known_events += i
+	} else {
+		m.addcache_write_known_events = &i
+	}
+}
+
+// AddedCacheWriteKnownEvents returns the value that was added to the "cache_write_known_events" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedCacheWriteKnownEvents() (r int64, exists bool) {
+	v := m.addcache_write_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetCacheWriteKnownEvents resets all changes to the "cache_write_known_events" field.
+func (m *UsageRollupHourlyMutation) ResetCacheWriteKnownEvents() {
+	m.cache_write_known_events = nil
+	m.addcache_write_known_events = nil
+}
+
+// SetCacheWrite1hKnownEvents sets the "cache_write_1h_known_events" field.
+func (m *UsageRollupHourlyMutation) SetCacheWrite1hKnownEvents(i int64) {
+	m.cache_write_1h_known_events = &i
+	m.addcache_write_1h_known_events = nil
+}
+
+// CacheWrite1hKnownEvents returns the value of the "cache_write_1h_known_events" field in the mutation.
+func (m *UsageRollupHourlyMutation) CacheWrite1hKnownEvents() (r int64, exists bool) {
+	v := m.cache_write_1h_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCacheWrite1hKnownEvents returns the old "cache_write_1h_known_events" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldCacheWrite1hKnownEvents(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCacheWrite1hKnownEvents is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCacheWrite1hKnownEvents requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCacheWrite1hKnownEvents: %w", err)
+	}
+	return oldValue.CacheWrite1hKnownEvents, nil
+}
+
+// AddCacheWrite1hKnownEvents adds i to the "cache_write_1h_known_events" field.
+func (m *UsageRollupHourlyMutation) AddCacheWrite1hKnownEvents(i int64) {
+	if m.addcache_write_1h_known_events != nil {
+		*m.addcache_write_1h_known_events += i
+	} else {
+		m.addcache_write_1h_known_events = &i
+	}
+}
+
+// AddedCacheWrite1hKnownEvents returns the value that was added to the "cache_write_1h_known_events" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedCacheWrite1hKnownEvents() (r int64, exists bool) {
+	v := m.addcache_write_1h_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetCacheWrite1hKnownEvents resets all changes to the "cache_write_1h_known_events" field.
+func (m *UsageRollupHourlyMutation) ResetCacheWrite1hKnownEvents() {
+	m.cache_write_1h_known_events = nil
+	m.addcache_write_1h_known_events = nil
+}
+
+// SetReasoningKnownEvents sets the "reasoning_known_events" field.
+func (m *UsageRollupHourlyMutation) SetReasoningKnownEvents(i int64) {
+	m.reasoning_known_events = &i
+	m.addreasoning_known_events = nil
+}
+
+// ReasoningKnownEvents returns the value of the "reasoning_known_events" field in the mutation.
+func (m *UsageRollupHourlyMutation) ReasoningKnownEvents() (r int64, exists bool) {
+	v := m.reasoning_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldReasoningKnownEvents returns the old "reasoning_known_events" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldReasoningKnownEvents(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldReasoningKnownEvents is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldReasoningKnownEvents requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldReasoningKnownEvents: %w", err)
+	}
+	return oldValue.ReasoningKnownEvents, nil
+}
+
+// AddReasoningKnownEvents adds i to the "reasoning_known_events" field.
+func (m *UsageRollupHourlyMutation) AddReasoningKnownEvents(i int64) {
+	if m.addreasoning_known_events != nil {
+		*m.addreasoning_known_events += i
+	} else {
+		m.addreasoning_known_events = &i
+	}
+}
+
+// AddedReasoningKnownEvents returns the value that was added to the "reasoning_known_events" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedReasoningKnownEvents() (r int64, exists bool) {
+	v := m.addreasoning_known_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetReasoningKnownEvents resets all changes to the "reasoning_known_events" field.
+func (m *UsageRollupHourlyMutation) ResetReasoningKnownEvents() {
+	m.reasoning_known_events = nil
+	m.addreasoning_known_events = nil
+}
+
+// SetPresenceTrackedEvents sets the "presence_tracked_events" field.
+func (m *UsageRollupHourlyMutation) SetPresenceTrackedEvents(i int64) {
+	m.presence_tracked_events = &i
+	m.addpresence_tracked_events = nil
+}
+
+// PresenceTrackedEvents returns the value of the "presence_tracked_events" field in the mutation.
+func (m *UsageRollupHourlyMutation) PresenceTrackedEvents() (r int64, exists bool) {
+	v := m.presence_tracked_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldPresenceTrackedEvents returns the old "presence_tracked_events" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldPresenceTrackedEvents(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldPresenceTrackedEvents is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldPresenceTrackedEvents requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldPresenceTrackedEvents: %w", err)
+	}
+	return oldValue.PresenceTrackedEvents, nil
+}
+
+// AddPresenceTrackedEvents adds i to the "presence_tracked_events" field.
+func (m *UsageRollupHourlyMutation) AddPresenceTrackedEvents(i int64) {
+	if m.addpresence_tracked_events != nil {
+		*m.addpresence_tracked_events += i
+	} else {
+		m.addpresence_tracked_events = &i
+	}
+}
+
+// AddedPresenceTrackedEvents returns the value that was added to the "presence_tracked_events" field in this mutation.
+func (m *UsageRollupHourlyMutation) AddedPresenceTrackedEvents() (r int64, exists bool) {
+	v := m.addpresence_tracked_events
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetPresenceTrackedEvents resets all changes to the "presence_tracked_events" field.
+func (m *UsageRollupHourlyMutation) ResetPresenceTrackedEvents() {
+	m.presence_tracked_events = nil
+	m.addpresence_tracked_events = nil
+}
+
+// SetFirstEventTs sets the "first_event_ts" field.
+func (m *UsageRollupHourlyMutation) SetFirstEventTs(t time.Time) {
+	m.first_event_ts = &t
+}
+
+// FirstEventTs returns the value of the "first_event_ts" field in the mutation.
+func (m *UsageRollupHourlyMutation) FirstEventTs() (r time.Time, exists bool) {
+	v := m.first_event_ts
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldFirstEventTs returns the old "first_event_ts" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldFirstEventTs(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldFirstEventTs is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldFirstEventTs requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldFirstEventTs: %w", err)
+	}
+	return oldValue.FirstEventTs, nil
+}
+
+// ResetFirstEventTs resets all changes to the "first_event_ts" field.
+func (m *UsageRollupHourlyMutation) ResetFirstEventTs() {
+	m.first_event_ts = nil
+}
+
+// SetLastEventTs sets the "last_event_ts" field.
+func (m *UsageRollupHourlyMutation) SetLastEventTs(t time.Time) {
+	m.last_event_ts = &t
+}
+
+// LastEventTs returns the value of the "last_event_ts" field in the mutation.
+func (m *UsageRollupHourlyMutation) LastEventTs() (r time.Time, exists bool) {
+	v := m.last_event_ts
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldLastEventTs returns the old "last_event_ts" field's value of the UsageRollupHourly entity.
+// If the UsageRollupHourly object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageRollupHourlyMutation) OldLastEventTs(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldLastEventTs is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldLastEventTs requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldLastEventTs: %w", err)
+	}
+	return oldValue.LastEventTs, nil
+}
+
+// ResetLastEventTs resets all changes to the "last_event_ts" field.
+func (m *UsageRollupHourlyMutation) ResetLastEventTs() {
+	m.last_event_ts = nil
+}
+
+// Where appends a list predicates to the UsageRollupHourlyMutation builder.
+func (m *UsageRollupHourlyMutation) Where(ps ...predicate.UsageRollupHourly) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the UsageRollupHourlyMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *UsageRollupHourlyMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.UsageRollupHourly, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *UsageRollupHourlyMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *UsageRollupHourlyMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (UsageRollupHourly).
+func (m *UsageRollupHourlyMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *UsageRollupHourlyMutation) Fields() []string {
+	fields := make([]string, 0, 27)
+	if m.bucket_start != nil {
+		fields = append(fields, usagerolluphourly.FieldBucketStart)
+	}
+	if m.project_id != nil {
+		fields = append(fields, usagerolluphourly.FieldProjectID)
+	}
+	if m.billing_user_id != nil {
+		fields = append(fields, usagerolluphourly.FieldBillingUserID)
+	}
+	if m.agent_id != nil {
+		fields = append(fields, usagerolluphourly.FieldAgentID)
+	}
+	if m.harness != nil {
+		fields = append(fields, usagerolluphourly.FieldHarness)
+	}
+	if m.model != nil {
+		fields = append(fields, usagerolluphourly.FieldModel)
+	}
+	if m.usage_source != nil {
+		fields = append(fields, usagerolluphourly.FieldUsageSource)
+	}
+	if m.calls != nil {
+		fields = append(fields, usagerolluphourly.FieldCalls)
+	}
+	if m.error_calls != nil {
+		fields = append(fields, usagerolluphourly.FieldErrorCalls)
+	}
+	if m.input != nil {
+		fields = append(fields, usagerolluphourly.FieldInput)
+	}
+	if m.output != nil {
+		fields = append(fields, usagerolluphourly.FieldOutput)
+	}
+	if m.cache_read != nil {
+		fields = append(fields, usagerolluphourly.FieldCacheRead)
+	}
+	if m.cache_write != nil {
+		fields = append(fields, usagerolluphourly.FieldCacheWrite)
+	}
+	if m.cache_write_1h != nil {
+		fields = append(fields, usagerolluphourly.FieldCacheWrite1h)
+	}
+	if m.reasoning != nil {
+		fields = append(fields, usagerolluphourly.FieldReasoning)
+	}
+	if m.reported_cost_micros != nil {
+		fields = append(fields, usagerolluphourly.FieldReportedCostMicros)
+	}
+	if m.events != nil {
+		fields = append(fields, usagerolluphourly.FieldEvents)
+	}
+	if m.null_token_events != nil {
+		fields = append(fields, usagerolluphourly.FieldNullTokenEvents)
+	}
+	if m.input_known_events != nil {
+		fields = append(fields, usagerolluphourly.FieldInputKnownEvents)
+	}
+	if m.output_known_events != nil {
+		fields = append(fields, usagerolluphourly.FieldOutputKnownEvents)
+	}
+	if m.cache_read_known_events != nil {
+		fields = append(fields, usagerolluphourly.FieldCacheReadKnownEvents)
+	}
+	if m.cache_write_known_events != nil {
+		fields = append(fields, usagerolluphourly.FieldCacheWriteKnownEvents)
+	}
+	if m.cache_write_1h_known_events != nil {
+		fields = append(fields, usagerolluphourly.FieldCacheWrite1hKnownEvents)
+	}
+	if m.reasoning_known_events != nil {
+		fields = append(fields, usagerolluphourly.FieldReasoningKnownEvents)
+	}
+	if m.presence_tracked_events != nil {
+		fields = append(fields, usagerolluphourly.FieldPresenceTrackedEvents)
+	}
+	if m.first_event_ts != nil {
+		fields = append(fields, usagerolluphourly.FieldFirstEventTs)
+	}
+	if m.last_event_ts != nil {
+		fields = append(fields, usagerolluphourly.FieldLastEventTs)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *UsageRollupHourlyMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case usagerolluphourly.FieldBucketStart:
+		return m.BucketStart()
+	case usagerolluphourly.FieldProjectID:
+		return m.ProjectID()
+	case usagerolluphourly.FieldBillingUserID:
+		return m.BillingUserID()
+	case usagerolluphourly.FieldAgentID:
+		return m.AgentID()
+	case usagerolluphourly.FieldHarness:
+		return m.Harness()
+	case usagerolluphourly.FieldModel:
+		return m.Model()
+	case usagerolluphourly.FieldUsageSource:
+		return m.UsageSource()
+	case usagerolluphourly.FieldCalls:
+		return m.Calls()
+	case usagerolluphourly.FieldErrorCalls:
+		return m.ErrorCalls()
+	case usagerolluphourly.FieldInput:
+		return m.Input()
+	case usagerolluphourly.FieldOutput:
+		return m.Output()
+	case usagerolluphourly.FieldCacheRead:
+		return m.CacheRead()
+	case usagerolluphourly.FieldCacheWrite:
+		return m.CacheWrite()
+	case usagerolluphourly.FieldCacheWrite1h:
+		return m.CacheWrite1h()
+	case usagerolluphourly.FieldReasoning:
+		return m.Reasoning()
+	case usagerolluphourly.FieldReportedCostMicros:
+		return m.ReportedCostMicros()
+	case usagerolluphourly.FieldEvents:
+		return m.Events()
+	case usagerolluphourly.FieldNullTokenEvents:
+		return m.NullTokenEvents()
+	case usagerolluphourly.FieldInputKnownEvents:
+		return m.InputKnownEvents()
+	case usagerolluphourly.FieldOutputKnownEvents:
+		return m.OutputKnownEvents()
+	case usagerolluphourly.FieldCacheReadKnownEvents:
+		return m.CacheReadKnownEvents()
+	case usagerolluphourly.FieldCacheWriteKnownEvents:
+		return m.CacheWriteKnownEvents()
+	case usagerolluphourly.FieldCacheWrite1hKnownEvents:
+		return m.CacheWrite1hKnownEvents()
+	case usagerolluphourly.FieldReasoningKnownEvents:
+		return m.ReasoningKnownEvents()
+	case usagerolluphourly.FieldPresenceTrackedEvents:
+		return m.PresenceTrackedEvents()
+	case usagerolluphourly.FieldFirstEventTs:
+		return m.FirstEventTs()
+	case usagerolluphourly.FieldLastEventTs:
+		return m.LastEventTs()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *UsageRollupHourlyMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case usagerolluphourly.FieldBucketStart:
+		return m.OldBucketStart(ctx)
+	case usagerolluphourly.FieldProjectID:
+		return m.OldProjectID(ctx)
+	case usagerolluphourly.FieldBillingUserID:
+		return m.OldBillingUserID(ctx)
+	case usagerolluphourly.FieldAgentID:
+		return m.OldAgentID(ctx)
+	case usagerolluphourly.FieldHarness:
+		return m.OldHarness(ctx)
+	case usagerolluphourly.FieldModel:
+		return m.OldModel(ctx)
+	case usagerolluphourly.FieldUsageSource:
+		return m.OldUsageSource(ctx)
+	case usagerolluphourly.FieldCalls:
+		return m.OldCalls(ctx)
+	case usagerolluphourly.FieldErrorCalls:
+		return m.OldErrorCalls(ctx)
+	case usagerolluphourly.FieldInput:
+		return m.OldInput(ctx)
+	case usagerolluphourly.FieldOutput:
+		return m.OldOutput(ctx)
+	case usagerolluphourly.FieldCacheRead:
+		return m.OldCacheRead(ctx)
+	case usagerolluphourly.FieldCacheWrite:
+		return m.OldCacheWrite(ctx)
+	case usagerolluphourly.FieldCacheWrite1h:
+		return m.OldCacheWrite1h(ctx)
+	case usagerolluphourly.FieldReasoning:
+		return m.OldReasoning(ctx)
+	case usagerolluphourly.FieldReportedCostMicros:
+		return m.OldReportedCostMicros(ctx)
+	case usagerolluphourly.FieldEvents:
+		return m.OldEvents(ctx)
+	case usagerolluphourly.FieldNullTokenEvents:
+		return m.OldNullTokenEvents(ctx)
+	case usagerolluphourly.FieldInputKnownEvents:
+		return m.OldInputKnownEvents(ctx)
+	case usagerolluphourly.FieldOutputKnownEvents:
+		return m.OldOutputKnownEvents(ctx)
+	case usagerolluphourly.FieldCacheReadKnownEvents:
+		return m.OldCacheReadKnownEvents(ctx)
+	case usagerolluphourly.FieldCacheWriteKnownEvents:
+		return m.OldCacheWriteKnownEvents(ctx)
+	case usagerolluphourly.FieldCacheWrite1hKnownEvents:
+		return m.OldCacheWrite1hKnownEvents(ctx)
+	case usagerolluphourly.FieldReasoningKnownEvents:
+		return m.OldReasoningKnownEvents(ctx)
+	case usagerolluphourly.FieldPresenceTrackedEvents:
+		return m.OldPresenceTrackedEvents(ctx)
+	case usagerolluphourly.FieldFirstEventTs:
+		return m.OldFirstEventTs(ctx)
+	case usagerolluphourly.FieldLastEventTs:
+		return m.OldLastEventTs(ctx)
+	}
+	return nil, fmt.Errorf("unknown UsageRollupHourly field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *UsageRollupHourlyMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case usagerolluphourly.FieldBucketStart:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetBucketStart(v)
+		return nil
+	case usagerolluphourly.FieldProjectID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetProjectID(v)
+		return nil
+	case usagerolluphourly.FieldBillingUserID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetBillingUserID(v)
+		return nil
+	case usagerolluphourly.FieldAgentID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetAgentID(v)
+		return nil
+	case usagerolluphourly.FieldHarness:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetHarness(v)
+		return nil
+	case usagerolluphourly.FieldModel:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetModel(v)
+		return nil
+	case usagerolluphourly.FieldUsageSource:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUsageSource(v)
+		return nil
+	case usagerolluphourly.FieldCalls:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCalls(v)
+		return nil
+	case usagerolluphourly.FieldErrorCalls:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetErrorCalls(v)
+		return nil
+	case usagerolluphourly.FieldInput:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetInput(v)
+		return nil
+	case usagerolluphourly.FieldOutput:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetOutput(v)
+		return nil
+	case usagerolluphourly.FieldCacheRead:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCacheRead(v)
+		return nil
+	case usagerolluphourly.FieldCacheWrite:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCacheWrite(v)
+		return nil
+	case usagerolluphourly.FieldCacheWrite1h:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCacheWrite1h(v)
+		return nil
+	case usagerolluphourly.FieldReasoning:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetReasoning(v)
+		return nil
+	case usagerolluphourly.FieldReportedCostMicros:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetReportedCostMicros(v)
+		return nil
+	case usagerolluphourly.FieldEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetEvents(v)
+		return nil
+	case usagerolluphourly.FieldNullTokenEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetNullTokenEvents(v)
+		return nil
+	case usagerolluphourly.FieldInputKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetInputKnownEvents(v)
+		return nil
+	case usagerolluphourly.FieldOutputKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetOutputKnownEvents(v)
+		return nil
+	case usagerolluphourly.FieldCacheReadKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCacheReadKnownEvents(v)
+		return nil
+	case usagerolluphourly.FieldCacheWriteKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCacheWriteKnownEvents(v)
+		return nil
+	case usagerolluphourly.FieldCacheWrite1hKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCacheWrite1hKnownEvents(v)
+		return nil
+	case usagerolluphourly.FieldReasoningKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetReasoningKnownEvents(v)
+		return nil
+	case usagerolluphourly.FieldPresenceTrackedEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetPresenceTrackedEvents(v)
+		return nil
+	case usagerolluphourly.FieldFirstEventTs:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetFirstEventTs(v)
+		return nil
+	case usagerolluphourly.FieldLastEventTs:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetLastEventTs(v)
+		return nil
+	}
+	return fmt.Errorf("unknown UsageRollupHourly field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *UsageRollupHourlyMutation) AddedFields() []string {
+	var fields []string
+	if m.addcalls != nil {
+		fields = append(fields, usagerolluphourly.FieldCalls)
+	}
+	if m.adderror_calls != nil {
+		fields = append(fields, usagerolluphourly.FieldErrorCalls)
+	}
+	if m.addinput != nil {
+		fields = append(fields, usagerolluphourly.FieldInput)
+	}
+	if m.addoutput != nil {
+		fields = append(fields, usagerolluphourly.FieldOutput)
+	}
+	if m.addcache_read != nil {
+		fields = append(fields, usagerolluphourly.FieldCacheRead)
+	}
+	if m.addcache_write != nil {
+		fields = append(fields, usagerolluphourly.FieldCacheWrite)
+	}
+	if m.addcache_write_1h != nil {
+		fields = append(fields, usagerolluphourly.FieldCacheWrite1h)
+	}
+	if m.addreasoning != nil {
+		fields = append(fields, usagerolluphourly.FieldReasoning)
+	}
+	if m.addreported_cost_micros != nil {
+		fields = append(fields, usagerolluphourly.FieldReportedCostMicros)
+	}
+	if m.addevents != nil {
+		fields = append(fields, usagerolluphourly.FieldEvents)
+	}
+	if m.addnull_token_events != nil {
+		fields = append(fields, usagerolluphourly.FieldNullTokenEvents)
+	}
+	if m.addinput_known_events != nil {
+		fields = append(fields, usagerolluphourly.FieldInputKnownEvents)
+	}
+	if m.addoutput_known_events != nil {
+		fields = append(fields, usagerolluphourly.FieldOutputKnownEvents)
+	}
+	if m.addcache_read_known_events != nil {
+		fields = append(fields, usagerolluphourly.FieldCacheReadKnownEvents)
+	}
+	if m.addcache_write_known_events != nil {
+		fields = append(fields, usagerolluphourly.FieldCacheWriteKnownEvents)
+	}
+	if m.addcache_write_1h_known_events != nil {
+		fields = append(fields, usagerolluphourly.FieldCacheWrite1hKnownEvents)
+	}
+	if m.addreasoning_known_events != nil {
+		fields = append(fields, usagerolluphourly.FieldReasoningKnownEvents)
+	}
+	if m.addpresence_tracked_events != nil {
+		fields = append(fields, usagerolluphourly.FieldPresenceTrackedEvents)
+	}
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *UsageRollupHourlyMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	case usagerolluphourly.FieldCalls:
+		return m.AddedCalls()
+	case usagerolluphourly.FieldErrorCalls:
+		return m.AddedErrorCalls()
+	case usagerolluphourly.FieldInput:
+		return m.AddedInput()
+	case usagerolluphourly.FieldOutput:
+		return m.AddedOutput()
+	case usagerolluphourly.FieldCacheRead:
+		return m.AddedCacheRead()
+	case usagerolluphourly.FieldCacheWrite:
+		return m.AddedCacheWrite()
+	case usagerolluphourly.FieldCacheWrite1h:
+		return m.AddedCacheWrite1h()
+	case usagerolluphourly.FieldReasoning:
+		return m.AddedReasoning()
+	case usagerolluphourly.FieldReportedCostMicros:
+		return m.AddedReportedCostMicros()
+	case usagerolluphourly.FieldEvents:
+		return m.AddedEvents()
+	case usagerolluphourly.FieldNullTokenEvents:
+		return m.AddedNullTokenEvents()
+	case usagerolluphourly.FieldInputKnownEvents:
+		return m.AddedInputKnownEvents()
+	case usagerolluphourly.FieldOutputKnownEvents:
+		return m.AddedOutputKnownEvents()
+	case usagerolluphourly.FieldCacheReadKnownEvents:
+		return m.AddedCacheReadKnownEvents()
+	case usagerolluphourly.FieldCacheWriteKnownEvents:
+		return m.AddedCacheWriteKnownEvents()
+	case usagerolluphourly.FieldCacheWrite1hKnownEvents:
+		return m.AddedCacheWrite1hKnownEvents()
+	case usagerolluphourly.FieldReasoningKnownEvents:
+		return m.AddedReasoningKnownEvents()
+	case usagerolluphourly.FieldPresenceTrackedEvents:
+		return m.AddedPresenceTrackedEvents()
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *UsageRollupHourlyMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	case usagerolluphourly.FieldCalls:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddCalls(v)
+		return nil
+	case usagerolluphourly.FieldErrorCalls:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddErrorCalls(v)
+		return nil
+	case usagerolluphourly.FieldInput:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddInput(v)
+		return nil
+	case usagerolluphourly.FieldOutput:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddOutput(v)
+		return nil
+	case usagerolluphourly.FieldCacheRead:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddCacheRead(v)
+		return nil
+	case usagerolluphourly.FieldCacheWrite:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddCacheWrite(v)
+		return nil
+	case usagerolluphourly.FieldCacheWrite1h:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddCacheWrite1h(v)
+		return nil
+	case usagerolluphourly.FieldReasoning:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddReasoning(v)
+		return nil
+	case usagerolluphourly.FieldReportedCostMicros:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddReportedCostMicros(v)
+		return nil
+	case usagerolluphourly.FieldEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddEvents(v)
+		return nil
+	case usagerolluphourly.FieldNullTokenEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddNullTokenEvents(v)
+		return nil
+	case usagerolluphourly.FieldInputKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddInputKnownEvents(v)
+		return nil
+	case usagerolluphourly.FieldOutputKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddOutputKnownEvents(v)
+		return nil
+	case usagerolluphourly.FieldCacheReadKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddCacheReadKnownEvents(v)
+		return nil
+	case usagerolluphourly.FieldCacheWriteKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddCacheWriteKnownEvents(v)
+		return nil
+	case usagerolluphourly.FieldCacheWrite1hKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddCacheWrite1hKnownEvents(v)
+		return nil
+	case usagerolluphourly.FieldReasoningKnownEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddReasoningKnownEvents(v)
+		return nil
+	case usagerolluphourly.FieldPresenceTrackedEvents:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddPresenceTrackedEvents(v)
+		return nil
+	}
+	return fmt.Errorf("unknown UsageRollupHourly numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *UsageRollupHourlyMutation) ClearedFields() []string {
+	return nil
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *UsageRollupHourlyMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *UsageRollupHourlyMutation) ClearField(name string) error {
+	return fmt.Errorf("unknown UsageRollupHourly nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *UsageRollupHourlyMutation) ResetField(name string) error {
+	switch name {
+	case usagerolluphourly.FieldBucketStart:
+		m.ResetBucketStart()
+		return nil
+	case usagerolluphourly.FieldProjectID:
+		m.ResetProjectID()
+		return nil
+	case usagerolluphourly.FieldBillingUserID:
+		m.ResetBillingUserID()
+		return nil
+	case usagerolluphourly.FieldAgentID:
+		m.ResetAgentID()
+		return nil
+	case usagerolluphourly.FieldHarness:
+		m.ResetHarness()
+		return nil
+	case usagerolluphourly.FieldModel:
+		m.ResetModel()
+		return nil
+	case usagerolluphourly.FieldUsageSource:
+		m.ResetUsageSource()
+		return nil
+	case usagerolluphourly.FieldCalls:
+		m.ResetCalls()
+		return nil
+	case usagerolluphourly.FieldErrorCalls:
+		m.ResetErrorCalls()
+		return nil
+	case usagerolluphourly.FieldInput:
+		m.ResetInput()
+		return nil
+	case usagerolluphourly.FieldOutput:
+		m.ResetOutput()
+		return nil
+	case usagerolluphourly.FieldCacheRead:
+		m.ResetCacheRead()
+		return nil
+	case usagerolluphourly.FieldCacheWrite:
+		m.ResetCacheWrite()
+		return nil
+	case usagerolluphourly.FieldCacheWrite1h:
+		m.ResetCacheWrite1h()
+		return nil
+	case usagerolluphourly.FieldReasoning:
+		m.ResetReasoning()
+		return nil
+	case usagerolluphourly.FieldReportedCostMicros:
+		m.ResetReportedCostMicros()
+		return nil
+	case usagerolluphourly.FieldEvents:
+		m.ResetEvents()
+		return nil
+	case usagerolluphourly.FieldNullTokenEvents:
+		m.ResetNullTokenEvents()
+		return nil
+	case usagerolluphourly.FieldInputKnownEvents:
+		m.ResetInputKnownEvents()
+		return nil
+	case usagerolluphourly.FieldOutputKnownEvents:
+		m.ResetOutputKnownEvents()
+		return nil
+	case usagerolluphourly.FieldCacheReadKnownEvents:
+		m.ResetCacheReadKnownEvents()
+		return nil
+	case usagerolluphourly.FieldCacheWriteKnownEvents:
+		m.ResetCacheWriteKnownEvents()
+		return nil
+	case usagerolluphourly.FieldCacheWrite1hKnownEvents:
+		m.ResetCacheWrite1hKnownEvents()
+		return nil
+	case usagerolluphourly.FieldReasoningKnownEvents:
+		m.ResetReasoningKnownEvents()
+		return nil
+	case usagerolluphourly.FieldPresenceTrackedEvents:
+		m.ResetPresenceTrackedEvents()
+		return nil
+	case usagerolluphourly.FieldFirstEventTs:
+		m.ResetFirstEventTs()
+		return nil
+	case usagerolluphourly.FieldLastEventTs:
+		m.ResetLastEventTs()
+		return nil
+	}
+	return fmt.Errorf("unknown UsageRollupHourly field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *UsageRollupHourlyMutation) AddedEdges() []string {
+	edges := make([]string, 0, 0)
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *UsageRollupHourlyMutation) AddedIDs(name string) []ent.Value {
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *UsageRollupHourlyMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 0)
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *UsageRollupHourlyMutation) RemovedIDs(name string) []ent.Value {
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *UsageRollupHourlyMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 0)
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *UsageRollupHourlyMutation) EdgeCleared(name string) bool {
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *UsageRollupHourlyMutation) ClearEdge(name string) error {
+	return fmt.Errorf("unknown UsageRollupHourly unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *UsageRollupHourlyMutation) ResetEdge(name string) error {
+	return fmt.Errorf("unknown UsageRollupHourly edge %s", name)
 }
 
 // UsageScopeCounterDailyMutation represents an operation that mutates the UsageScopeCounterDaily nodes in the graph.

@@ -37,6 +37,10 @@ type ArtifactService interface {
 	// first version.
 	Publish(ctx context.Context, req *PublishArtifactRequest) (*ArtifactResponse, error)
 
+	// PublishFromAttachment publishes an existing message attachment as an
+	// artifact version by reference with no bytes uploaded (ptone/scion#4599).
+	PublishFromAttachment(ctx context.Context, req *PublishFromAttachmentRequest) (*ArtifactResponse, error)
+
 	// Get returns an artifact and its current version.
 	Get(ctx context.Context, id string) (*ArtifactResponse, error)
 
@@ -122,6 +126,14 @@ type ArtifactService interface {
 	// more users (POST /api/v1/artifacts/{id}/review-requests).
 	RequestReview(ctx context.Context, id string, req *ArtifactReviewRequestsInput) (*ArtifactReviewRequestsResponse, error)
 
+	// ListReviewRequests lists review requests on artifact id
+	// (GET /api/v1/artifacts/{id}/review-requests).
+	ListReviewRequests(ctx context.Context, id string) (*ArtifactListReviewRequestsResponse, error)
+
+	// WithdrawReviewRequest withdraws an open review request on artifact id
+	// (POST /api/v1/artifacts/{id}/review-requests/{rid}/withdraw).
+	WithdrawReviewRequest(ctx context.Context, id, requestID string) (*ArtifactWithdrawReviewRequestResponse, error)
+
 	// DismissReviewRequest dismisses the caller's open review request on
 	// artifact id with an optional note (POST /api/v1/artifacts/{id}/review-request/dismiss).
 	DismissReviewRequest(ctx context.Context, id, note string) (*ArtifactDismissReviewRequestResponse, error)
@@ -199,6 +211,17 @@ type PublishArtifactRequest struct {
 	ExpiresIn string
 }
 
+// PublishFromAttachmentRequest is the JSON body of POST /api/v1/artifacts when
+// publishing an existing attachment as an artifact by reference.
+type PublishFromAttachmentRequest struct {
+	FromAttachment string `json:"fromAttachment"`
+	Title          string `json:"title,omitempty"`
+	ScopeRef       string `json:"scopeRef,omitempty"`
+	Key            string `json:"key,omitempty"`
+	Note           string `json:"note,omitempty"`
+	ExpiresIn      string `json:"expiresIn,omitempty"`
+}
+
 // ListArtifactsOptions filters and pages List.
 type ListArtifactsOptions struct {
 	// Query is a unified filter query (see docs reference/filter-queries.md:
@@ -206,10 +229,12 @@ type ListArtifactsOptions struct {
 	// dialect limits (512 bytes raw, 200 runes text, 20 distinct project values);
 	// invalid queries return 400 invalid_filter_query.
 	Query string
-	// ReviewPending keeps artifacts whose current version is a review.
-	ReviewPending bool
+	// ReviewOnLatest keeps artifacts whose current version is a review.
+	ReviewOnLatest bool
 	// Requested keeps artifacts where the caller has an open review request.
 	Requested bool
+	// Drafts keeps artifacts where the caller has a saved review draft.
+	Drafts bool
 	// OwnedOnly keeps artifacts the caller owns.
 	OwnedOnly bool
 	// Limit is the page size (0 = the hub's default).
@@ -234,8 +259,9 @@ type ArtifactListResponse struct {
 // ArtifactListItem is one listed artifact.
 type ArtifactListItem struct {
 	Artifact
-	ReviewPending   bool `json:"reviewPending"`
+	ReviewOnLatest  bool `json:"reviewOnLatest"`
 	ReviewRequested bool `json:"reviewRequested,omitempty"`
+	ReviewInDraft   bool `json:"reviewInDraft,omitempty"`
 	// Access is why the caller sees the artifact: "owned", "project" or
 	// "shared".
 	Access string `json:"access,omitempty"`
@@ -347,9 +373,18 @@ type ArtifactTransferTargetsResponse struct {
 	Truncated bool                        `json:"truncated"`
 }
 
+// ArtifactReviewDraftSummary mirrors reviewState.myDraft on ArtifactResponse.
+type ArtifactReviewDraftSummary struct {
+	Base    int       `json:"base"`
+	SavedAt time.Time `json:"savedAt"`
+}
+
 // ArtifactReviewState mirrors reviewState on ArtifactResponse.
 type ArtifactReviewState struct {
-	RequestedOfMe *ArtifactReviewRequest `json:"requestedOfMe"`
+	ReviewOnLatest   bool                        `json:"reviewOnLatest"`
+	RequestedOfMe    *ArtifactReviewRequest      `json:"requestedOfMe,omitempty"`
+	MyDraft          *ArtifactReviewDraftSummary `json:"myDraft,omitempty"`
+	DraftsInProgress int                         `json:"draftsInProgress,omitempty"`
 }
 
 // ArtifactReviewRequestPrincipal identifies a reviewer or requester.
@@ -361,18 +396,30 @@ type ArtifactReviewRequestPrincipal struct {
 
 // ArtifactReviewRequest mirrors ReviewRequestInfo from the hub.
 type ArtifactReviewRequest struct {
-	ID           string                         `json:"id"`
-	Reviewer     ArtifactReviewRequestPrincipal `json:"reviewer"`
-	Requester    ArtifactReviewRequestPrincipal `json:"requester"`
-	RequestedSeq int                            `json:"requestedSeq"`
-	Note         string                         `json:"note,omitempty"`
-	Access       string                         `json:"access"`
-	State        string                         `json:"state"`
-	ResponseNote string                         `json:"responseNote,omitempty"`
-	ResolvedSeq  *int                           `json:"resolvedSeq,omitempty"`
-	CreatedAt    time.Time                      `json:"createdAt"`
-	RemindedAt   *time.Time                     `json:"remindedAt,omitempty"`
-	ResolvedAt   *time.Time                     `json:"resolvedAt,omitempty"`
+	ID                string                         `json:"id"`
+	Reviewer          ArtifactReviewRequestPrincipal `json:"reviewer"`
+	Requester         ArtifactReviewRequestPrincipal `json:"requester"`
+	RequestedSeq      int                            `json:"requestedSeq"`
+	Note              string                         `json:"note,omitempty"`
+	Access            string                         `json:"access"`
+	State             string                         `json:"state"`
+	ResponseNote      string                         `json:"responseNote,omitempty"`
+	ResolvedSeq       *int                           `json:"resolvedSeq,omitempty"`
+	CreatedAt         time.Time                      `json:"createdAt"`
+	RemindedAt        *time.Time                     `json:"remindedAt,omitempty"`
+	ResolvedAt        *time.Time                     `json:"resolvedAt,omitempty"`
+	ReviewerCanReview *bool                          `json:"reviewerCanReview,omitempty"`
+	InDraft           bool                           `json:"inDraft,omitempty"`
+}
+
+// ArtifactListReviewRequestsResponse mirrors GET /api/v1/artifacts/{id}/review-requests.
+type ArtifactListReviewRequestsResponse struct {
+	Requests []ArtifactReviewRequest `json:"requests"`
+}
+
+// ArtifactWithdrawReviewRequestResponse mirrors POST /api/v1/artifacts/{id}/review-requests/{rid}/withdraw.
+type ArtifactWithdrawReviewRequestResponse struct {
+	Request ArtifactReviewRequest `json:"request"`
 }
 
 // ArtifactReviewRequestsInput is the body of POST /api/v1/artifacts/{id}/review-requests.
@@ -426,18 +473,22 @@ type Artifact struct {
 
 // ArtifactVersion describes one version of an artifact.
 type ArtifactVersion struct {
-	Seq           int            `json:"seq"`
-	Ref           string         `json:"ref"`
-	Kind          string         `json:"kind"`
-	EntryPath     string         `json:"entryPath"`
-	Note          string         `json:"note,omitempty"`
-	TotalBytes    int64          `json:"totalBytes"`
-	FileCount     int            `json:"fileCount"`
-	CreatedByKind string         `json:"createdByKind,omitempty"`
-	CreatedByRef  string         `json:"createdByRef,omitempty"`
-	CreatedAt     time.Time      `json:"createdAt"`
-	State         string         `json:"state"`
-	Files         []ArtifactFile `json:"files"`
+	Seq                   int            `json:"seq"`
+	Ref                   string         `json:"ref"`
+	Kind                  string         `json:"kind"`
+	EntryPath             string         `json:"entryPath"`
+	Note                  string         `json:"note,omitempty"`
+	TotalBytes            int64          `json:"totalBytes"`
+	FileCount             int            `json:"fileCount"`
+	CreatedByKind         string         `json:"createdByKind,omitempty"`
+	CreatedByRef          string         `json:"createdByRef,omitempty"`
+	CreatedAt             time.Time      `json:"createdAt"`
+	State                 string         `json:"state"`
+	Files                 []ArtifactFile `json:"files"`
+	SourceAttachmentID    string         `json:"sourceAttachmentId,omitempty"`
+	SourceMessageID       string         `json:"sourceMessageId,omitempty"`
+	SourceConversationKey string         `json:"sourceConversationKey,omitempty"`
+	SourceProjectID       string         `json:"sourceProjectId,omitempty"`
 }
 
 // ArtifactDiscardedVersion is a discarded version as the versions list
@@ -508,6 +559,16 @@ func (s *artifactService) Publish(ctx context.Context, req *PublishArtifactReque
 	return apiclient.DecodeRequired[ArtifactResponse](resp)
 }
 
+// PublishFromAttachment implements ArtifactService. It is sent once, never
+// retried, because a replay would create a second artifact.
+func (s *artifactService) PublishFromAttachment(ctx context.Context, req *PublishFromAttachmentRequest) (*ArtifactResponse, error) {
+	resp, err := s.longTransport().PostNoRetry(ctx, "/api/v1/artifacts", req, nil)
+	if err != nil {
+		return nil, err
+	}
+	return apiclient.DecodeRequired[ArtifactResponse](resp)
+}
+
 // Get implements ArtifactService.
 func (s *artifactService) Get(ctx context.Context, id string) (*ArtifactResponse, error) {
 	resp, err := s.c.get(ctx, "/api/v1/artifacts/"+url.PathEscape(id), nil)
@@ -525,11 +586,14 @@ func (s *artifactService) List(ctx context.Context, opts *ListArtifactsOptions) 
 		if opts.Query != "" {
 			q.Set("q", opts.Query)
 		}
-		if opts.ReviewPending {
-			q.Set("review_pending", "1")
+		if opts.ReviewOnLatest {
+			q.Set("review_on_latest", "1")
 		}
 		if opts.Requested {
 			q.Set("requested", "1")
+		}
+		if opts.Drafts {
+			q.Set("drafts", "1")
 		}
 		if opts.OwnedOnly {
 			q.Set("owner", "me")
@@ -595,8 +659,16 @@ func (s *artifactService) OpenFile(ctx context.Context, id string, seq int, file
 // followed, unless the hub itself is reached over plain http (a local
 // development hub), matching fetchRedirect's contract.
 func (s *artifactService) fetchObject(ctx context.Context, signedURL string) (io.ReadCloser, error) {
+	return s.c.fetchObject(ctx, signedURL, s.objectClient)
+}
+
+// fetchObject downloads signedURL, an object-store URL, with a client that
+// carries no credential and follows no further redirect. Only https is
+// followed, unless the hub itself is reached over plain http (a local
+// development hub), matching fetchRedirect's contract.
+func (c *client) fetchObject(ctx context.Context, signedURL string, customClient *http.Client) (io.ReadCloser, error) {
 	u, err := url.Parse(signedURL)
-	allowHTTP := strings.HasPrefix(s.c.transport.BaseURL, "http://")
+	allowHTTP := strings.HasPrefix(c.transport.BaseURL, "http://")
 	if err != nil || (u.Scheme != "https" && (u.Scheme != "http" || !allowHTTP)) || u.Host == "" {
 		return nil, errArtifactRedirect
 	}
@@ -604,7 +676,7 @@ func (s *artifactService) fetchObject(ctx context.Context, signedURL string) (io
 	if err != nil {
 		return nil, fmt.Errorf("create object request: %w", err)
 	}
-	hc := s.objectClient
+	hc := customClient
 	if hc == nil {
 		// No whole-exchange timeout: the caller's context bounds it.
 		// An object-store URL follows no further redirect.
@@ -636,7 +708,11 @@ func artifactPath(id string) string { return "/api/v1/artifacts/" + url.PathEsca
 // out on the client while the hub completed it would invite a retry that
 // creates a second artifact or version.
 func (s *artifactService) longTransport() *apiclient.Transport {
-	t := *s.c.transport
+	return s.c.longTransport()
+}
+
+func (c *client) longTransport() *apiclient.Transport {
+	t := *c.transport
 	hc := http.Client{}
 	if t.HTTPClient != nil {
 		hc = *t.HTTPClient
@@ -855,6 +931,24 @@ func (s *artifactService) RequestReview(ctx context.Context, id string, req *Art
 		return nil, err
 	}
 	return apiclient.DecodeRequired[ArtifactReviewRequestsResponse](resp)
+}
+
+// ListReviewRequests implements ArtifactService.
+func (s *artifactService) ListReviewRequests(ctx context.Context, id string) (*ArtifactListReviewRequestsResponse, error) {
+	resp, err := s.c.transport.Get(ctx, artifactPath(id)+"/review-requests", nil)
+	if err != nil {
+		return nil, err
+	}
+	return apiclient.DecodeRequired[ArtifactListReviewRequestsResponse](resp)
+}
+
+// WithdrawReviewRequest implements ArtifactService.
+func (s *artifactService) WithdrawReviewRequest(ctx context.Context, id, requestID string) (*ArtifactWithdrawReviewRequestResponse, error) {
+	resp, err := s.c.postNoRetry(ctx, artifactPath(id)+"/review-requests/"+url.PathEscape(requestID)+"/withdraw", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	return apiclient.DecodeRequired[ArtifactWithdrawReviewRequestResponse](resp)
 }
 
 // DismissReviewRequest implements ArtifactService.

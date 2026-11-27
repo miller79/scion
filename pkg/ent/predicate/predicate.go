@@ -327,6 +327,9 @@ type ThreadGroup func(*sql.Selector)
 // ThreadGroupMember is the predicate function for threadgroupmember builders.
 type ThreadGroupMember func(*sql.Selector)
 
+// TrajectorySegment is the predicate function for trajectorysegment builders.
+type TrajectorySegment func(*sql.Selector)
+
 // Trigger is the predicate function for trigger builders.
 type Trigger func(*sql.Selector)
 
@@ -347,6 +350,9 @@ type UsageReservation func(*sql.Selector)
 
 // UsageRollupDaily is the predicate function for usagerollupdaily builders.
 type UsageRollupDaily func(*sql.Selector)
+
+// UsageRollupHourly is the predicate function for usagerolluphourly builders.
+type UsageRollupHourly func(*sql.Selector)
 
 // UsageScopeCounterDaily is the predicate function for usagescopecounterdaily builders.
 type UsageScopeCounterDaily func(*sql.Selector)

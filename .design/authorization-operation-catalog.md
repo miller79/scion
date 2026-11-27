@@ -2,7 +2,7 @@
 
 *Generated from Go-native OperationSpec definitions. Do not edit manually.*
 
-**Operations:** 458
+**Operations:** 474
 
 ## Table of Contents
 
@@ -18,7 +18,8 @@
 - [agent.lifecycle.reincarnate](#agentlifecyclereincarnate) — Reincarnate an agent. Patch flags also require agent.update for user callers, and --image or --harness requires agent.attach for all callers
 - [agent.read](#agentread) — Read a single agent's metadata by ID
 - [agent.list](#agentlist) — List agents within the caller's authorized project scope. A user access token needs agent:list on either boundary: a project token lists only its boundary project's agents. The project form lists one project's agents and decides agent.list on that project. An agent delegated credential is admitted on the hub and project forms: its scope is the authorizing user's list scope within the grant boundary (on the project form, within that one project), and each item is also decided for agent.read
-- [agent.update](#agentupdate) — Update agent configuration or metadata. Changing config.env or config.image also requires agent.attach (writes agent.suspend_policy.set audit record only when suspendPolicy changes)
+- [agent.update](#agentupdate) — Update agent configuration or metadata. Changing config.env or config.image also requires agent.attach; agent principals are refused label edits; writes agent.suspend_policy.set when suspendPolicy changes and agent.labels.update when labels change
+- [agent.labels.update](#agentlabelsupdate) — Merge-update an agent's labels (add, change, or remove individual keys without replacing unrelated labels). Refuses agent principals and audits every label change atomically
 - [agent.update.pendingconfig.delete](#agentupdatependingconfigdelete) — Discard an agent's pending config edits (behind hub.agent_edit_held; 404 while it is off)
 - [agent.status.update](#agentstatusupdate) — Report an agent's status: the agent itself, or a user who may update the agent
 - [agent.workspace.read](#agentworkspaceread) — Read an agent's workspace sync status
@@ -40,6 +41,9 @@
 - [agent.usage.read](#agentusageread) — Read an agent's Track 1 token usage summary and meter health (behind tokenomics.usage_ledger)
 - [agent.usage.ingest](#agentusageingest) — Ingest canonical Track 1 usage events and meter health heartbeats for the calling agent (behind tokenomics.usage_ledger)
 - [agent.usage.capabilities](#agentusagecapabilities) — Probe Hub Track 1 usage ingest capabilities for the calling agent (behind tokenomics.usage_ledger)
+- [agent.trajectory.segments.prepare](#agenttrajectorysegmentsprepare) — Prepare a Track 2 raw trajectory segment upload and issue a short-lived no-overwrite upload URL for the calling agent (behind tokenomics.trajectory_capture)
+- [agent.trajectory.segments.commit](#agenttrajectorysegmentscommit) — Verify and commit a prepared Track 2 raw trajectory segment and write its Hub-authored manifest for the calling agent (behind tokenomics.trajectory_capture)
+- [agent.trajectory.segments.content](#agenttrajectorysegmentscontent) — Upload raw trajectory segment bytes via Hub-proxied no-overwrite PUT with HMAC capability URL and agent JWT (behind tokenomics.trajectory_capture)
 - [agent.secrets.access](#agentsecretsaccess) — List, read, write and delete the secrets available to the calling agent: its own agent-scoped secrets, its project's and its creating user's. A user-scope write is held as a pending secret for the owner's approval (secret.user.pending.*)
 - [agent.stopall](#agentstopall) — Stop all running agents on the hub
 - [agent.stopall.project](#agentstopallproject) — Stop all running agents in a project
@@ -109,7 +113,9 @@
 - [artifact.review.session.write](#artifactreviewsessionwrite) — Record or end the caller's own review session of an artifact (the heartbeat of a review tab, ptone/scion#6849); 404 while the hub.artifacts_open_review_check experiment is off; any caller who may start a review version passes (the write check of artifact.version.create); rate limited per principal after authorization; the row is always the caller's own; a DELETE that deletes the caller's session row writes a review_session_ended decision-log entry; the Hub keeps the row until the reaper deletes it, at least an hour after its last beat, so this includes a session that no longer counts as open; a DELETE when no such row exists writes none (both answer 204)
 - [artifact.review.draft.read](#artifactreviewdraftread) — Read the caller's own saved draft review of an artifact (200 with draft null when none exists, plus currentSeq; ptone/scion#7116, ptone/scion#8470); 404 while the hub.artifacts_review_drafts experiment is off; requires review access (the readableArtifact and canWriteErr checks of artifact.version.create); the row is always keyed by the caller's own principal with no administrator, steward, owner or publisher override
 - [artifact.review.draft.write](#artifactreviewdraftwrite) — Create, replace or delete the caller's own saved draft review of an artifact with optimistic rev concurrency (ptone/scion#7116, ptone/scion#8470); 404 while the hub.artifacts_review_drafts experiment is off; requires review access (the readableArtifact and canWriteErr checks of artifact.version.create); rate limited per principal (LimitDraftWrite) after authorization and before reading the request body; the row is always keyed by the caller's own principal with no override; a DELETE that deletes the caller's draft row writes a review_draft_deleted decision-log entry without content, while a DELETE when no draft exists writes none (both answer 204); draft saves never trigger review notifications
-- [artifact.review.request.create](#artifactreviewrequestcreate) — Request or remind a review of an artifact from one or more users (ptone/scion#9296, ptone/scion#9306); 404 while the hub.artifacts_review_requests experiment is off; requires readableArtifact, publish access (canPublish), credential permission artifact.request_review in the artifact's home scope, and an interactive user session for reviewer visibility (MayNotifyReviewer); in phase 1 only interactive user requesters and reviewers who already can review (access=existing) are admitted; rate limited per requester (LimitReviewRequest)
+- [artifact.review.request.list](#artifactreviewrequestlist) — List review requests on an artifact (ptone/scion#9296, ptone/scion#9307); 404 while the hub.artifacts_review_requests experiment is off or when the caller cannot read the artifact; publishers receive every open request and up to 50 most recent closed ones (with reviewerCanReview and inDraft for open requests when drafts are enabled); other readable callers receive only requests addressed to themselves
+- [artifact.review.request.create](#artifactreviewrequestcreate) — Request or remind a review of an artifact from one or more users (ptone/scion#9296, ptone/scion#9306, ptone/scion#9307); 404 while the hub.artifacts_review_requests experiment is off; requires readableArtifact, publish access (canPublish), credential permission artifact.request_review in the artifact's home scope, and an interactive user session (403 interactive_session_required for non-interactive credentials before charging the limiter); reviewers who already can review get access=existing, and user requesters who may administer the artifact raise the reviewer's grant to review in the same transaction (access=raised); rate limited per requester (LimitReviewRequest)
+- [artifact.review.request.withdraw](#artifactreviewrequestwithdraw) — Withdraw an open review request on an artifact (ptone/scion#9296, ptone/scion#9307); 404 while the hub.artifacts_review_requests experiment is off, when the caller cannot read the artifact, or when the request does not exist; allowed for the request's requester when their credential permits artifact.request_review in the artifact's home scope (agents may withdraw only requests they made, subject to the same check), or for the artifact owner, admin grantee, or steward via adminAuthorityWith (which requires artifact.manage in the home scope); 409 request_closed if the request is no longer open; raised grants are left in place
 - [artifact.review.request.dismiss](#artifactreviewrequestdismiss) — Dismiss the caller's own open review request on an artifact with an optional note (ptone/scion#9296, ptone/scion#9306); 404 while the hub.artifacts_review_requests experiment is off, when the caller's credential does not permit artifact.read in the artifact's home scope, or when no open request exists for the caller; session callers who lost read access via role or grant removal can still dismiss and receive only the request row; rate limited per user (LimitReviewRequestDismiss)
 - [artifact.version.upload](#artifactversionupload) — Upload one manifest file of a pending version; only the principal that started the version may upload to it
 - [artifact.version.finalize](#artifactversionfinalize) — Finalize a pending version once every file has arrived, making it ready (and current unless a later one is); only the principal that started it may finalize it, and a review is checked against its base
@@ -128,6 +134,7 @@
 - [project.messagelogs.read](#projectmessagelogsread) — Read and stream a project's message log. A stream opened by a token ends once the token stops validating or loses project.read
 - [project.broadcast](#projectbroadcast) — Broadcast a message to a project's agents. Each recipient is then filtered by agent.message
 - [project.metrics.read](#projectmetricsread) — Read a project's metrics summary, session metrics summary and metrics dashboard
+- [project.usage.read](#projectusageread) — Read a project's Track 1 token usage summary and aggregate meter health (behind tokenomics.usage_ledger)
 - [project.prestarthooks.read](#projectprestarthooksread) — List or read a project's pre-start hooks
 - [project.prestarthooks.write](#projectprestarthookswrite) — Create, update, delete or activate a project pre-start hook
 - [project.settings.read](#projectsettingsread) — Read a project's settings and its resolved settings
@@ -163,6 +170,7 @@
 - [inbox.conversation.create](#inboxconversationcreate) — Create a group conversation in a project. Order: project:read on the project, then (for a token) inbox:write for it, then for a user the create_group action of chat-space-access (project.chat_post on the account; 403 chat_post_denied with details.chat_action create_group and reason read_only without it), all before anything is minted. Agents are not decided by chat-space-access; their message-mode join check follows
 - [project.conversation.read](#projectconversationread) — Read a group conversation, its messages and one message. Needs project:read on the conversation's project; a group with no project needs participation, and a token needs inbox:read on a hub boundary for it
 - [inbox.conversation.direct.read](#inboxconversationdirectread) — Read a direct conversation, its messages and one message. A token needs inbox:read for the peer agent's project and agent:read on the peer agent; a direct conversation between users needs a hub boundary
+- [inbox.conversation.message.attachment.download](#inboxconversationmessageattachmentdownload) — Download an artifact-backed attachment of a conversation message. Authorizes the message read identically to conversation message get (DM canonical key + cross-project read gate, or group project membership, plus scoped-UAT inbox:read boundary), then checks MayReadAttachments without requiring project:artifact:read; missing or refused attachments answer 404
 - [inbox.conversation.defaultagent.set](#inboxconversationdefaultagentset) — Set the default agent of a group conversation. Needs project:read on the conversation's project; a token also needs inbox:write for it. A user on a project conversation then needs the set_default_agent action of chat-thread-access (project.chat_post on the account; 403 chat_post_denied with details.chat_action set_default_agent and reason read_only without it), decided before the body is read; agents and groups with no project are not decided by it
 - [inbox.conversation.participant.add](#inboxconversationparticipantadd) — Add a participant to a group conversation. Every caller needs project:read on the conversation's project; an added agent must be in that project and an added user must be a member of it; a token also needs inbox:write for it. A caller who is not a participant or cannot read the group gets the unknown-conversation answer, and an agent of another project the unknown-agent answer. A user on a project conversation then needs the add_participant action of chat-thread-access (project.chat_post on the account; 403 chat_post_denied with details.chat_action add_participant and reason read_only without it), decided before the body is read; agents and groups with no project are not decided by it
 - [inbox.conversation.leave](#inboxconversationleave) — Leave a conversation the caller takes part in. A token needs inbox:write for the conversation
@@ -223,13 +231,13 @@
 - [chat.search.project](#chatsearchproject) — Search the messages of one project's chat. Needs project:read on the project; a token keeps a DM row only when the DM rule lets it read the DM under inbox:read
 - [chat.search.unscoped](#chatsearchunscoped) — Search the messages of every project the caller can read. A project token searches only its boundary project; a token keeps a DM row only when the DM rule lets it read the DM under inbox:read
 - [chat.search.dm](#chatsearchdm) — Search the messages of one of the caller's DMs. A token needs inbox:read under the DM rule
-- [chat.star.add](#chatstaradd) — Star a message for the caller (private). The message must be a live message of the conversation named in the body. A thread needs project:read on its project; a DM needs the caller in a user slot of its key. A token also needs inbox:write: a thread's project, or an agent DM's peer agent project with agent:read on the agent, inside its boundary; a DM between users needs a hub boundary. 404 while web.chat_starred_messages is off
-- [chat.star.read](#chatstarread) — Read the current detail of one of the caller's stars. Needs read access to the star's conversation now (project:read for a thread; the caller in a user slot of a DM key); a token also needs inbox:read under the same rule (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users). 404 while web.chat_starred_messages is off
-- [chat.star.state](#chatstarstate) — Report which of up to 200 messages the caller starred, keeping only live messages in conversations the caller can read now (threads by project:read, DMs by participation); a token keeps only conversations it may read under inbox:read (a thread's or agent DM's project inside its boundary; a hub boundary for a DM between users). 404 while web.chat_starred_messages is off
-- [chat.star.list](#chatstarlist) — List the caller's stars in one conversation (a thread or a DM), newest first, with a sealed cursor. Needs read access to it (project:read for a thread; the caller in a user slot of a DM key); a token also needs inbox:read under the same rule (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users). 404 while web.chat_starred_messages is off
-- [chat.star.conversations](#chatstarconversations) — List the conversations in which the caller has at least one live star (the Starred rail): one row per conversation with its current name, activity and project, no excerpt or count, sorted by activity or name, with a sealed cursor. Each conversation is kept only while the caller can read it now (project:read for a thread; the caller in a user slot of a DM key); a token keeps only conversations it may read under inbox:read (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users). An optional projectId must be a project the caller can read. 404 while web.chat_starred_messages is off
-- [chat.conversation.history.starred](#chatconversationhistorystarred) — Read only the caller's starred messages of one conversation (?starred=true), in history order with a sealed cursor bound to the conversation, the caller and the filter. Needs the conversation's normal read access (project:read on a thread's project, participation in a DM) and inbox:read: a token needs inbox:read for the thread's or peer agent's project, or a hub boundary for a DM between users. An around target must itself be starred. 404 while web.chat_starred_messages is off, never unfiltered history
-- [chat.star.remove](#chatstarremove) — Remove the caller's own star of a message; always 204. No message or conversation lookup; a project token removes only a star whose stored project is inside its boundary. 404 while web.chat_starred_messages is off
+- [chat.star.add](#chatstaradd) — Star a message for the caller (private). The message must be a live message of the conversation named in the body. A thread needs project:read on its project; a DM needs the caller in a user slot of its key. A token also needs inbox:write: a thread's project, or an agent DM's peer agent project with agent:read on the agent, inside its boundary; a DM between users needs a hub boundary
+- [chat.star.read](#chatstarread) — Read the current detail of one of the caller's stars. Needs read access to the star's conversation now (project:read for a thread; the caller in a user slot of a DM key); a token also needs inbox:read under the same rule (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users)
+- [chat.star.state](#chatstarstate) — Report which of up to 200 messages the caller starred, keeping only live messages in conversations the caller can read now (threads by project:read, DMs by participation); a token keeps only conversations it may read under inbox:read (a thread's or agent DM's project inside its boundary; a hub boundary for a DM between users)
+- [chat.star.list](#chatstarlist) — List the caller's stars in one conversation (a thread or a DM), newest first, with a sealed cursor. Needs read access to it (project:read for a thread; the caller in a user slot of a DM key); a token also needs inbox:read under the same rule (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users)
+- [chat.star.conversations](#chatstarconversations) — List the conversations in which the caller has at least one live star (the Starred rail): one row per conversation with its current name, activity and project, no excerpt or count, sorted by activity or name, with a sealed cursor. Each conversation is kept only while the caller can read it now (project:read for a thread; the caller in a user slot of a DM key); a token keeps only conversations it may read under inbox:read (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users). An optional projectId must be a project the caller can read
+- [chat.conversation.history.starred](#chatconversationhistorystarred) — Read only the caller's starred messages of one conversation (?starred=true), in history order with a sealed cursor bound to the conversation, the caller and the filter. Needs the conversation's normal read access (project:read on a thread's project, participation in a DM) and inbox:read: a token needs inbox:read for the thread's or peer agent's project, or a hub boundary for a DM between users. An around target must itself be starred
+- [chat.star.remove](#chatstarremove) — Remove the caller's own star of a message; always 204. No message or conversation lookup; a project token removes only a star whose stored project is inside its boundary
 - [chat.attachment.upload.project](#chatattachmentuploadproject) — Upload chat attachments to a space. Needs project:read on the space's project, a token also inbox:write for it, and then the post action of chat-thread-access (project.chat_post on the account; 403 chat_post_denied without it)
 - [chat.attachment.upload.noproject](#chatattachmentuploadnoproject) — Upload project-less chat attachments, reachable only through the messages that reference them. A federated caller is refused. A token needs inbox:write on a hub boundary
 - [chat.attachment.upload.agent](#chatattachmentuploadagent) — Upload attachments as the calling agent, stored as artifacts in the agent's own upload scope (ptone/scion#4596). The agent must be in good standing (agentMaySend); the upload is readable only by the agent until a send binds it
@@ -240,8 +248,12 @@
 - [chat.decision.answer](#chatdecisionanswer) — Answer a decision prompt decision by choice id (the label is copied from the stored row) with optional surface (native, decisions_page or inbox). Needs the right to send in the prompt's conversation (stored chat_key, falling back to messages.thread_id: project:read and project.chat_post for a thread; for a DM, only the user in its key), surviving chat retention purge of the prompt message. Agents, visitors and tokens get 403, and so does a user other than the one an agent-interpreted answer records, or a user the asking agent takes no messages from (MESSAGE_DENIED, the chat send's check; a confirm is not delivered, so it is not checked). A replaced version or an answered one is 409, as is an idempotency key reused for another answer; the first answer wins. Records the answer and a decision-response message, delivers it to the asking agent and publishes decision.updated. 404 while web.decisions is off
 - [chat.decisionprompt.answer](#chatdecisionpromptanswer) — Answer every actionable decision of a decision prompt with two or more decisions as one set, by choice id (labels are copied from the stored rows) with optional surface (native, decisions_page or inbox). Needs the right to send in the prompt's conversation (stored chat_key, falling back to messages.thread_id: project:read and project.chat_post for a thread; for a DM, only the user in its key), surviving chat retention purge of the prompt message. Agents and visitors get 403, tokens and other non-session credentials the session-only 403, and a user the asking agent takes no messages from 403 MESSAGE_DENIED (an all-confirm set is not delivered, so it is not checked). A missing or unreadable prompt is 404; a malformed set is 400; a set that does not equal the actionable set is 409 answer_set_changed with fresh views and a reason per row, and stores nothing; an idempotency key reused for other answers is 422. Records one answer per row with a shared batch id and one decision-response message in one transaction, delivers it to the asking agent and publishes decision.updated per row. 404 while web.decisions is off
 - [chat.secretrequest.read](#chatsecretrequestread) — Read a secret-request card (metadata and per-key status, never secret values) plus canRespond and reason. Requires a signed-in user session, recipient membership on the prompt's conversation, and agent.read on the requesting agent. 404 while hub.agent_secrets is off
+- [chat.usersecretrequests.list](#chatusersecretrequestslist) — List open or resolved secret-request cards across the caller's member projects and DMs, with unfiltered open/answerable counts, filtered counts, agent/project facets, sort=recent|project, and cursor pagination. Requires an interactive human session (agents, visitors and UATs get 403); each row requires recipient membership and agent.read on the requesting agent; answerable counts additionally require answering recipient membership and agent.attach. Unsupported methods get 405; 404 while hub.agent_secrets is off
 - [chat.commandrequest.read](#chatcommandrequestread) — Read a command-request row and its run view (never output), plus the approver's resolved execution container state for the named approver only. Requires an interactive human session and card recipient membership. 404 while hub.command_requests is off
 - [chat.commandrequest.approve](#chatcommandrequestapprove) — Approve a pending command request matching command_sha256, atomically transitioning pending -> approved and inserting a single queued command_runs row for the approver's execution container. Requires an interactive human session, same-origin CSRF check on cookie sessions, recipient membership, named approver match, and an eligible non-stopped execution container. 404 while hub.command_requests is off
+- [chat.commandrequest.output](#chatcommandrequestoutput) — Read the captured output tail of an approved command run. Requires an interactive human session, caller == run.approver_user_id, and live agent.attach on exec_agent_id (fails closed if deleted). Sets Cache-Control: no-store and bypasses response compression. 404 while hub.command_requests is off
+- [chat.commandrequest.frommessage](#chatcommandrequestfrommessage) — Create and approve a version-1 command request from a verbatim fenced shell block in an agent-authored chat message, inserting both the approved command_requests row (surface=markdown_block) and the single queued command_runs row in one insert-only transaction. Requires an interactive human session, same-origin CSRF check on cookie sessions, single-addressed-human recipient match, message age < 24 h, verbatim-fence and canonical-hash match, and an eligible non-stopped execution container. 404 while hub.command_requests is off
+- [chat.commandrequest.dismiss](#chatcommandrequestdismiss) — Dismiss a pending command request with an optional reason (<=500 runes), atomically transitioning pending -> dismissed, notifying the requesting agent via a command-response message, and emitting a dismissed audit event. Requires an interactive human session, same-origin CSRF check on cookie sessions, recipient membership, and named approver match. 404 while hub.command_requests is off
 - [chat.secretrequest.fulfill](#chatsecretrequestfulfill) — Fulfill all pending keys of a secret-request card, storing each value at agent scope in the secret backend, notifying the requesting agent via a secret-response message, and emitting fulfilled audit events (never values). Requires a signed-in user session, same-origin browser check, recipient membership, and agent.attach on the requesting agent. 404 while hub.agent_secrets is off
 - [chat.secretrequest.dismiss](#chatsecretrequestdismiss) — Dismiss all or a subset of pending keys on a secret-request card with an optional reason, notifying the requesting agent via a secret-response message and emitting dismissed audit events. Requires a signed-in user session, same-origin browser check, recipient membership, and agent.attach on the requesting agent. 404 while hub.agent_secrets is off
 - [chat.decisionprompt.dismiss](#chatdecisionpromptdismiss) — Dismiss open decisions of a decision prompt without answering, once the version is at least 5 minutes old, with an optional plain-text reason (up to 500 characters) and surface (native, decisions_page or inbox). Needs the right to send in the prompt's conversation (stored chat_key, falling back to messages.thread_id: project:read and project.chat_post for a thread; for a DM, only the user in its key; a UAT also needs inbox:write and the prompt's project inside its boundary), surviving chat retention purge of the prompt message. Agents get 403 users_only, visitors and non-session/non-UAT credentials get 403, and a user a live asking agent takes no messages from gets 403 MESSAGE_DENIED. A missing or unreadable prompt is 404; a too-recent version is 409 too_recent with details.availableAt; an already-settled prompt is 409 dismiss_changed (with details.availableAt when a listed row is too recent). Records one outcome=dismiss ($dismissed) answer row per dismissed decision with a shared batch id and one decision-response message in one transaction, delivers it to a live asking agent, and reports deliveryStatus: delivered, held (for the agent's next session), gone (stored without failure, not sent), unreachable (a suspended or stopped asker: stored failed, not sent), failed, or none when nothing new was dismissed; and publishes decision.updated per row. 404 while web.decisions is off
@@ -282,6 +294,8 @@
 - [user.list](#userlist) — List users. A session sees the users it may read. A token needs user:list at the hub collection on a hub boundary, and then sees only the users it may read, each checked as a hub-level user record, so it also needs user:read
 - [user.update](#userupdate) — Update another user's profile (display name and preferences). The same PATCH dispatches user.admin.suspend for a status field and user.admin.promote for a role field, and every field's check passes before any write. A token needs user:update on a hub boundary, checked on the hub-level user record; a token PATCH that names no status field is checked as a profile update
 - [user.self.update](#userselfupdate) — Update the caller's own profile (display name and preferences) through PATCH /api/v1/users/{id} naming the caller's own record. A status field on the caller's own record is refused by the self-status guard
+- [hub.user.usage.read](#hubuserusageread) — Read another user's Track 1 token usage summary by billing_user_id (behind tokenomics.usage_ledger). Requires hub.metrics.read on the hub
+- [user.usage.self.read](#userusageselfread) — Read the caller's own Track 1 token usage summary through GET /api/v1/users/{id}/usage naming the caller's own user ID (behind tokenomics.usage_ledger). A project-boundary user access token is restricted to its boundary project
 - [role.read](#roleread) — Read role definitions and the permission registry. A token needs role:read on a hub boundary; the write methods on the same routes also need their own selector
 - [role.binding.read](#rolebindingread) — Read role binding assignments
 - [role.binding.effectivepermissions](#rolebindingeffectivepermissions) — Resolve a user principal's effective permissions and grant provenance. A token needs role_binding:read on a hub boundary; HEAD answers whether the caller may read it
@@ -339,6 +353,7 @@
 - [hub.integrations.install](#hubintegrationsinstall) — Install an integration and start an integration update; both build and install code on the hub host, so an interactive session only
 - [hub.teamsmanifest.read](#hubteamsmanifestread) — Read Teams integration manifest
 - [hub.metrics.read](#hubmetricsread) — Read metrics dashboard data
+- [hub.usage.read](#hubusageread) — Read hub-wide Track 1 token usage summary and aggregate meter health across all projects (behind tokenomics.usage_ledger). Distinct from /api/v1/usage/me (quota usage)
 - [hub.githubapp.read](#hubgithubappread) — Read GitHub App configuration and installations
 - [hub.githubapp.update](#hubgithubappupdate) — Create, update and delete GitHub App installations, discover installations and sync permissions
 - [hub.githubapp.config.update](#hubgithubappconfigupdate) — Update the GitHub App configuration, which sets the hub's app credentials; an interactive session only
@@ -347,7 +362,8 @@
 - [quota.update](#quotaupdate) — Update limit definitions and entitlement bindings. The route guard checks quota.read, so a token needs quota:read and quota:update
 - [quota.brokersettings.update](#quotabrokersettingsupdate) — Replace a runtime broker's settings document. Requires broker.read on the broker and quota.update on the hub-scoped quota target for every write, including one that changes no key, and each changed key's declared permission (maxAgents declares quota.update)
 - [quota.delete](#quotadelete) — Delete limit definitions and entitlement bindings. The route guard checks quota.read, so a token needs quota:read and quota:delete
-- [quota.usage.self.read](#quotausageselfread) — Read the caller's own quota usage: each limit's effective value and active count for the caller only
+- [quota.usage.self.read](#quotausageselfread) — Read the caller's own quota usage: each limit's effective value and active count for the caller only (distinct from GET /api/v1/me/usage, which returns Track 1 token usage)
+- [hub.usage.self.read](#hubusageselfread) — Read the caller's own Track 1 token usage summary by billing_user_id (behind tokenomics.usage_ledger; distinct from GET /api/v1/usage/me, which returns quota usage). A project-boundary user access token is restricted to its boundary project
 - [hub.experiments.read](#hubexperimentsread) — Read the resolved experiment flags. Any signed-in identity (user, agent or broker) reads them, and any user access token reads them
 - [hub.profiling.read](#hubprofilingread) — Read the client profiling switch. Any signed-in identity (user, agent or broker) reads it, and any user access token reads it
 - [hub.injectedskills.read](#hubinjectedskillsread) — Read the hub injected skill references. Any signed-in identity reads them, and any token reads them
@@ -935,7 +951,7 @@
 
 **Domain:** agent
 
-**Description:** Update agent configuration or metadata. Changing config.env or config.image also requires agent.attach (writes agent.suspend_policy.set audit record only when suspendPolicy changes)
+**Description:** Update agent configuration or metadata. Changing config.env or config.image also requires agent.attach; agent principals are refused label edits; writes agent.suspend_policy.set when suspendPolicy changes and agent.labels.update when labels change
 
 ### Entry Points
 
@@ -973,6 +989,50 @@
 - `pkg/hub:TestAgentUpdateToken_ServiceAccountAssignRequiresAssignSelector`
 - `pkg/hub:TestPatchAgent_ImageEditRequiresAttach`
 - `pkg/hub:TestPendingReauth_ImageEditRequiresAttach`
+- `pkg/hub:TestPatchAgentLabels_PatchMultiFieldAuditAndRollback`
+
+---
+
+## agent.labels.update
+
+**Domain:** agent
+
+**Description:** Merge-update an agent's labels (add, change, or remove individual keys without replacing unrelated labels). Refuses agent principals and audits every label change atomically
+
+### Entry Points
+
+| Kind | Method | Pattern |
+|------|--------|---------|
+| http_route | PATCH | `/api/v1/agents/{id}/labels` |
+| http_route | PATCH | `/api/v1/projects/{projectId}/agents/{id}/labels` |
+
+**Principals:** `user`
+
+**Credentials:** `session_jwt`, `scoped_uat`
+
+**Bearer:** `admit` (target `agent_record`; boundaries `project`, `hub`)
+
+**Base Permission:** `agent.update`
+
+**Resource Resolver:** agent-from-url
+
+**Effects:** `update-resource`
+
+### Audit
+
+- **Event Type:** `agent.labels.update`
+- **Context Fields:** actor_id
+- **Before Fields:** labels
+- **After Fields:** labels
+- **Atomic:** Yes
+
+**Denial Codes:** `forbidden`, `conflict`
+
+### Tests
+
+- `pkg/hub:TestAgentSubRoute_CatalogDrift`
+- `pkg/hub:TestPatchAgentLabels_Authorization`
+- `pkg/hub:TestPatchAgentLabels_ConcurrentMerge`
 
 ---
 
@@ -1700,6 +1760,108 @@
 ### Exemptions
 
 - **internal_only:** The agent authenticates with its own agent JWT for its own usage capability probe; no user permission applies (scope: agent self access) — waives: `base_permission`
+
+---
+
+## agent.trajectory.segments.prepare
+
+**Domain:** agent
+
+**Description:** Prepare a Track 2 raw trajectory segment upload and issue a short-lived no-overwrite upload URL for the calling agent (behind tokenomics.trajectory_capture)
+
+### Entry Points
+
+| Kind | Method | Pattern |
+|------|--------|---------|
+| http_route | POST | `/api/v1/agents/{id}/trajectory/segments:prepare` |
+
+**Principals:** `agent`
+
+**Credentials:** `agent_jwt`
+
+**Bearer:** `non_user`
+
+**Resource Resolver:** agent-self
+
+**Effects:** `update-resource`
+
+**Denial Codes:** `forbidden`
+
+### Tests
+
+- `pkg/hub:TestBearerDisposition_EveryRoutePatternCovered`
+
+### Exemptions
+
+- **internal_only:** The agent authenticates with its own agent JWT for its own trajectory segment prepare; no user permission applies (scope: agent self access) — waives: `base_permission`
+
+---
+
+## agent.trajectory.segments.commit
+
+**Domain:** agent
+
+**Description:** Verify and commit a prepared Track 2 raw trajectory segment and write its Hub-authored manifest for the calling agent (behind tokenomics.trajectory_capture)
+
+### Entry Points
+
+| Kind | Method | Pattern |
+|------|--------|---------|
+| http_route | POST | `/api/v1/agents/{id}/trajectory/segments:commit` |
+
+**Principals:** `agent`
+
+**Credentials:** `agent_jwt`
+
+**Bearer:** `non_user`
+
+**Resource Resolver:** agent-self
+
+**Effects:** `update-resource`
+
+**Denial Codes:** `forbidden`
+
+### Tests
+
+- `pkg/hub:TestBearerDisposition_EveryRoutePatternCovered`
+
+### Exemptions
+
+- **internal_only:** The agent authenticates with its own agent JWT for its own trajectory segment commit; no user permission applies (scope: agent self access) — waives: `base_permission`
+
+---
+
+## agent.trajectory.segments.content
+
+**Domain:** agent
+
+**Description:** Upload raw trajectory segment bytes via Hub-proxied no-overwrite PUT with HMAC capability URL and agent JWT (behind tokenomics.trajectory_capture)
+
+### Entry Points
+
+| Kind | Method | Pattern |
+|------|--------|---------|
+| http_route | PUT | `/api/v1/agents/{id}/trajectory/segments/{segmentId}/content` |
+
+**Principals:** `agent`
+
+**Credentials:** `agent_jwt`
+
+**Bearer:** `non_user`
+
+**Resource Resolver:** agent-self
+
+**Effects:** `update-resource`
+
+**Denial Codes:** `forbidden`
+
+### Tests
+
+- `pkg/hub:TestBearerDisposition_EveryRoutePatternCovered`
+
+### Exemptions
+
+- **internal_only:** The agent authenticates with its own agent JWT and a Hub-issued HMAC capability URL for its own trajectory segment upload; no user permission applies (scope: agent self access) — waives: `base_permission`
 
 ---
 
@@ -4673,11 +4835,44 @@
 
 ---
 
+## artifact.review.request.list
+
+**Domain:** artifact
+
+**Description:** List review requests on an artifact (ptone/scion#9296, ptone/scion#9307); 404 while the hub.artifacts_review_requests experiment is off or when the caller cannot read the artifact; publishers receive every open request and up to 50 most recent closed ones (with reviewerCanReview and inDraft for open requests when drafts are enabled); other readable callers receive only requests addressed to themselves
+
+### Entry Points
+
+| Kind | Method | Pattern |
+|------|--------|---------|
+| http_route | GET | `/api/v1/artifacts/{id}/review-requests` |
+
+**Principals:** `user`, `agent`
+
+**Credentials:** `session_jwt`, `scoped_uat`, `agent_jwt`
+
+**Bearer:** `admit` (target `artifact_record`; boundaries `project`, `hub`; pinned by `TestArtifactsManageAndVersionRoutesUserAccessTokensAreBounded`)
+
+**Base Permission:** `artifact.read`
+
+**Resource Resolver:** artifact-home-project
+
+**Effects:** `list-scoped`
+
+**Denial Codes:** `not_found`
+
+### Tests
+
+- `pkg/hub:TestArtifactsReviewRequestsOnRoutes`
+- `pkg/artifacts:TestListReviewRequestsPublisherAndSelfView`
+
+---
+
 ## artifact.review.request.create
 
 **Domain:** artifact
 
-**Description:** Request or remind a review of an artifact from one or more users (ptone/scion#9296, ptone/scion#9306); 404 while the hub.artifacts_review_requests experiment is off; requires readableArtifact, publish access (canPublish), credential permission artifact.request_review in the artifact's home scope, and an interactive user session for reviewer visibility (MayNotifyReviewer); in phase 1 only interactive user requesters and reviewers who already can review (access=existing) are admitted; rate limited per requester (LimitReviewRequest)
+**Description:** Request or remind a review of an artifact from one or more users (ptone/scion#9296, ptone/scion#9306, ptone/scion#9307); 404 while the hub.artifacts_review_requests experiment is off; requires readableArtifact, publish access (canPublish), credential permission artifact.request_review in the artifact's home scope, and an interactive user session (403 interactive_session_required for non-interactive credentials before charging the limiter); reviewers who already can review get access=existing, and user requesters who may administer the artifact raise the reviewer's grant to review in the same transaction (access=raised); rate limited per requester (LimitReviewRequest)
 
 ### Entry Points
 
@@ -4697,12 +4892,45 @@
 
 **Effects:** `create-resource`, `update-resource`
 
-**Denial Codes:** `not_found`, `forbidden`, `rate_limited`, `nothing_to_review`
+**Denial Codes:** `not_found`, `forbidden`, `interactive_session_required`, `rate_limited`, `nothing_to_review`
 
 ### Tests
 
 - `pkg/hub:TestArtifactsReviewRequestsOnRoutes`
 - `pkg/artifacts:TestReviewRequestsAuthorization`
+
+---
+
+## artifact.review.request.withdraw
+
+**Domain:** artifact
+
+**Description:** Withdraw an open review request on an artifact (ptone/scion#9296, ptone/scion#9307); 404 while the hub.artifacts_review_requests experiment is off, when the caller cannot read the artifact, or when the request does not exist; allowed for the request's requester when their credential permits artifact.request_review in the artifact's home scope (agents may withdraw only requests they made, subject to the same check), or for the artifact owner, admin grantee, or steward via adminAuthorityWith (which requires artifact.manage in the home scope); 409 request_closed if the request is no longer open; raised grants are left in place
+
+### Entry Points
+
+| Kind | Method | Pattern |
+|------|--------|---------|
+| http_route | POST | `/api/v1/artifacts/{id}/review-requests/{rid}/withdraw` |
+
+**Principals:** `user`, `agent`
+
+**Credentials:** `session_jwt`, `scoped_uat`, `agent_jwt`
+
+**Bearer:** `admit` (target `artifact_record`; boundaries `project`, `hub`; pinned by `TestArtifactsManageAndVersionRoutesUserAccessTokensAreBounded`)
+
+**Base Permission:** `artifact.request_review`
+
+**Resource Resolver:** artifact-home-project
+
+**Effects:** `update-resource`
+
+**Denial Codes:** `not_found`, `forbidden`, `request_closed`
+
+### Tests
+
+- `pkg/hub:TestArtifactsReviewRequestsOnRoutes`
+- `pkg/artifacts:TestWithdrawReviewRequestPermissionsAndLifecycle`
 
 ---
 
@@ -5313,6 +5541,38 @@
 | http_route | GET | `/api/v1/projects/{id}/metrics-summary` |
 | http_route | GET | `/api/v1/projects/{id}/metrics/summary` |
 | http_route | GET | `/api/v1/projects/{id}/metrics` |
+
+**Principals:** `user`, `agent`
+
+**Credentials:** `session_jwt`, `scoped_uat`, `agent_jwt`
+
+**Bearer:** `admit` (target `project_path`; boundaries `project`, `hub`)
+
+**Base Permission:** `project.read`
+
+**Resource Resolver:** project-from-url
+
+**Effects:** `read-one`
+
+**Denial Codes:** `forbidden`
+
+### Tests
+
+- `pkg/hub:TestBearerDispositionMatrix_CatalogEntryPoints`
+
+---
+
+## project.usage.read
+
+**Domain:** project
+
+**Description:** Read a project's Track 1 token usage summary and aggregate meter health (behind tokenomics.usage_ledger)
+
+### Entry Points
+
+| Kind | Method | Pattern |
+|------|--------|---------|
+| http_route | GET | `/api/v1/projects/{id}/usage` |
 
 **Principals:** `user`, `agent`
 
@@ -6558,6 +6818,38 @@
 
 - `pkg/hub:TestDirectConversationToken_PeerAgentMustBeInsideBoundary`
 - `pkg/hub:TestConversationWatch_AuthzParity`
+
+---
+
+## inbox.conversation.message.attachment.download
+
+**Domain:** inbox
+
+**Description:** Download an artifact-backed attachment of a conversation message. Authorizes the message read identically to conversation message get (DM canonical key + cross-project read gate, or group project membership, plus scoped-UAT inbox:read boundary), then checks MayReadAttachments without requiring project:artifact:read; missing or refused attachments answer 404
+
+### Entry Points
+
+| Kind | Method | Pattern |
+|------|--------|---------|
+| http_route | GET | `/api/v1/conversations/{id}/messages/{messageId}/attachments/{attachmentId}` |
+
+**Principals:** `user`, `agent`
+
+**Credentials:** `session_jwt`, `scoped_uat`, `agent_jwt`
+
+**Bearer:** `admit` (target `conversation_record`; boundaries `project`, `hub`)
+
+**Base Permission:** `inbox.read`
+
+**Resource Resolver:** conversation-project
+
+**Effects:** `read-one`
+
+**Denial Codes:** `forbidden`, `not_found`
+
+### Tests
+
+- `pkg/hub:TestConversationMessageAttachment_DownloadAuthz`
 
 ---
 
@@ -8571,7 +8863,7 @@
 
 **Domain:** chat
 
-**Description:** Star a message for the caller (private). The message must be a live message of the conversation named in the body. A thread needs project:read on its project; a DM needs the caller in a user slot of its key. A token also needs inbox:write: a thread's project, or an agent DM's peer agent project with agent:read on the agent, inside its boundary; a DM between users needs a hub boundary. 404 while web.chat_starred_messages is off
+**Description:** Star a message for the caller (private). The message must be a live message of the conversation named in the body. A thread needs project:read on its project; a DM needs the caller in a user slot of its key. A token also needs inbox:write: a thread's project, or an agent DM's peer agent project with agent:read on the agent, inside its boundary; a DM between users needs a hub boundary
 
 ### Entry Points
 
@@ -8605,7 +8897,7 @@
 
 **Domain:** chat
 
-**Description:** Read the current detail of one of the caller's stars. Needs read access to the star's conversation now (project:read for a thread; the caller in a user slot of a DM key); a token also needs inbox:read under the same rule (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users). 404 while web.chat_starred_messages is off
+**Description:** Read the current detail of one of the caller's stars. Needs read access to the star's conversation now (project:read for a thread; the caller in a user slot of a DM key); a token also needs inbox:read under the same rule (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users)
 
 ### Entry Points
 
@@ -8639,7 +8931,7 @@
 
 **Domain:** chat
 
-**Description:** Report which of up to 200 messages the caller starred, keeping only live messages in conversations the caller can read now (threads by project:read, DMs by participation); a token keeps only conversations it may read under inbox:read (a thread's or agent DM's project inside its boundary; a hub boundary for a DM between users). 404 while web.chat_starred_messages is off
+**Description:** Report which of up to 200 messages the caller starred, keeping only live messages in conversations the caller can read now (threads by project:read, DMs by participation); a token keeps only conversations it may read under inbox:read (a thread's or agent DM's project inside its boundary; a hub boundary for a DM between users)
 
 ### Entry Points
 
@@ -8673,7 +8965,7 @@
 
 **Domain:** chat
 
-**Description:** List the caller's stars in one conversation (a thread or a DM), newest first, with a sealed cursor. Needs read access to it (project:read for a thread; the caller in a user slot of a DM key); a token also needs inbox:read under the same rule (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users). 404 while web.chat_starred_messages is off
+**Description:** List the caller's stars in one conversation (a thread or a DM), newest first, with a sealed cursor. Needs read access to it (project:read for a thread; the caller in a user slot of a DM key); a token also needs inbox:read under the same rule (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users)
 
 ### Entry Points
 
@@ -8707,7 +8999,7 @@
 
 **Domain:** chat
 
-**Description:** List the conversations in which the caller has at least one live star (the Starred rail): one row per conversation with its current name, activity and project, no excerpt or count, sorted by activity or name, with a sealed cursor. Each conversation is kept only while the caller can read it now (project:read for a thread; the caller in a user slot of a DM key); a token keeps only conversations it may read under inbox:read (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users). An optional projectId must be a project the caller can read. 404 while web.chat_starred_messages is off
+**Description:** List the conversations in which the caller has at least one live star (the Starred rail): one row per conversation with its current name, activity and project, no excerpt or count, sorted by activity or name, with a sealed cursor. Each conversation is kept only while the caller can read it now (project:read for a thread; the caller in a user slot of a DM key); a token keeps only conversations it may read under inbox:read (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users). An optional projectId must be a project the caller can read
 
 ### Entry Points
 
@@ -8740,7 +9032,7 @@
 
 **Domain:** chat
 
-**Description:** Read only the caller's starred messages of one conversation (?starred=true), in history order with a sealed cursor bound to the conversation, the caller and the filter. Needs the conversation's normal read access (project:read on a thread's project, participation in a DM) and inbox:read: a token needs inbox:read for the thread's or peer agent's project, or a hub boundary for a DM between users. An around target must itself be starred. 404 while web.chat_starred_messages is off, never unfiltered history
+**Description:** Read only the caller's starred messages of one conversation (?starred=true), in history order with a sealed cursor bound to the conversation, the caller and the filter. Needs the conversation's normal read access (project:read on a thread's project, participation in a DM) and inbox:read: a token needs inbox:read for the thread's or peer agent's project, or a hub boundary for a DM between users. An around target must itself be starred
 
 ### Entry Points
 
@@ -8773,7 +9065,7 @@
 
 **Domain:** chat
 
-**Description:** Remove the caller's own star of a message; always 204. No message or conversation lookup; a project token removes only a star whose stored project is inside its boundary. 404 while web.chat_starred_messages is off
+**Description:** Remove the caller's own star of a message; always 204. No message or conversation lookup; a project token removes only a star whose stored project is inside its boundary
 
 ### Entry Points
 
@@ -9165,6 +9457,38 @@
 
 ---
 
+## chat.usersecretrequests.list
+
+**Domain:** chat
+
+**Description:** List open or resolved secret-request cards across the caller's member projects and DMs, with unfiltered open/answerable counts, filtered counts, agent/project facets, sort=recent|project, and cursor pagination. Requires an interactive human session (agents, visitors and UATs get 403); each row requires recipient membership and agent.read on the requesting agent; answerable counts additionally require answering recipient membership and agent.attach. Unsupported methods get 405; 404 while hub.agent_secrets is off
+
+### Entry Points
+
+| Kind | Method | Pattern |
+|------|--------|---------|
+| http_route | GET | `/api/v1/users/me/secret-requests` |
+
+**Principals:** `user`
+
+**Credentials:** `session_jwt`
+
+**Bearer:** `session_only` (reason `INTERACTIVE_STATE`)
+
+**Base Permission:** `agent.read`
+
+**Resource Resolver:** project-collection
+
+**Effects:** `list-scoped`
+
+**Denial Codes:** `forbidden`, `not_found`
+
+### Tests
+
+- `pkg/hub:TestUserMeSecretRequests_AuthorizationAndScope`
+
+---
+
 ## chat.commandrequest.read
 
 **Domain:** chat
@@ -9242,6 +9566,141 @@
 ### Tests
 
 - `pkg/hub:TestCommandRequests_EndToEnd`
+
+---
+
+## chat.commandrequest.output
+
+**Domain:** chat
+
+**Description:** Read the captured output tail of an approved command run. Requires an interactive human session, caller == run.approver_user_id, and live agent.attach on exec_agent_id (fails closed if deleted). Sets Cache-Control: no-store and bypasses response compression. 404 while hub.command_requests is off
+
+### Entry Points
+
+| Kind | Method | Pattern |
+|------|--------|---------|
+| http_route | GET | `/api/v1/command-requests/{id}/output` |
+
+**Principals:** `user`
+
+**Credentials:** `session_jwt`
+
+**Bearer:** `session_only` (reason `INTERACTIVE_STATE`)
+
+**Base Permission:** `agent.attach`
+
+**Resource Resolver:** agent
+
+**Effects:** `read-one`
+
+### Audit
+
+- **Event Type:** `chat.commandrequest.output`
+- **Context Fields:** actor_id, row_id, run_id, exec_agent_id, command_sha256
+- **Atomic:** No
+- **Non-Atomic Justification:** Read-only output fetch emits output_viewed audit event with metadata only (never output bytes) before writing the response
+
+**Denial Codes:** `forbidden`, `not_found`
+
+### Tests
+
+- `pkg/hub:TestCommandRequestOutput_AuthzAndSharing`
+
+---
+
+## chat.commandrequest.frommessage
+
+**Domain:** chat
+
+**Description:** Create and approve a version-1 command request from a verbatim fenced shell block in an agent-authored chat message, inserting both the approved command_requests row (surface=markdown_block) and the single queued command_runs row in one insert-only transaction. Requires an interactive human session, same-origin CSRF check on cookie sessions, single-addressed-human recipient match, message age < 24 h, verbatim-fence and canonical-hash match, and an eligible non-stopped execution container. 404 while hub.command_requests is off
+
+### Entry Points
+
+| Kind | Method | Pattern |
+|------|--------|---------|
+| http_route | POST | `/api/v1/command-requests/from-message` |
+
+**Principals:** `user`
+
+**Credentials:** `session_jwt`
+
+**Bearer:** `session_only` (reason `INTERACTIVE_STATE`)
+
+**Base Permission:** `agent.attach`
+
+**Resource Resolver:** agent
+
+**Effects:** `create-resource`, `emit-external-effect`
+
+### Audit
+
+- **Event Type:** `chat.commandrequest.frommessage`
+- **Context Fields:** actor_id, message_id, agent_id, key, command_sha256
+- **After Fields:** row_id, run_id, exec_agent_id
+- **Atomic:** No
+- **Non-Atomic Justification:** Create-and-approve insert and command_runs insert share one transaction; SSE publish, audit event, and async executor launch run post-commit
+
+### External Effect Policy
+
+- **Delivery:** `fire_and_forget`
+- **Failure Mode:** `log_and_continue`
+- **Idempotency:** idempotency_key (optional)
+- **Retry:** insert-only on version 1; repeating with the same idempotency_key from the same caller replays the approved run, otherwise returns 409 already_resolved with the existing run
+- **Auth Before Emit:** Yes
+
+**Denial Codes:** `forbidden`, `not_found`, `conflict`
+
+### Tests
+
+- `pkg/hub:TestCommandRequests_FromMessage_EndToEnd`
+
+---
+
+## chat.commandrequest.dismiss
+
+**Domain:** chat
+
+**Description:** Dismiss a pending command request with an optional reason (<=500 runes), atomically transitioning pending -> dismissed, notifying the requesting agent via a command-response message, and emitting a dismissed audit event. Requires an interactive human session, same-origin CSRF check on cookie sessions, recipient membership, and named approver match. 404 while hub.command_requests is off
+
+### Entry Points
+
+| Kind | Method | Pattern |
+|------|--------|---------|
+| http_route | POST | `/api/v1/command-requests/{id}/dismiss` |
+
+**Principals:** `user`
+
+**Credentials:** `session_jwt`
+
+**Bearer:** `session_only` (reason `INTERACTIVE_STATE`)
+
+**Base Permission:** `agent.attach`
+
+**Resource Resolver:** agent
+
+**Effects:** `update-resource`, `emit-external-effect`
+
+### Audit
+
+- **Event Type:** `chat.commandrequest.dismiss`
+- **Context Fields:** actor_id, row_id, agent_id, key, command_sha256
+- **After Fields:** status
+- **Atomic:** No
+- **Non-Atomic Justification:** Dismiss CAS runs in one transaction; SSE publish, audit event, and best-effort agent notification run post-commit
+
+### External Effect Policy
+
+- **Delivery:** `fire_and_forget`
+- **Failure Mode:** `log_and_continue`
+- **Idempotency:** idempotency_key (optional)
+- **Retry:** repeating dismiss on an already-dismissed request is idempotent and returns the dismissed view without re-notifying
+- **Auth Before Emit:** Yes
+
+**Denial Codes:** `forbidden`, `not_found`, `conflict`
+
+### Tests
+
+- `pkg/hub:TestCommandRequests_DismissAndWithdraw`
 
 ---
 
@@ -10875,6 +11334,72 @@
 ### Exemptions
 
 - **authentication_only:** The path names the caller's own record, so no resource permission applies to the caller's own profile (scope: caller's own profile fields) — waives: `base_permission`
+
+---
+
+## hub.user.usage.read
+
+**Domain:** hub
+
+**Description:** Read another user's Track 1 token usage summary by billing_user_id (behind tokenomics.usage_ledger). Requires hub.metrics.read on the hub
+
+### Entry Points
+
+| Kind | Method | Pattern |
+|------|--------|---------|
+| http_route | GET | `/api/v1/users/{id}/usage` |
+
+**Principals:** `user`
+
+**Credentials:** `session_jwt`, `scoped_uat`
+
+**Bearer:** `admit` (target `hub_instance`; boundaries `hub`)
+
+**Base Permission:** `hub.metrics.read`
+
+**Resource Resolver:** hub-scoped
+
+**Effects:** `read-one`
+
+**Denial Codes:** `forbidden`
+
+### Tests
+
+- `pkg/hub:TestBearerDispositionMatrix_CatalogEntryPoints`
+
+---
+
+## user.usage.self.read
+
+**Domain:** user
+
+**Description:** Read the caller's own Track 1 token usage summary through GET /api/v1/users/{id}/usage naming the caller's own user ID (behind tokenomics.usage_ledger). A project-boundary user access token is restricted to its boundary project
+
+### Entry Points
+
+| Kind | Method | Pattern |
+|------|--------|---------|
+| http_route | GET | `/api/v1/users/{id}/usage` |
+
+**Principals:** `user`
+
+**Credentials:** `session_jwt`, `scoped_uat`
+
+**Bearer:** `admit_self` (self filter `boundary_project`; pinned by `TestUserUsageRead_SelfTokenReadsOwn`)
+
+**Resource Resolver:** self-principal
+
+**Effects:** `read-one`
+
+**Denial Codes:** `forbidden`
+
+### Tests
+
+- `pkg/hub:TestUserUsageRead_SelfTokenReadsOwn`
+
+### Exemptions
+
+- **authentication_only:** Returns only the caller's own Track 1 token usage; carries no other user's records (scope: caller's own Track 1 token usage only) — waives: `base_permission`
 
 ---
 
@@ -12898,6 +13423,38 @@
 
 ---
 
+## hub.usage.read
+
+**Domain:** hub
+
+**Description:** Read hub-wide Track 1 token usage summary and aggregate meter health across all projects (behind tokenomics.usage_ledger). Distinct from /api/v1/usage/me (quota usage)
+
+### Entry Points
+
+| Kind | Method | Pattern |
+|------|--------|---------|
+| http_route | GET | `/api/v1/usage` |
+
+**Principals:** `user`
+
+**Credentials:** `session_jwt`, `scoped_uat`
+
+**Bearer:** `admit` (target `hub_instance`; boundaries `hub`)
+
+**Base Permission:** `hub.metrics.read`
+
+**Resource Resolver:** hub-scoped
+
+**Effects:** `read-one`
+
+**Denial Codes:** `forbidden`
+
+### Tests
+
+- `pkg/hub:TestBearerDispositionMatrix_CatalogEntryPoints`
+
+---
+
 ## hub.githubapp.read
 
 **Domain:** hub
@@ -13183,7 +13740,7 @@
 
 **Domain:** quota
 
-**Description:** Read the caller's own quota usage: each limit's effective value and active count for the caller only
+**Description:** Read the caller's own quota usage: each limit's effective value and active count for the caller only (distinct from GET /api/v1/me/usage, which returns Track 1 token usage)
 
 ### Entry Points
 
@@ -13210,6 +13767,40 @@
 ### Exemptions
 
 - **authentication_only:** Returns only the caller's own usage; carries no other user's records (scope: caller's own quota usage only) — waives: `base_permission`
+
+---
+
+## hub.usage.self.read
+
+**Domain:** hub
+
+**Description:** Read the caller's own Track 1 token usage summary by billing_user_id (behind tokenomics.usage_ledger; distinct from GET /api/v1/usage/me, which returns quota usage). A project-boundary user access token is restricted to its boundary project
+
+### Entry Points
+
+| Kind | Method | Pattern |
+|------|--------|---------|
+| http_route | GET | `/api/v1/me/usage` |
+
+**Principals:** `user`
+
+**Credentials:** `session_jwt`, `scoped_uat`
+
+**Bearer:** `admit_self` (self filter `boundary_project`; pinned by `TestMeUsageRead_SelfTokenReadsOwn`)
+
+**Resource Resolver:** self-principal
+
+**Effects:** `read-one`
+
+**Denial Codes:** `forbidden`
+
+### Tests
+
+- `pkg/hub:TestMeUsageRead_SelfTokenReadsOwn`
+
+### Exemptions
+
+- **authentication_only:** Returns only the caller's own Track 1 token usage; carries no other user's records (scope: caller's own Track 1 token usage only) — waives: `base_permission`
 
 ---
 

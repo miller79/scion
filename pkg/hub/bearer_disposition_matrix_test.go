@@ -379,6 +379,10 @@ var bearerMatrixExclusions = map[liveInventoryKey]bearerMatrixExclusion{
 		Reason: "the route answers 404 while the hub.agent_secrets experiment is off, as in this fixture, so the session-only probe gets 404 before the credential check. The dedicated test enables the experiment and drives the route with a user access token, agent token, non-recipient, and recipient without agent.attach",
 		Pin:    "TestSecretRequests_EndToEnd",
 	},
+	{OperationID: "chat.usersecretrequests.list", Method: "GET", Pattern: "/api/v1/users/me/secret-requests"}: {
+		Reason: "the route answers 404 while the hub.agent_secrets experiment is off, as in this fixture, so the session-only probe gets 404 before the credential check. TestUserMeSecretRequests_AuthorizationAndScope enables the experiment and drives GET with a user access token, agent token, visitor, and session users",
+		Pin:    "TestUserMeSecretRequests_AuthorizationAndScope",
+	},
 	{OperationID: "chat.commandrequest.read", Method: "GET", Pattern: "/api/v1/command-requests/{id}"}: {
 		Reason: "the route answers 404 while the hub.command_requests experiment is off, as in this fixture, so the session-only probe gets 404 before the credential check. TestCommandRequests_EndToEnd enables the experiment and drives GET with a real CLI session token, real PAT through Handler(), real agent JWT through Handler(), visitor identity, federated identity, and non-recipient",
 		Pin:    "TestCommandRequests_EndToEnd",
@@ -386,6 +390,18 @@ var bearerMatrixExclusions = map[liveInventoryKey]bearerMatrixExclusion{
 	{OperationID: "chat.commandrequest.approve", Method: "POST", Pattern: "/api/v1/command-requests/{id}/approve"}: {
 		Reason: "the route answers 404 while the hub.command_requests experiment is off, as in this fixture, so the session-only probe gets 404 before the credential check. TestCommandRequests_EndToEnd enables the experiment and drives POST with a real CLI session token, real PAT through Handler(), real agent JWT through Handler(), visitor identity, federated identity, and non-approver",
 		Pin:    "TestCommandRequests_EndToEnd",
+	},
+	{OperationID: "chat.commandrequest.output", Method: "GET", Pattern: "/api/v1/command-requests/{id}/output"}: {
+		Reason: "the route answers 404 while the hub.command_requests experiment is off, as in this fixture, so the session-only probe gets 404 before the credential check. TestCommandRequestOutput_AuthzAndSharing enables the experiment and drives GET with a real CLI session token, real PAT through Handler(), real agent JWT through Handler(), visitor identity, federated identity, non-approver, revoked attach, and deleted container",
+		Pin:    "TestCommandRequestOutput_AuthzAndSharing",
+	},
+	{OperationID: "chat.commandrequest.frommessage", Method: "POST", Pattern: "/api/v1/command-requests/from-message"}: {
+		Reason: "the route answers 404 while the hub.command_requests experiment is off, as in this fixture, so the session-only probe gets 404 before the credential check. TestCommandRequests_FromMessage_EndToEnd enables the experiment and drives POST with a real session, real PAT/agent JWT/visitor/federated refusals, non-recipient, and non-addressed group participant",
+		Pin:    "TestCommandRequests_FromMessage_EndToEnd",
+	},
+	{OperationID: "chat.commandrequest.dismiss", Method: "POST", Pattern: "/api/v1/command-requests/{id}/dismiss"}: {
+		Reason: "the route answers 404 while the hub.command_requests experiment is off, as in this fixture, so the session-only probe gets 404 before the credential check. TestCommandRequests_DismissAndWithdraw enables the experiment and drives POST with a real session, real PAT through Handler(), real agent JWT through Handler(), visitor identity, and non-approver",
+		Pin:    "TestCommandRequests_DismissAndWithdraw",
 	},
 	{OperationID: "chat.decision.answer", Method: "POST", Pattern: "/api/v1/decisions/{rowId}/answer"}: {
 		Reason: "the route answers 404 while the web.decisions experiment is off, as in this fixture, so the session-only probe gets 404 before the credential check. The dedicated test enables the experiment and drives the route with a user access token and a visitor",
@@ -566,8 +582,16 @@ var bearerMatrixExclusions = map[liveInventoryKey]bearerMatrixExclusion{
 		Reason: "same as the PUT /api/v1/artifacts/{id}/review-draft entry above: the generic refusal probes get 404 for a caller that cannot read the artifact where the matrix expects 403, and the admitting super-admin lacks artifact:read and holds no grant on the fixture artifact; TestArtifactsManageAndVersionRoutesUserAccessTokensAreBounded and TestArtifactsReviewDraftsAgentCreatorAndScopedTokenIsolation drive DELETE with user access tokens",
 		Pin:    "TestArtifactsManageAndVersionRoutesUserAccessTokensAreBounded",
 	},
+	{OperationID: "artifact.review.request.list", Method: "GET", Pattern: "/api/v1/artifacts/{id}/review-requests"}: {
+		Reason: "the route is gated by default-off hub.artifacts_review_requests (404 while off) and answers 404 for callers that cannot read the artifact; TestArtifactsReviewRequestsOnRoutes exercises publisher and self-only views with session and scoped UAT callers",
+		Pin:    "TestArtifactsReviewRequestsOnRoutes",
+	},
 	{OperationID: "artifact.review.request.create", Method: "POST", Pattern: "/api/v1/artifacts/{id}/review-requests"}: {
-		Reason: "the route is gated by default-off hub.artifacts_review_requests (404 while off), answers 404 for callers that cannot read the artifact, and requires an interactive user session in MayNotifyReviewer (refusing every reviewer for scoped UATs); TestArtifactsReviewRequestsOnRoutes exercises interactive/dev session, scoped UAT (ceiling lacking artifact:request_review -> 403, boundary excluding project -> 404, admitting UAT -> every reviewer refused reviewer_unavailable with no notifications) and agent callers",
+		Reason: "the route is gated by default-off hub.artifacts_review_requests (404 while off), answers 404 for callers that cannot read the artifact, and refuses non-interactive credentials at the route level with 403 interactive_session_required before charging the limiter; TestArtifactsReviewRequestsOnRoutes exercises interactive/dev session, scoped UAT (ceiling lacking artifact:request_review -> 403, boundary excluding project -> 404, admitting UAT -> 403 interactive_session_required) and agent callers",
+		Pin:    "TestArtifactsReviewRequestsOnRoutes",
+	},
+	{OperationID: "artifact.review.request.withdraw", Method: "POST", Pattern: "/api/v1/artifacts/{id}/review-requests/{rid}/withdraw"}: {
+		Reason: "the route is gated by default-off hub.artifacts_review_requests (404 while off) and answers 404 for callers that cannot read the artifact or when the request id does not exist; TestArtifactsReviewRequestsOnRoutes exercises withdraw authorization and lifecycle",
 		Pin:    "TestArtifactsReviewRequestsOnRoutes",
 	},
 	{OperationID: "artifact.review.request.dismiss", Method: "POST", Pattern: "/api/v1/artifacts/{id}/review-request/dismiss"}: {
@@ -702,28 +726,29 @@ var bearerMatrixCompanionSelectors = map[authzop.OperationID][]string{
 	// Binding a GitHub App installation is admin-only: besides project
 	// update it requires the hub GitHub App update permission
 	// (githubInstallationBindPermission), as its catalog entry states.
-	"project.github.installation.bind":       {"hub_github_app:update"},
-	"inbox.conversation.create":              {"project:read"},
-	"inbox.conversation.direct.read":         {"agent:read"},
-	"inbox.conversation.defaultagent.set":    {"project:read"},
-	"inbox.conversation.participant.add":     {"project:read"},
-	"inbox.conversation.resolve":             {"project:read"},
-	"inbox.notification.subscription.create": {"project:read"},
-	"inbox.notification.template.create":     {"project:read"},
-	"inbox.threadgroup.create":               {"project:read"},
-	"inbox.threadgroup.update":               {"project:read"},
-	"inbox.threadgroup.delete":               {"project:read"},
-	"chat.prefs.read":                        {"agent:read"},
-	"chat.prefs.update":                      {"agent:read"},
-	"chat.thread.create":                     {"project:read"},
-	"chat.space.markread":                    {"project:read"},
-	"chat.topic.update":                      {"project:read"},
-	"chat.topic.delete":                      {"project:read"},
-	"chat.conversation.history.dm":           {"agent:read"},
-	"chat.conversation.send.topic":           {"project:read"},
-	"chat.conversation.send.dmagent":         {"agent:message"},
-	"chat.message.edit":                      {"project:read"},
-	"chat.message.delete":                    {"project:read"},
+	"project.github.installation.bind":               {"hub_github_app:update"},
+	"inbox.conversation.create":                      {"project:read"},
+	"inbox.conversation.direct.read":                 {"agent:read"},
+	"inbox.conversation.message.attachment.download": {"project:read"},
+	"inbox.conversation.defaultagent.set":            {"project:read"},
+	"inbox.conversation.participant.add":             {"project:read"},
+	"inbox.conversation.resolve":                     {"project:read"},
+	"inbox.notification.subscription.create":         {"project:read"},
+	"inbox.notification.template.create":             {"project:read"},
+	"inbox.threadgroup.create":                       {"project:read"},
+	"inbox.threadgroup.update":                       {"project:read"},
+	"inbox.threadgroup.delete":                       {"project:read"},
+	"chat.prefs.read":                                {"agent:read"},
+	"chat.prefs.update":                              {"agent:read"},
+	"chat.thread.create":                             {"project:read"},
+	"chat.space.markread":                            {"project:read"},
+	"chat.topic.update":                              {"project:read"},
+	"chat.topic.delete":                              {"project:read"},
+	"chat.conversation.history.dm":                   {"agent:read"},
+	"chat.conversation.send.topic":                   {"project:read"},
+	"chat.conversation.send.dmagent":                 {"agent:message"},
+	"chat.message.edit":                              {"project:read"},
+	"chat.message.delete":                            {"project:read"},
 	// Resuming or manually running a message schedule re-authorizes message
 	// delivery to the target agent (ptone/scion#8588); without agent:message
 	// (or agent:read), the target is masked as 404.
@@ -1020,8 +1045,12 @@ var bearerMatrixPositiveServerErrors = map[liveInventoryKey]bearerMatrixPositive
 		http.StatusServiceUnavailable, "the test server configures no agent dispatcher"},
 	{"project.messagelogs.read", http.MethodGet, "/api/v1/projects/{id}/message-logs"}: {
 		http.StatusNotImplemented, "the test server configures no log query service"},
-	{"project.metrics.read", http.MethodGet, "/api/v1/projects/{id}/metrics"}: {
-		http.StatusServiceUnavailable, "the test server configures no telemetry project for the metrics dashboard"},
+	// project.metrics.read (GET /api/v1/projects/{id}/metrics) and
+	// hub.metrics.read (GET /api/v1/metrics/{name}, GET /api/v1/admin/metrics-dashboard)
+	// are not listed: seedLiveInventoryFixtures enables tokenomics.usage_ledger,
+	// so without a telemetry project they serve 200 from HubRollupSource rather
+	// than 503. Experiment-off 503 behavior for all three routes is pinned by
+	// TestMetricsDashboard_SourceSelectionMatrix.
 	{"hub.messaging.update", http.MethodPut, "/api/v1/admin/messaging"}: {
 		http.StatusNotImplemented, "the test server configures no operational settings"},
 	{"hub.experiments.update", http.MethodGet, "/api/v1/admin/experiments"}: {
@@ -1040,10 +1069,6 @@ var bearerMatrixPositiveServerErrors = map[liveInventoryKey]bearerMatrixPositive
 		http.StatusNotImplemented, "the test server configures no log query service"},
 	{"hub.diagnostics.read", http.MethodGet, "/api/v1/admin/diagnostics/logs/stream"}: {
 		http.StatusNotImplemented, "the test server configures no log query service"},
-	{"hub.metrics.read", http.MethodGet, "/api/v1/metrics/{name}"}: {
-		http.StatusServiceUnavailable, "the test server configures no telemetry project"},
-	{"hub.metrics.read", http.MethodGet, "/api/v1/admin/metrics-dashboard"}: {
-		http.StatusServiceUnavailable, "the test server configures no telemetry project"},
 	{"hub.githubapp.update", http.MethodPut, "/api/v1/github-app/installations/{id}"}: {
 		http.StatusInternalServerError, "the empty update body fails at the store write"},
 	{"hub.githubapp.update", http.MethodPost, "/api/v1/github-app/installations/discover"}: {

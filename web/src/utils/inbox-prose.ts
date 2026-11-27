@@ -24,6 +24,8 @@ export const INBOX_NOTHING_WAITING = 'Nothing Waiting';
 
 export type InboxLinkKey =
   | 'primary'
+  | 'secrets-requests'
+  | 'secrets-pending'
   | 'chat-unread'
   | 'chat-mentions'
   | 'chat-starred'
@@ -88,6 +90,44 @@ export function formatInboxProseSegments(
   const projects = breakdown?.projects ?? 0;
 
   switch (category) {
+    case 'secrets': {
+      const requests = breakdown?.secretRequests ?? 0;
+      const pending = breakdown?.pendingSecrets ?? 0;
+      const requestsCapped =
+        Boolean(breakdown?.secretRequestsCapped) || (capped && requests > 0 && pending === 0);
+      const pendingCapped =
+        Boolean(breakdown?.pendingSecretsCapped) || (capped && pending > 0 && requests === 0);
+
+      if (requests <= 0 && pending <= 0) {
+        return 'nothing';
+      }
+
+      const segments: ProseSegment[] = [];
+      if (requests > 0) {
+        segments.push({
+          text: formatCountNoun(requests, requestsCapped, 'secret request', 'secret requests'),
+          link: 'secrets-requests',
+        });
+        if (agents > 0) {
+          appendUnlinked(segments, ` from ${pluralize(agents, 'agent', 'agents')}`);
+        }
+      }
+      if (pending > 0) {
+        if (requests > 0) {
+          appendUnlinked(segments, ', ');
+        }
+        segments.push({
+          text: formatCountNoun(pending, pendingCapped, 'pending secret', 'pending secrets'),
+          link: 'secrets-pending',
+        });
+        appendUnlinked(segments, ' to approve');
+      }
+      if (projects > 0) {
+        appendUnlinked(segments, `, across ${pluralize(projects, 'project', 'projects')}`);
+      }
+      return segments;
+    }
+
     case 'decisions':
       if (count <= 0) return 'nothing';
       return primaryWithAgentsProjects(
@@ -126,14 +166,74 @@ export function formatInboxProseSegments(
         projects
       );
 
-    case 'reviews':
-      if (count <= 0) return 'nothing';
-      return [
-        {
-          text: formatCountNoun(count, capped, 'pending review', 'pending reviews'),
-          link: 'primary',
-        },
-      ];
+    case 'reviews': {
+      const hasToAddress = breakdown !== undefined && typeof breakdown.toAddress === 'number';
+      const hasRequested = breakdown !== undefined && typeof breakdown.requested === 'number';
+      const hasDrafts = breakdown !== undefined && typeof breakdown.drafts === 'number';
+      if (!hasToAddress && !hasRequested && !hasDrafts) {
+        if (count <= 0) return 'nothing';
+        return [
+          {
+            text: formatCountNoun(count, capped, 'pending review', 'pending reviews'),
+            link: 'primary',
+          },
+        ];
+      }
+      const toAddress = breakdown?.toAddress ?? 0;
+      const requested = breakdown?.requested ?? 0;
+      const drafts = breakdown?.drafts ?? 0;
+      const explicitToAddressCapped = (breakdown?.toAddressCapped ?? 0) > 0;
+      const explicitRequestedCapped = (breakdown?.requestedCapped ?? 0) > 0;
+      // Fallback when a summary omits per-clause *Capped keys (mirrors CLI older-hub compat).
+      const hasExplicitCap = explicitToAddressCapped || explicitRequestedCapped;
+      const toAddressCapped = explicitToAddressCapped || (capped && !hasExplicitCap);
+      const requestedCapped = explicitRequestedCapped || (capped && !hasExplicitCap);
+      const draftsCapped = (breakdown?.draftsCapped ?? 0) > 0;
+
+      const segments: ProseSegment[] = [];
+      let hasClause = false;
+      if (toAddress > 0) {
+        segments.push({
+          text: formatCountNoun(
+            toAddress,
+            toAddressCapped,
+            'review to address',
+            'reviews to address'
+          ),
+          link: 'reviews-to-address',
+        });
+        hasClause = true;
+      }
+      if (requested > 0) {
+        if (hasClause) {
+          appendUnlinked(segments, ', ');
+        }
+        segments.push({
+          text: formatCountNoun(
+            requested,
+            requestedCapped,
+            'review requested',
+            'reviews requested'
+          ),
+          link: 'reviews-requested',
+        });
+        hasClause = true;
+      }
+      if (drafts > 0) {
+        if (hasClause) {
+          appendUnlinked(segments, ', ');
+        }
+        segments.push({
+          text: formatCountNoun(drafts, draftsCapped, 'unfinished draft', 'unfinished drafts'),
+          link: 'reviews-drafts',
+        });
+        hasClause = true;
+      }
+      if (!hasClause) {
+        return 'nothing';
+      }
+      return segments;
+    }
 
     case 'chat': {
       const unread =
@@ -142,6 +242,7 @@ export function formatInboxProseSegments(
           : count;
       const mentions = breakdown?.mentions ?? 0;
       const starred = breakdown?.starredMessages ?? 0;
+      const starredCapped = (breakdown?.starredMessagesCapped ?? 0) > 0;
 
       const segments: ProseSegment[] = [];
       let hasClause = false;
@@ -149,19 +250,28 @@ export function formatInboxProseSegments(
       if (unread > 0) {
         segments.push({
           text: formatCountNoun(unread, capped, 'unread conversation', 'unread conversations'),
-          link: 'primary',
+          link: 'chat-unread',
         });
         hasClause = true;
       }
       if (mentions > 0) {
-        appendUnlinked(segments, `${hasClause ? ', ' : ''}${mentions} with mentions`);
+        if (hasClause) {
+          appendUnlinked(segments, ', ');
+        }
+        segments.push({
+          text: `${mentions} with mentions`,
+          link: 'chat-mentions',
+        });
         hasClause = true;
       }
       if (starred > 0) {
-        appendUnlinked(
-          segments,
-          `${hasClause ? ', ' : ''}${pluralize(starred, 'starred message', 'starred messages')}`
-        );
+        if (hasClause) {
+          appendUnlinked(segments, ', ');
+        }
+        segments.push({
+          text: formatCountNoun(starred, starredCapped, 'starred message', 'starred messages'),
+          link: 'chat-starred',
+        });
         hasClause = true;
       }
       if (!hasClause) {

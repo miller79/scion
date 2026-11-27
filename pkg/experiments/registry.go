@@ -212,6 +212,15 @@ const CommandRequests = "hub.command_requests"
 // LimitCeilings is omitted from dispatches.
 const AgentPolicyLimitCeilings = "agent_policy.limit_ceilings"
 
+// AgentPolicyDurationBackstop gates the broker-side max_duration backstop
+// (ptone/scion#9372): stamping an immutable run deadline (scion.dev/run-deadline)
+// on launched runtimes (plus spec.activeDeadlineSeconds on Kubernetes) and
+// echoing RunDeadline in EffectiveConfig when an agent has a positive effective
+// max_duration. While it is off, new launches are not stamped; the broker's
+// periodic sweeper still enforces any already-stamped run so active deadlines
+// survive broker restarts and flag toggles.
+const AgentPolicyDurationBackstop = "agent_policy.duration_backstop"
+
 // ViewAsMember gates the "View as member" session toggle for hub admins
 // (ptone/scion#8648). The hub checks it when a session enters the mode;
 // existing sessions in the mode remain honoured and exit stays available
@@ -241,12 +250,6 @@ const Artifacts = "hub.artifacts"
 // deploymentExperimentDefault).
 const AttachmentArtifacts = "hub.attachment_artifacts"
 
-// ChatScheduledSend gates scheduled send in native web chat: the Schedule
-// send menu item and pending-message banners in the web UI, the hub's
-// /api/v1/chat/conversations/{key}/scheduled routes (404 while off), and
-// the delivery sweeper, which holds pending messages while it is off.
-const ChatScheduledSend = "web.chat_scheduled_send"
-
 // Decisions gates agent decision prompts, cards, routes, pages, CLI listing
 // and coalesced bell notifications (ptone/scion#7514, ptone/scion#8223):
 // agent sends carrying decisions (refused with experiment_disabled while off),
@@ -263,14 +266,6 @@ const Decisions = "web.decisions"
 // invalidation hints (LayerServer), plus the Profile Inbox page, nav badges,
 // and bell discovery link in the web UI (LayerWeb).
 const InboxDashboard = "web.inbox_dashboard"
-
-// ChatStarredMessages gates starred messages in native web chat: the
-// message Star/Unstar action, the private starred indicator, the
-// conversation header's starred-message list, the starred-only center and
-// the rail's Starred filter in the web UI, and the hub's /api/v1/chat/stars
-// and /api/v1/chat/starred-conversations routes and the starred=true
-// history variant (404 while off). Stored stars are kept while it is off.
-const ChatStarredMessages = "web.chat_starred_messages"
 
 // ChatRetention gates hub-wide chat message retention: the
 // chat_retention operational-settings section and its admin API (404 while
@@ -406,19 +401,20 @@ const TerminalKeyBar = "web.terminal_key_bar"
 const SecretRotation = "server.secret_rotation"
 
 // ContentHashV2 gates the content hash the hub records for template and
-// harness-config commits (ptone/scion#5658): while it is on, commits record
-// transfer.ComputeContentHashV2 (paths, normalised modes and file hashes);
-// while it is off, transfer.ComputeContentHashV1 (file hashes only). The hub
-// checks it at every commit, so toggling needs no restart. Rows keep the
-// version they were last committed with, and the commit compare-and-swap is
-// a strict equality on the stored value, so mixed rows are safe in both
-// directions. Skill hashes do not follow it (see SkillContentHashV2).
-// Brokers and CLIs do not read it: their cache keys and sync checks do not
-// depend on the hash version.
+// harness-config commits (ptone/scion#5658): while it is on (the default),
+// commits record transfer.ComputeContentHashV2 (paths, normalised modes and
+// file hashes); while it is off, transfer.ComputeContentHashV1 (file hashes
+// only). The hub checks it at every commit, so toggling needs no restart. Rows
+// keep the version they were last committed with, and the commit
+// compare-and-swap is a strict equality on the stored value, so mixed rows are
+// safe in both directions. Skill hashes do not follow it (see
+// SkillContentHashV2). Brokers and CLIs do not read it: their cache keys and
+// sync checks do not depend on the hash version.
 // While it is off, a rename-only or chmod-only re-upload is not visible to
-// the expected-hash check (the behaviour before ptone/scion#5658). Enable it
-// once every CLI and agent image is at or after the release that added it;
-// ptone/scion#5995 makes it the default and removes the gate.
+// the expected-hash check (the behaviour before ptone/scion#5658). Operators
+// with CLIs or agent images older than the release that added it can disable
+// this experiment until those clients are upgraded; ptone/scion#5995 removes
+// the gate.
 const ContentHashV2 = "hub.content_hash_v2"
 
 // LifecycleEvents gates the agent lifecycle event pipeline (WP1): with it
@@ -793,11 +789,22 @@ var compiled = []Experiment{
 	{
 		Name:        AgentPolicyLimitCeilings,
 		Title:       "Agent limit ceilings",
-		Description: "Enables Hub-level run-limit ceilings (agent_limits): fail-fast validation on Hub creates, wire ceilings to brokers, broker clamping, and effective-limit echo.",
+		Description: "Enables Hub-level run-limit ceilings (agent_limits): admin ceilings UI/API, resolved-settings ceiling hints, fail-fast validation on Hub creates, wire ceilings to brokers, broker clamping, and effective-limit echo.",
+		Default:     false,
+		Layers:      []Layer{LayerServer, LayerWeb},
+		Stage:       StageAlpha,
+		Issue:       "ptone/scion#9371",
+		Owner:       "configuration",
+		ReviewBy:    "2027-05-26",
+	},
+	{
+		Name:        AgentPolicyDurationBackstop,
+		Title:       "Broker max_duration backstop",
+		Description: "Stamps an immutable run deadline (scion.dev/run-deadline, plus Kubernetes activeDeadlineSeconds) on launched runtimes when effective max_duration > 0 so the broker's 60s sweeper stops expired runs even if sciontool fails to exit. While off, new launches are not stamped; already-stamped runs continue to be enforced.",
 		Default:     false,
 		Layers:      []Layer{LayerServer},
 		Stage:       StageAlpha,
-		Issue:       "ptone/scion#9371",
+		Issue:       "ptone/scion#9372",
 		Owner:       "configuration",
 		ReviewBy:    "2027-05-26",
 	},
@@ -959,7 +966,7 @@ var compiled = []Experiment{
 		Name:        K8sNFSHome,
 		Title:       "Persistent agent home on Kubernetes",
 		Description: "Lets Kubernetes agents keep their home directory on the NFS export of their profile's shared-dir storage, across stops and restarts. Takes effect only where server.home_storage, or a profile or runtime home_storage_backend, selects nfs. Agents keep the home storage they were created with.",
-		Default:     false,
+		Default:     true,
 		Layers:      []Layer{LayerServer},
 		Stage:       StageAlpha,
 		Issue:       "ptone/scion#2615",
@@ -1003,7 +1010,7 @@ var compiled = []Experiment{
 		Name:        FlatRuntimeBrokers,
 		Title:       "Flat Runtime Brokers",
 		Description: "Lets a Runtime Broker serve exactly one runtime target with a stable identity: the hub accepts single-target Runtime Broker registrations, pins new agents to that target and rejects mismatched dispatches. Existing profile-based Runtime Brokers are unchanged. The web layer only lets the web UI read the flag (presentation only); every hub check is LayerServer. With it on, the web UI shows the Brokers area.",
-		Default:     false,
+		Default:     true,
 		Layers: []Layer{
 			LayerServer,
 			LayerWeb,
@@ -1039,7 +1046,7 @@ var compiled = []Experiment{
 		Name:        Artifacts,
 		Title:       "Artifacts",
 		Description: "Lets agents and users publish files and bundles with stable, versioned references, and view them in the web UI. Gates the artifact page and other web surfaces (LayerWeb) and the hub's /api/v1/artifacts routes (LayerServer), which answer 404 while it is off.",
-		Default:     false,
+		Default:     true,
 		Layers:      []Layer{LayerWeb, LayerServer},
 		Stage:       StageAlpha,
 		Issue:       "ptone/scion#3202",
@@ -1071,7 +1078,7 @@ var compiled = []Experiment{
 	{
 		Name:        ConduitDeliver,
 		Title:       "Message delivery over Conduit",
-		Description: "Delivers messages to Cloud Run agents over their Conduit session (the deliver-message control route) instead of through runtime exec, so no IAP exec connector is needed. Requires hub.conduit. Agents started before it is turned on keep using exec until they restart; Docker and Kubernetes agents keep using exec. Text and interrupts only: messages with attachments, oversize text or delivery settings outside the route bounds use exec where the runtime has it. Before an agent's session is up, delivery retries, then uses exec or fails before anything is pasted.",
+		Description: "Delivers messages to agents over their Conduit session (the deliver-message control route) instead of through runtime exec, so no IAP exec connector is needed on Cloud Run. Requires hub.conduit. Covers Cloud Run, Kubernetes and Docker by default; other runtimes are opt-in per broker through server.broker.conduit_deliver_runtimes. Brokers connected to several hubs use exec. Agents started before it is turned on keep using exec until they restart. Text and interrupts only: messages with attachments, oversize text or delivery settings outside the route bounds use exec where the runtime has it. Before an agent's session is up, delivery retries, then uses exec or fails before anything is pasted.",
 		Default:     false,
 		Layers:      []Layer{LayerServer},
 		Stage:       StageAlpha,
@@ -1089,17 +1096,6 @@ var compiled = []Experiment{
 		Issue:       "ptone/scion#7818",
 		Owner:       "@ptone",
 		ReviewBy:    "2027-03-31",
-	},
-	{
-		Name:        ChatScheduledSend,
-		Title:       "Scheduled send in chat",
-		Description: "Adds Schedule send to the chat Send button menu: the message is held by the hub and sent as the user at the chosen time; until then only the sender sees it, with a Cancel button. Gates the menu item and banners (LayerWeb), the hub's scheduled-message routes, which answer 404 while it is off, and delivery (LayerServer): while it is off, pending messages are held, neither sent nor failed. A message found due more than 60 minutes late (for example after the experiment was off) is not sent; it fails as missed and the sender can send it now.",
-		Default:     false,
-		Layers:      []Layer{LayerWeb, LayerServer},
-		Stage:       StageAlpha,
-		Issue:       "ptone/scion#3666",
-		Owner:       "native-chat",
-		ReviewBy:    "2027-01-31",
 	},
 	{
 		Name:        Decisions,
@@ -1122,17 +1118,6 @@ var compiled = []Experiment{
 		Issue:       "ptone/scion#8962",
 		Owner:       "notifications",
 		ReviewBy:    "2027-02-21",
-	},
-	{
-		Name:        ChatStarredMessages,
-		Title:       "Starred messages in chat",
-		Description: "Lets each user star chat messages privately and find them again from the conversation header. Gates the Star message action, the starred indicator and the header list (LayerWeb) and the hub's starred-message routes, which answer 404 while it is off (LayerServer). Stars are stored per user and are never shown to anyone else; turning it off keeps them.",
-		Default:     true,
-		Layers:      []Layer{LayerWeb, LayerServer},
-		Stage:       StageAlpha,
-		Issue:       "ptone/scion#5797",
-		Owner:       "native-chat",
-		ReviewBy:    "2027-01-31",
 	},
 	{
 		Name:        ChatRetention,
@@ -1193,7 +1178,7 @@ var compiled = []Experiment{
 		Name:        SSEHiddenTabClose,
 		Title:       "Close live updates in hidden tabs",
 		Description: "A browser tab hidden for 60 seconds closes its live-update streams (page, agent list and terminal metadata) and reopens them, refreshing what it shows, when it is shown again. Terminal connections stay open. Web only; the hub is unaffected.",
-		Default:     false,
+		Default:     true,
 		Layers:      []Layer{LayerWeb},
 		Stage:       StageAlpha,
 		Issue:       "ptone/scion#5235",
@@ -1214,8 +1199,8 @@ var compiled = []Experiment{
 	{
 		Name:        ArtifactReviewEditor,
 		Title:       "Graphical review editor",
-		Description: "Opens a Markdown artifact review in a graphical editor that shows marks inline, records typing, deleting and replacing as suggestions, and has a Graphical and Source toggle. Needs hub.artifacts. Web only; the hub saves and checks reviews the same way whether or not it is on. Do not turn it on before the page script policy (ptone/scion#5912) is deployed on the hub.",
-		Default:     false,
+		Description: "Opens a Markdown artifact review in a graphical editor that shows marks inline, records typing, deleting and replacing as suggestions, and has a Graphical and Source toggle. Needs hub.artifacts and the page script policy (ptone/scion#5912). Web only; the hub saves and checks reviews the same way whether or not it is on.",
+		Default:     true,
 		Layers:      []Layer{LayerWeb},
 		Stage:       StageAlpha,
 		Issue:       "ptone/scion#5913",
@@ -1226,7 +1211,7 @@ var compiled = []Experiment{
 		Name:        ArtifactManageAccess,
 		Title:       "Manage access dialog",
 		Description: "Replaces Share, Grant review access and Retention… on the artifact page with one Manage access button and dialog for review access, link sharing and retention. Needs hub.artifacts. Web only; the hub decides every change the same way whether or not it is on.",
-		Default:     false,
+		Default:     true,
 		Layers:      []Layer{LayerWeb},
 		Stage:       StageAlpha,
 		Issue:       "ptone/scion#7107",
@@ -1303,7 +1288,7 @@ var compiled = []Experiment{
 		Name:        UserDeleteForceCascade,
 		Title:       "Force user delete",
 		Description: "Lets an admin delete a user who has agents: DELETE /api/v1/users/{id}?force=true revokes the user's authority at once (status deleting, role bindings, access tokens, delegations), stops the user's agents through the agent delete, and removes the user once every agent is stopped or removed by an operator. Needs agent.delete on every one of those agents. While off, force is ignored (a user with agents is refused as before) and the deletion resource answers 404; a deletion accepted while it was on runs to completion.",
-		Default:     false,
+		Default:     true,
 		Layers:      []Layer{LayerServer, LayerWeb},
 		Stage:       StageAlpha,
 		Issue:       "ptone/scion#2143",
@@ -1314,7 +1299,7 @@ var compiled = []Experiment{
 		Name:        AgentPlugins,
 		Title:       "Agent Plugins (native install)",
 		Description: "Installs Agent Plugins 1.0.0 bundles declared in a template's agent_plugins into harnesses that support them natively (codex, copilot, muse-code, claude). While off, agent_plugins is ignored with a start warning and previously installed plugins are removed at the next start.",
-		Default:     false,
+		Default:     true,
 		Layers:      []Layer{LayerServer},
 		Stage:       StageAlpha,
 		Issue:       "ptone/scion#4933",
@@ -1325,7 +1310,7 @@ var compiled = []Experiment{
 		Name:        SecretRotation,
 		Title:       "Server keyring (session cookie pilot)",
 		Description: "Lets a hub start with a versioned keyring file (server.keyring_file). In this release only web session cookies use it: several signing generations can be read at once, with deadlines, while every other purpose keeps the legacy server secret. The keyring file is checked at startup: a hub with a keyring file refuses to start while it is off. It also gates the admin key status endpoint (GET /api/v1/admin/keys/status), checked on every request, so turning it off hides that endpoint at once. Full server-secret rotation is not available yet.",
-		Default:     false,
+		Default:     true,
 		Layers:      []Layer{LayerServer},
 		Stage:       StageAlpha,
 		Issue:       "ptone/scion#1530",
@@ -1335,20 +1320,20 @@ var compiled = []Experiment{
 	{
 		Name:        ContentHashV2,
 		Title:       "Content hash v2 (paths and modes)",
-		Description: "While on, template and harness-config commits record a content hash that covers each file's path and executable bit as well as its content, so a rename-only or chmod-only commit changes the hash and a client that diffed against the earlier version gets 409 instead of overwriting it. While off (the default), commits record the earlier hash, which covers file contents only: a rename-only or chmod-only re-upload is not visible to the hub's expected-hash check, as before. Turn it on only when every CLI and agent image that talks to this hub is at or after the release that added it; an older CLI compares its own earlier hash with the hub's and, without a terminal, fails scion start, resume and create with -t for a template it also has locally. Skill hashes do not change either way.",
-		Default:     false,
+		Description: "While on (the default), template and harness-config commits record a content hash that covers each file's path and executable bit as well as its content, so a rename-only or chmod-only commit changes the hash and a client that diffed against the earlier version gets 409 instead of overwriting it. While off, commits record the earlier hash, which covers file contents only: a rename-only or chmod-only re-upload is not visible to the hub's expected-hash check, as before. CLIs and agent images older than the release that added it compare their own contents-only hash with the hub's and prompt interactively or, without a terminal, fail scion start, resume and create with -t for a template they also have locally (unless --no-upload or --yes is passed); disable this experiment if older clients still talk to this hub. Skill hashes do not change either way.",
+		Default:     true,
 		Layers:      []Layer{LayerServer},
 		Stage:       StageAlpha,
 		Issue:       "ptone/scion#5658",
 		Owner:       "templates",
-		// ptone/scion#5995 makes it the default and removes the gate.
+		// ptone/scion#5995 removes the gate.
 		ReviewBy: "2027-01-21",
 	},
 	{
 		Name:        SkillContentHashV2,
 		Title:       "Skill content hash v2 (paths and modes)",
-		Description: "While on, skill resolve and skill version responses also carry contentHashV2, a skill content hash that covers each file's path and executable bit as well as its content, and the hub accepts either hash form for an @sha256: version and for a pinned registry hash, so a skill can be pinned by a hash that a rename-only or chmod-only change would break. A federated skill is also checked against the hashes the hub recomputes from the registry's file list, and fails if the registry's claimed hash disagrees; a pinned registry must list a hash for every file, and a skill that sends no content hash and lists no per-file hashes is rejected from any registry. contentHash stays the earlier hash (file contents only), which older brokers verify and existing pins hold. While off (the default), responses are unchanged and pins match the earlier hash only. Brokers at or after this release verify contentHashV2 whenever a response carries it.",
-		Default:     false,
+		Description: "While on, skill resolve and skill version responses also carry contentHashV2, a skill content hash that covers each file's path and executable bit as well as its content, and the hub accepts either hash form for an @sha256: version and for a pinned registry hash, so a skill can be pinned by a hash that a rename-only or chmod-only change would break. A federated skill is also checked against the hashes the hub recomputes from the registry's file list, and fails if the registry's claimed hash disagrees; a pinned registry must list a hash for every file, and a skill that sends no content hash and lists no per-file hashes is rejected from any registry. contentHash stays the earlier hash (file contents only), which older brokers verify and existing pins hold. While off, responses are unchanged and pins match the earlier hash only. Brokers at or after this release verify contentHashV2 whenever a response carries it.",
+		Default:     true,
 		Layers:      []Layer{LayerServer},
 		Stage:       StageAlpha,
 		Issue:       "ptone/scion#5935",
@@ -1526,7 +1511,7 @@ var compiled = []Experiment{
 		Title:       "Hub-enforced telemetry",
 		Description: "Lets a hub operator set telemetry.enforced in operational settings to make telemetry mandatory across all dispatched agents, overriding project and requester disable settings.",
 		Default:     false,
-		Layers:      []Layer{LayerServer},
+		Layers:      []Layer{LayerServer, LayerWeb},
 		Stage:       StageAlpha,
 		Issue:       "ptone/scion#9370",
 		Owner:       "@ptone",
@@ -1556,6 +1541,10 @@ var compiledRetired = []string{
 	"hub.authorization_decision_audit_v2",
 	// Graduated: gs:// link previews are always on (ptone/scion#9482).
 	"web.gcs_links",
+	// Graduated: starred messages in native chat are always on (ptone/scion#9485).
+	"web.chat_starred_messages",
+	// Graduated: scheduled send in native chat is always on (ptone/scion#9484).
+	"web.chat_scheduled_send",
 }
 
 // Registry is an immutable, validated set of experiments. It is the only way

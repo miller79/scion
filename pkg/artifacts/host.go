@@ -179,6 +179,23 @@ type MessageScopeHost interface {
 	PermitsUploadRead(ctx context.Context) bool
 }
 
+// SourceMessageRoute identifies the web chat route for a message an artifact
+// version was published from (ptone/scion#4599).
+type SourceMessageRoute struct {
+	// ConversationKey is the chat conversation key: a topic/thread id for a
+	// project thread, or "dm:<kind>:<id>:<kind>:<id>" for a direct message.
+	ConversationKey string
+	// ProjectID is the owning project id for a project thread; empty for a DM.
+	ProjectID string
+}
+
+// MessageRouteHost is an optional extension of Host (ptone/scion#4599) that
+// resolves a source message to its chat conversation route. The service only
+// calls it after confirming the viewer may read the message.
+type MessageRouteHost interface {
+	MessageRoute(ctx context.Context, messageID string) (SourceMessageRoute, bool)
+}
+
 // ScopeExplainer is an optional extension of Host. When a credential
 // lacks a scope that publishing needs, the service asks it which one, so
 // the caller gets a 403 naming the scope instead of an answer that looks
@@ -297,6 +314,11 @@ type InboxNotifier interface {
 // review requests (ptone/scion#9296). A host without it sends no notifications
 // and reports notifySkipped "unavailable" (fail closed).
 type ReviewRequestNotifier interface {
+	// IsInteractiveSession reports whether the caller in ctx holds an
+	// interactive, unscoped user session. Used at the route level before
+	// charging rate limits or entering the per-reviewer loop.
+	IsInteractiveSession(ctx context.Context) bool
+
 	// MayNotifyReviewer checks whether the calling user may see and notify
 	// reviewerUserID (anti-spam user visibility). ok=false, err=nil means the
 	// reviewer is unavailable/not visible; err != nil means a lookup fault.
@@ -310,6 +332,11 @@ type ReviewRequestNotifier interface {
 	// to the requester (and artifact owner if different) after a request is
 	// dismissed. Best effort.
 	NotifyRequestDismissed(ctx context.Context, n ReviewRequestDismissNotice) error
+
+	// RequestClosed best-effort acknowledges the reviewer's unacknowledged
+	// ARTIFACT_REVIEW_REQUESTED notifications for artifactID when a request
+	// is closed (withdrawn, expired, or fulfilled).
+	RequestClosed(ctx context.Context, artifactID, reviewerUserID string)
 }
 
 // ReviewRequestNotice describes a committed review request or reminder.

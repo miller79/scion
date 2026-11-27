@@ -139,9 +139,10 @@ type Layer1Snapshot struct {
 	HasMaintenanceRow bool
 
 	// Telemetry
-	TelemetryEnabled  *bool
-	TelemetryEnforced bool
-	TelemetryConfig   *config.V1TelemetryConfig
+	TelemetryEnabled         *bool
+	TelemetryEnforced        bool
+	TelemetryEnforcedInvalid bool
+	TelemetryConfig          *config.V1TelemetryConfig
 
 	// Auto-expose ports
 	AutoExposePortsEnabled *bool
@@ -750,8 +751,17 @@ func (o *OperationalSettings) Snapshot() Layer1Snapshot {
 		var ts opsettings.TelemetrySettings
 		if err := json.Unmarshal(rawTel, &ts); err != nil {
 			slog.Error("operational settings: cannot decode telemetry DB row for enforced flag", "error", err)
+			var probe struct {
+				Enforced bool `json:"enforced"`
+			}
+			if json.Unmarshal(rawTel, &probe) == nil && probe.Enforced {
+				snap.TelemetryEnforcedInvalid = true
+			}
 		} else if resolved, err := ts.Resolve(); err != nil {
 			slog.Error("operational settings: ignoring invalid telemetry.enforced in DB row", "error", err)
+			if ts.Enforced {
+				snap.TelemetryEnforcedInvalid = true
+			}
 		} else {
 			snap.TelemetryEnforced = resolved.Enforced
 		}
@@ -889,6 +899,18 @@ func (o *OperationalSettings) update(
 	expectedRevision int64,
 	origin string,
 ) (int64, bool, error) {
+	return o.updateInternal(ctx, section, doc, updatedBy, expectedRevision, origin, false)
+}
+
+func (o *OperationalSettings) updateInternal(
+	ctx context.Context,
+	section string,
+	doc json.RawMessage,
+	updatedBy string,
+	expectedRevision int64,
+	origin string,
+	skipAgentLimitsCrossSection bool,
+) (int64, bool, error) {
 	if err := o.checkWriteGuard(ctx, section); err != nil {
 		return 0, false, err
 	}
@@ -897,8 +919,14 @@ func (o *OperationalSettings) update(
 		return 0, false, fmt.Errorf("%w for section %q: %v", ErrSectionValidation, section, errs)
 	}
 	// Cross-section validation between agent_limits ceilings and agent_defaults.
-	if errs := o.validateAgentLimitsCrossSection(section, doc); len(errs) > 0 {
-		return 0, false, fmt.Errorf("%w for section %q: %v", ErrSectionValidation, section, errs)
+	// Skipped only for the first section of a multi-section PUT carrying both
+	// agent_defaults and agent_limits, which was already validated as a pair
+	// upfront by validateAgentLimitsSectionDocs; the second section still runs
+	// this check against the updated cache.
+	if !skipAgentLimitsCrossSection {
+		if errs := o.validateAgentLimitsCrossSection(section, doc); len(errs) > 0 {
+			return 0, false, fmt.Errorf("%w for section %q: %v", ErrSectionValidation, section, errs)
+		}
 	}
 
 	result, err := o.store.UpsertHubSetting(ctx, section, doc, updatedBy, expectedRevision, origin)
@@ -1285,13 +1313,20 @@ func (o *OperationalSettings) runPollBackstop(ctx context.Context, server *Serve
 // ApplySnapshot writes the same values and ApplyMaintenanceFromSnapshot
 // is idempotent by design.
 func (o *OperationalSettings) refreshAndApply(ctx context.Context, server *Server) {
+	if _, err := o.refreshAndApplyResult(ctx, server); err != nil {
+		slog.Error("Settings propagation refresh failed", "error", err)
+	}
+}
+
+// refreshAndApplyResult performs a Refresh, applies any changed sections (or a
+// store reset) to server, and returns the list of changed sections.
+func (o *OperationalSettings) refreshAndApplyResult(ctx context.Context, server *Server) ([]string, error) {
 	o.mu.RLock()
 	generation := o.generation
 	o.mu.RUnlock()
 	changed, err := o.Refresh(ctx)
 	if err != nil {
-		slog.Error("Settings propagation refresh failed", "error", err)
-		return
+		return nil, err
 	}
 	o.mu.RLock()
 	reset := o.generation != generation
@@ -1302,6 +1337,7 @@ func (o *OperationalSettings) refreshAndApply(ctx context.Context, server *Serve
 		ApplySnapshot(server, snap)
 		ApplyMaintenanceFromSnapshot(server, snap)
 	}
+	return changed, nil
 }
 
 // loadSectionDocIntoKoanf loads a single section's JSON document into the

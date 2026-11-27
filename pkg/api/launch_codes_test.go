@@ -56,6 +56,8 @@ func TestLaunchVocabularyValues(t *testing.T) {
 		{LaunchCodeHostedConfigRefused, "hosted_config_refused"},
 		{LaunchCodeAgentPolicyRefused, "agent_policy_refused"},
 		{LaunchCodeWorkspaceNotPermitted, "workspace_not_permitted"},
+		{LaunchCodeLimitCeilingsUnsupported, "limit_ceilings_unsupported"},
+		{LaunchCodeTelemetryEnforcementUnsupported, "telemetry_enforcement_unsupported"},
 		{LaunchCodeImagePullFailed, "image_pull_failed"},
 		{LaunchCodeInvalidImage, "invalid_image"},
 		{LaunchCodeRuntimeUnavailable, "runtime_unavailable"},

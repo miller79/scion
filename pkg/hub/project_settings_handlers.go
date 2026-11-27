@@ -278,6 +278,29 @@ func (s *Server) handleProjectSettings(w http.ResponseWriter, r *http.Request, p
 			}
 		}
 
+		if ceilings := s.agentLimitCeilings(); !ceilings.IsEmpty() {
+			var turns, calls *int
+			var dur string
+			if present[projectSettingsFieldMaxTurns] {
+				turns = merged.DefaultMaxTurns
+			}
+			if present[projectSettingsFieldMaxModelCalls] {
+				calls = merged.DefaultMaxModelCalls
+			}
+			if present[projectSettingsFieldMaxDuration] {
+				dur = merged.DefaultMaxDuration
+			}
+			if v := validateLimitsAgainstCeilings(
+				projectSettingsFieldMaxTurns, turns,
+				projectSettingsFieldMaxModelCalls, calls,
+				projectSettingsFieldMaxDuration, dur,
+				ceilings,
+			); v != nil {
+				writeLimitCeilingRefusal(w, v)
+				return
+			}
+		}
+
 		if present[projectSettingsFieldMaxAgentRole] && merged.MaxAgentRole != "" && !ValidAgentRole(AgentRole(merged.MaxAgentRole)) {
 			BadRequest(w, "maxAgentRole must be one of none, readonly, baseline, full")
 			return
@@ -288,7 +311,8 @@ func (s *Server) handleProjectSettings(w http.ResponseWriter, r *http.Request, p
 			return
 		}
 
-		if present[projectSettingsFieldTelemetryEnabled] && merged.TelemetryEnabled != nil && !*merged.TelemetryEnabled && s.telemetryEnforced() {
+		alreadyStoredFalse := stored != nil && stored.TelemetryEnabled != nil && !*stored.TelemetryEnabled
+		if present[projectSettingsFieldTelemetryEnabled] && merged.TelemetryEnabled != nil && !*merged.TelemetryEnabled && !alreadyStoredFalse && s.telemetryEnforced() {
 			writeError(w, http.StatusConflict, ErrCodeTelemetryEnforcedByHub,
 				"telemetry is enforced by the hub operator and cannot be disabled at the project level",
 				map[string]interface{}{"field": projectSettingsFieldTelemetryEnabled})
@@ -780,6 +804,7 @@ const (
 	projectSettingsFieldThinkingLevel            = "defaultThinkingLevel"
 	projectSettingsFieldMaxTurns                 = "defaultMaxTurns"
 	projectSettingsFieldMaxModelCalls            = "defaultMaxModelCalls"
+	projectSettingsFieldMaxDuration              = "defaultMaxDuration"
 	projectSettingsFieldTelemetryEnabled         = "telemetryEnabled"
 	projectSettingsFieldAutoExposePortsEnabled   = "autoExposePortsEnabled"
 	projectSettingsFieldMaxAgentRole             = "maxAgentRole"

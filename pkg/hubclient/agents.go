@@ -45,6 +45,10 @@ type AgentService interface {
 	// Update updates an agent's metadata.
 	Update(ctx context.Context, agentID string, req *UpdateAgentRequest) (*Agent, error)
 
+	// UpdateLabels merges label additions/updates and removals on an agent
+	// without replacing unrelated labels.
+	UpdateLabels(ctx context.Context, agentID string, req *UpdateAgentLabelsRequest) (*Agent, error)
+
 	// Delete removes an agent.
 	Delete(ctx context.Context, agentID string, opts *DeleteAgentOptions) error
 
@@ -385,6 +389,13 @@ type SubmitEnvRequest struct {
 	Env map[string]string `json:"env"`
 }
 
+// UpdateAgentLabelsRequest is the request body for PATCH /agents/{id}/labels.
+type UpdateAgentLabelsRequest struct {
+	Set          map[string]string `json:"set,omitempty"`
+	Remove       []string          `json:"remove,omitempty"`
+	StateVersion int64             `json:"stateVersion,omitempty"`
+}
+
 // UpdateAgentRequest is the request body for updating an agent.
 type UpdateAgentRequest struct {
 	Name         string            `json:"name,omitempty"`
@@ -591,6 +602,15 @@ func (s *agentService) Update(ctx context.Context, agentID string, req *UpdateAg
 		return nil, err
 	}
 	resp, err := s.c.patch(ctx, s.agentPath(agentID), body, nil)
+	if err != nil {
+		return nil, err
+	}
+	return apiclient.DecodeRequired[Agent](resp)
+}
+
+// UpdateLabels merges label additions/updates and removals on an agent.
+func (s *agentService) UpdateLabels(ctx context.Context, agentID string, req *UpdateAgentLabelsRequest) (*Agent, error) {
+	resp, err := s.c.patch(ctx, s.agentPath(agentID)+"/labels", req, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1216,6 +1236,11 @@ type OutboundMessageResult struct {
 	// Decisions lists the decisions of a decision prompt, one per decision
 	// sent; empty for any other message.
 	Decisions []DecisionSendResult `json:"decisions,omitempty"`
+
+	// DecisionArtifactNotice is set when a --update decision prompt replaces
+	// a prompt that carried artifact references which were omitted from the
+	// new prompt, so the sending agent can catch an accidental drop.
+	DecisionArtifactNotice string `json:"decision_artifact_notice,omitempty"`
 
 	// SecretRequests lists the secret requests of a secret-request prompt, one
 	// per key sent; empty for any other message.

@@ -225,6 +225,9 @@ func (s *Server) softDeleteAgentTx(ctx context.Context, tx store.Store, a *store
 	if err != nil {
 		return fmt.Errorf("soft delete: deactivate service-account assignments: %w", err)
 	}
+	if _, err := tx.WithdrawAgentCommandRequestsOnDelete(ctx, row.ID, now.UTC()); err != nil {
+		return fmt.Errorf("soft delete: withdraw agent command requests: %w", err)
+	}
 	if err := runAgentTxHooks(ctx, "soft-delete", s.lifecycleTxHooks.snapshot(&s.lifecycleTxHooks.softDelete), tx, &row, actor); err != nil {
 		return err
 	}
@@ -303,6 +306,12 @@ func (s *Server) agentHardDeleteWork(ctx context.Context, tx store.Store, a *sto
 	// withAgentSecretCleanup (R4).
 	if _, err := tx.WithdrawAgentSecretRequestsOnDelete(ctx, a.ID, time.Now().UTC()); err != nil {
 		return 0, 0, fmt.Errorf("%s: withdraw agent secret requests: %w", label, err)
+	}
+	// Withdraw pending command requests inside the transaction (approved rows
+	// and command_runs are left untouched, design §4.12); live updates and
+	// audit events are published strictly after commit by withAgentSecretCleanup.
+	if _, err := tx.WithdrawAgentCommandRequestsOnDelete(ctx, a.ID, time.Now().UTC()); err != nil {
+		return 0, 0, fmt.Errorf("%s: withdraw agent command requests: %w", label, err)
 	}
 	if err := runAgentTxHooks(ctx, "hard-delete", s.lifecycleTxHooks.snapshot(&s.lifecycleTxHooks.hardDelete), tx, a, actor); err != nil {
 		return 0, 0, err
@@ -402,80 +411,97 @@ func (s *Server) restoreAgentTx(ctx context.Context, a *store.Agent, actor Audit
 	row.Updated = now
 	hooks := s.lifecycleTxHooks.snapshot(&s.lifecycleTxHooks.restore)
 	lapsedClaim := false
-	err := s.store.WithTx(ctx, func(tx store.Store) error {
-		// An agent whose guard user no longer exists is not restored
-		// (ptone/scion#2769): the user delete refuses while the user has
-		// agents, but soft-deleted agents do not count. The guard user is
-		// chosen as on create (lockAgentGuardUserTx): the owner, else the
-		// ancestry root, else the creator when there is no owner (a
-		// scheduled agent). The check takes a shared lock on that user's
-		// row first, so it serializes with a concurrent user delete on
-		// PostgreSQL. User row first: no path locks an agent, project or
-		// group row and then a user row, so this cannot deadlock with the
-		// delete. A legacy owner that is an existing agent is not refused.
-		if err := lockAgentGuardUserTx(ctx, tx, &row); err != nil {
-			return err
-		}
-		cur, err := tx.GetAgent(ctx, row.ID)
-		if err != nil {
-			return err
-		}
-		if cur.DeletedAt.IsZero() {
-			return errAgentNotSoftDeleted
-		}
-		opID := cur.SoftDeleteOpID
-		if opID != "" {
-			if err := checkRestoreDelegatorsLive(ctx, tx, row.ID, opID); err != nil {
+	runTx := func(effectiveLimit int64) error {
+		return s.store.WithTx(ctx, func(tx store.Store) error {
+			// An agent whose guard user no longer exists is not restored
+			// (ptone/scion#2769): the user delete refuses while the user has
+			// agents, but soft-deleted agents do not count. The guard user is
+			// chosen as on create (lockAgentGuardUserTx): the owner, else the
+			// ancestry root, else the creator when there is no owner (a
+			// scheduled agent). The check takes a shared lock on that user's
+			// row first, so it serializes with a concurrent user delete on
+			// PostgreSQL. User row first: no path locks an agent, project or
+			// group row and then a user row, so this cannot deadlock with the
+			// delete. A legacy owner that is an existing agent is not refused.
+			if err := lockAgentGuardUserTx(ctx, tx, &row); err != nil {
 				return err
 			}
-		}
-		if err := tx.UpdateAgent(ctx, &row); err != nil {
-			return err
-		}
-		if err := tx.SetAgentSoftDeleteOpID(ctx, row.ID, ""); err != nil {
-			return err
-		}
-		if err := tx.ReplaceAgentIdentityKeys(ctx, row.ID, row.ProjectID, api.IdentityKeysFor(row.Slug, row.Name)); err != nil {
-			return err
-		}
-		reactivated, assignmentsReactivated := 0, 0
-		if opID != "" {
-			n, err := tx.ReactivateDelegationEdgesForDelegate(ctx, store.DelegationPrincipalAgent, row.ID, store.EdgeDeactivationAgentSoftDelete, opID)
-			if errors.Is(err, store.ErrAlreadyExists) {
-				return fmt.Errorf("%w: %w", errRestoreEdgeConflict, err)
-			}
+			cur, err := tx.GetAgent(ctx, row.ID)
 			if err != nil {
-				return fmt.Errorf("restore: reactivate delegation edges: %w", err)
+				return err
 			}
-			reactivated = n
-			// The assignment the soft delete deactivated returns with the
-			// edges; a newer active assignment is a conflict.
-			m, err := tx.ReactivateAgentServiceAccountAssignments(ctx, row.ID, store.EdgeDeactivationAgentSoftDelete, opID)
-			if errors.Is(err, store.ErrAlreadyExists) {
-				return fmt.Errorf("%w: %w", errRestoreEdgeConflict, err)
+			if cur.DeletedAt.IsZero() {
+				return errAgentNotSoftDeleted
 			}
+			if effectiveLimit > 0 && cur.SuspendPolicy == store.SuspendPolicyNever {
+				if err := checkNeverSuspendQuotaInTx(ctx, tx, cur.ProjectID, effectiveLimit); err != nil {
+					return err
+				}
+			}
+			opID := cur.SoftDeleteOpID
+			if opID != "" {
+				if err := checkRestoreDelegatorsLive(ctx, tx, row.ID, opID); err != nil {
+					return err
+				}
+			}
+			if err := tx.UpdateAgent(ctx, &row); err != nil {
+				return err
+			}
+			if err := tx.SetAgentSoftDeleteOpID(ctx, row.ID, ""); err != nil {
+				return err
+			}
+			if err := tx.ReplaceAgentIdentityKeys(ctx, row.ID, row.ProjectID, api.IdentityKeysFor(row.Slug, row.Name)); err != nil {
+				return err
+			}
+			reactivated, assignmentsReactivated := 0, 0
+			if opID != "" {
+				n, err := tx.ReactivateDelegationEdgesForDelegate(ctx, store.DelegationPrincipalAgent, row.ID, store.EdgeDeactivationAgentSoftDelete, opID)
+				if errors.Is(err, store.ErrAlreadyExists) {
+					return fmt.Errorf("%w: %w", errRestoreEdgeConflict, err)
+				}
+				if err != nil {
+					return fmt.Errorf("restore: reactivate delegation edges: %w", err)
+				}
+				reactivated = n
+				// The assignment the soft delete deactivated returns with the
+				// edges; a newer active assignment is a conflict.
+				m, err := tx.ReactivateAgentServiceAccountAssignments(ctx, row.ID, store.EdgeDeactivationAgentSoftDelete, opID)
+				if errors.Is(err, store.ErrAlreadyExists) {
+					return fmt.Errorf("%w: %w", errRestoreEdgeConflict, err)
+				}
+				if err != nil {
+					return fmt.Errorf("restore: reactivate service-account assignments: %w", err)
+				}
+				assignmentsReactivated = m
+			}
+			if err := runAgentTxHooks(ctx, "restore", hooks, tx, &row, actor); err != nil {
+				return err
+			}
+			record, err := lifecycleAudit(mutationTypeAgentRestore, row.ID, actor, now, struct {
+				OpID                   string `json:"op_id,omitempty"`
+				EdgesReactivated       int    `json:"edges_reactivated"`
+				AssignmentsReactivated int    `json:"assignments_reactivated"`
+			}{opID, reactivated, assignmentsReactivated})
 			if err != nil {
-				return fmt.Errorf("restore: reactivate service-account assignments: %w", err)
+				return err
 			}
-			assignmentsReactivated = m
-		}
-		if err := runAgentTxHooks(ctx, "restore", hooks, tx, &row, actor); err != nil {
-			return err
-		}
-		record, err := lifecycleAudit(mutationTypeAgentRestore, row.ID, actor, now, struct {
-			OpID                   string `json:"op_id,omitempty"`
-			EdgesReactivated       int    `json:"edges_reactivated"`
-			AssignmentsReactivated int    `json:"assignments_reactivated"`
-		}{opID, reactivated, assignmentsReactivated})
-		if err != nil {
-			return err
-		}
-		if err := tx.CreateMutationAudit(ctx, record); err != nil {
-			return fmt.Errorf("restore audit: %w", err)
-		}
-		lapsedClaim = cur.DeletionState == store.DeletionStateDeleting
-		return nil
-	})
+			if err := tx.CreateMutationAudit(ctx, record); err != nil {
+				return fmt.Errorf("restore audit: %w", err)
+			}
+			lapsedClaim = cur.DeletionState == store.DeletionStateDeleting
+			return nil
+		})
+	}
+	var err error
+	// Deciding whether to take the per-project never-suspend quota lock from
+	// the pre-tx snapshot is safe because SetAgentSuspendPolicy refuses
+	// soft-deleted rows (deleted_at IS NULL), so a soft-deleted agent's
+	// suspend_policy cannot transition while it remains soft-deleted.
+	if a.SuspendPolicy == store.SuspendPolicyNever {
+		err = s.withNeverSuspendQuotaLock(ctx, projectQuotaSubject(a), a.ProjectID, runTx)
+	} else {
+		err = runTx(0)
+	}
 	if err != nil {
 		return err
 	}

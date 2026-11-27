@@ -24,6 +24,8 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as featureFlags from './feature-flags.js';
+import * as chatScheduled from '../client/chat-scheduled.js';
+import * as chatStars from '../client/chat-stars.js';
 import * as filterQuery from '../shared/filter-query/index.js';
 import {
   DECISIONS_FLAG,
@@ -71,15 +73,43 @@ describe('feature-flags: web.agent_edit', () => {
   });
 });
 
-describe('feature-flags: web.chat_starred_messages', () => {
-  it('defaults ON (in DEFAULT_ON_FLAGS) with no server value or override', () => {
-    expect(isFeatureEnabled('web.chat_starred_messages')).toBe(true);
+describe('feature-flags: starred messages flag removed', () => {
+  it('does not export CHAT_STARRED_MESSAGES_EXPERIMENT or starredMessagesEnabled from chat-stars', () => {
+    // Type-level check: neither symbol is exported from client/chat-stars.ts.
+    type HasFlag = 'CHAT_STARRED_MESSAGES_EXPERIMENT' extends keyof typeof chatStars ? true : false;
+    type HasHelper = 'starredMessagesEnabled' extends keyof typeof chatStars ? true : false;
+    const hasFlag: HasFlag = false;
+    const hasHelper: HasHelper = false;
+    expect(hasFlag).toBe(false);
+    expect(hasHelper).toBe(false);
+    expect((chatStars as Record<string, unknown>).CHAT_STARRED_MESSAGES_EXPERIMENT).toBeUndefined();
+    expect((chatStars as Record<string, unknown>).starredMessagesEnabled).toBeUndefined();
   });
 
-  it('the server can still turn it off', () => {
-    setServerFlags({ 'web.chat_starred_messages': false });
+  // The one allowed reference to the retired name outside compiledRetired
+  // (see the experiment-removal checklist).
+  it('the retired name resolves OFF by default (not in DEFAULT_ON_FLAGS)', () => {
     expect(isFeatureEnabled('web.chat_starred_messages')).toBe(false);
   });
+});
+
+describe('feature-flags: batch-1 default-on experiments', () => {
+  const defaultOnBatch = [
+    'hub.artifacts',
+    'hub.flat_runtime_brokers',
+    'hub.user_delete_force_cascade',
+    'web.artifact_manage_access',
+    'web.artifact_review_editor',
+    'web.sse_hidden_tab_close',
+  ] as const;
+
+  for (const name of defaultOnBatch) {
+    it(`${name} defaults ON (in DEFAULT_ON_FLAGS) and can be disabled by the server`, () => {
+      expect(isFeatureEnabled(name)).toBe(true);
+      setServerFlags({ [name]: false });
+      expect(isFeatureEnabled(name)).toBe(false);
+    });
+  }
 });
 
 describe('feature-flags: access boundary flags removed', () => {
@@ -236,6 +266,34 @@ describe('feature-flags: gs:// links flag removed', () => {
   // (see the experiment-removal checklist).
   it('the retired name resolves OFF by default (not in DEFAULT_ON_FLAGS)', () => {
     expect(isFeatureEnabled('web.gcs_links')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Removed scheduled send flag (graduated, ptone/scion#9484)
+// ---------------------------------------------------------------------------
+
+describe('feature-flags: scheduled send flag removed', () => {
+  it('does not export CHAT_SCHEDULED_SEND_EXPERIMENT or scheduledSendEnabled from chat-scheduled', () => {
+    // Type-level check: neither symbol is exported from client/chat-scheduled.ts.
+    type HasFlag = 'CHAT_SCHEDULED_SEND_EXPERIMENT' extends keyof typeof chatScheduled
+      ? true
+      : false;
+    type HasHelper = 'scheduledSendEnabled' extends keyof typeof chatScheduled ? true : false;
+    const hasFlag: HasFlag = false;
+    const hasHelper: HasHelper = false;
+    expect(hasFlag).toBe(false);
+    expect(hasHelper).toBe(false);
+    expect(
+      (chatScheduled as Record<string, unknown>).CHAT_SCHEDULED_SEND_EXPERIMENT
+    ).toBeUndefined();
+    expect((chatScheduled as Record<string, unknown>).scheduledSendEnabled).toBeUndefined();
+  });
+
+  // The one allowed reference to the retired name outside compiledRetired
+  // (see the experiment-removal checklist).
+  it('the retired name resolves OFF by default (not in DEFAULT_ON_FLAGS)', () => {
+    expect(isFeatureEnabled('web.chat_scheduled_send')).toBe(false);
   });
 });
 

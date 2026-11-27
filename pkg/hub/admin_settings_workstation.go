@@ -208,7 +208,7 @@ func (s *Server) hostedBootstrapChanges(ctx context.Context, ops *OperationalSet
 	}
 	var leaves []classified
 	for _, l := range presentBodyLeaves(top, reflect.TypeOf(ServerConfigUpdateDBRequest{}), nil, nil) {
-		if l.path[0] == "expected_revisions" {
+		if l.path[0] == "expected_revisions" || l.path[0] == opsettings.AgentLimitsSectionName {
 			continue
 		}
 		// Error-code precedence follows the registry classification, not
@@ -341,7 +341,7 @@ func pathHasPrefixPath(p, prefix []string) bool {
 // on a workstation hub: Layer-0, unclassified or file-only. Layer-1 leaves
 // go to the DB; the unwritten Layer-1 keys are rejected elsewhere.
 func isWorkstationFileLeaf(path []string) bool {
-	if len(path) == 0 || path[0] == "expected_revisions" {
+	if len(path) == 0 || path[0] == "expected_revisions" || path[0] == opsettings.AgentLimitsSectionName {
 		return false
 	}
 	for _, p := range dbUnwrittenLayer1Paths {
@@ -730,6 +730,10 @@ var startupCheckedFileBlocks = []struct {
 	}},
 	{[]string{"server", "hub", "chat"}, func(gc *config.GlobalConfig) error { return gc.Hub.Chat.Search.Validate() }},
 	{[]string{"server", "relay"}, func(gc *config.GlobalConfig) error { return gc.Relay.Validate() }},
+	{[]string{"server", "broker", "conduit_deliver_runtimes"}, func(gc *config.GlobalConfig) error {
+		_, err := config.NormalizeConduitDeliverRuntimes(gc.RuntimeBroker.ConduitDeliverRuntimes)
+		return err
+	}},
 }
 
 // filterStartupFileBlockKeys returns the subset of keys (preserving order)

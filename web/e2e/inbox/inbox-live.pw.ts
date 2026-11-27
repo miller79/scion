@@ -31,6 +31,7 @@
  *      Page 1 and Page 2 without reloading.
  */
 
+import { createHash } from 'node:crypto';
 import { test, expect } from '@playwright/test';
 import { createTestAgent, type AgentSender } from '../harness/agent.js';
 import { createSession, type AuthSession } from '../harness/auth.js';
@@ -131,21 +132,21 @@ test.describe('Inbox Dashboard live updates on real hub (ptone/scion#8962 AC10)'
     page2.on('pageerror', (err) => pageErrors.push(`page2: ${err.message}`));
 
     try {
-      // Page 1: /profile/inbox starts with Pending Secrets empty ("Nothing Waiting",
+      // Page 1: /profile/inbox starts with Secrets empty ("Nothing Waiting",
       // count badge hidden, no inline links or footer actions).
       await page1.goto('/profile/inbox', { waitUntil: 'domcontentloaded' });
-      const pendingSecretsCard = page1.locator('[data-inbox-card="pending_secrets"]');
+      const secretsCard = page1.locator('[data-inbox-card="secrets"]');
       const profileNavBadge = page1
         .locator('scion-profile-nav')
         .first()
         .locator('[data-inbox-nav-badge]');
-      await expect(pendingSecretsCard).toBeVisible({ timeout: 15_000 });
-      await expect(pendingSecretsCard.locator('[data-card-count]')).toHaveCount(0);
-      await expect(pendingSecretsCard.locator('[data-card-empty]')).toHaveText('Nothing Waiting', {
+      await expect(secretsCard).toBeVisible({ timeout: 15_000 });
+      await expect(secretsCard.locator('[data-card-count]')).toHaveCount(0);
+      await expect(secretsCard.locator('[data-card-empty]')).toHaveText('Nothing Waiting', {
         timeout: 10_000,
       });
-      await expect(pendingSecretsCard.locator('a.card-prose-link')).toHaveCount(0);
-      await expect(pendingSecretsCard.locator('.card-actions')).toHaveCount(0);
+      await expect(secretsCard.locator('a.card-prose-link')).toHaveCount(0);
+      await expect(secretsCard.locator('.card-actions')).toHaveCount(0);
       await expect(profileNavBadge).toHaveCount(0);
 
       // Page 2: main app shell on `/` mounts the sidebar Inbox link and bell tray.
@@ -185,19 +186,19 @@ test.describe('Inbox Dashboard live updates on real hub (ptone/scion#8962 AC10)'
 
       // Within ~5 s and without reloading, Page 1's summary card prose, count badge,
       // inline key-noun link, and profile nav badge update.
-      await expect(pendingSecretsCard.locator('[data-card-count]')).toHaveText('1', {
+      await expect(secretsCard.locator('[data-card-count]')).toHaveText('1', {
         timeout: 7_000,
       });
-      await expect(pendingSecretsCard.locator('[data-card-prose]')).toHaveText(
-        '1 pending secret from 1 agent in 1 project',
+      await expect(secretsCard.locator('[data-card-prose]')).toHaveText(
+        '1 pending secret to approve, across 1 project',
         { timeout: 7_000 }
       );
-      const inlineLink = pendingSecretsCard.locator('[data-card-prose] a.card-prose-link');
+      const inlineLink = secretsCard.locator('[data-card-prose] a.card-prose-link');
       await expect(inlineLink).toHaveCount(1);
       await expect(inlineLink).toHaveText('1 pending secret');
       await expect(inlineLink).toHaveAttribute('href', '/profile/secrets');
       await expect(inlineLink).toHaveCSS('text-decoration-line', 'underline');
-      await expect(pendingSecretsCard.locator('.card-actions')).toHaveCount(0);
+      await expect(secretsCard.locator('.card-actions')).toHaveCount(0);
       await expect(profileNavBadge).toHaveText('1', { timeout: 7_000 });
 
       // Page 2 (second tab in the same context) converges without reload:
@@ -222,13 +223,13 @@ test.describe('Inbox Dashboard live updates on real hub (ptone/scion#8962 AC10)'
       expect(rejectRes.body.state).toBe('rejected');
 
       // Page 1 hides the count badge & inline link, restores "Nothing Waiting", and clears profile nav badge.
-      await expect(pendingSecretsCard.locator('[data-card-count]')).toHaveCount(0, {
+      await expect(secretsCard.locator('[data-card-count]')).toHaveCount(0, {
         timeout: 7_000,
       });
-      await expect(pendingSecretsCard.locator('[data-card-empty]')).toHaveText('Nothing Waiting', {
+      await expect(secretsCard.locator('[data-card-empty]')).toHaveText('Nothing Waiting', {
         timeout: 7_000,
       });
-      await expect(pendingSecretsCard.locator('a.card-prose-link')).toHaveCount(0, {
+      await expect(secretsCard.locator('a.card-prose-link')).toHaveCount(0, {
         timeout: 7_000,
       });
       await expect(profileNavBadge).toHaveCount(0, { timeout: 7_000 });
@@ -251,6 +252,411 @@ test.describe('Inbox Dashboard live updates on real hub (ptone/scion#8962 AC10)'
       );
       expect(sentinel1).toBe('alive');
       expect(sentinel2).toBe('alive');
+
+      expect(pageErrors).toEqual([]);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('chat card shows starred/projects summary, live-updates on star/unstar without changing total, and hydrates ?filter=mentions|starred with 200px rail fit (Phase 3 AC-8, AC-10)', async ({
+    browser,
+  }) => {
+    const context = await browser.newContext({
+      baseURL: hub.baseURL,
+      storageState: user.storageStatePath,
+    });
+    const page = await context.newPage();
+    const pageErrors: string[] = [];
+    page.on('pageerror', (err) => pageErrors.push(err.message));
+
+    try {
+      const createTopic = async (name: string): Promise<string> => {
+        const res = await hubApi<{ id: string }>(
+          hub,
+          hub.devToken,
+          'POST',
+          `/api/v1/chat/spaces/${encodeURIComponent(projectId)}/threads`,
+          { name }
+        );
+        expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+        return res.body.id;
+      };
+
+      const postAsDev = async (topicId: string, content: string): Promise<string> => {
+        const res = await hubApi<{ id: string }>(
+          hub,
+          hub.devToken,
+          'POST',
+          `/api/v1/chat/conversations/${encodeURIComponent(topicId)}/messages`,
+          { content }
+        );
+        expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+        return res.body.id;
+      };
+
+      const plainTopic = await createTopic(`plain-${Date.now()}`);
+      const mentionTopic = await createTopic(`mentions-${Date.now()}`);
+      await postAsDev(plainTopic, 'Routine update without mention');
+      const mentionMsgId = await postAsDev(
+        mentionTopic,
+        `Attention @${user.user.email} please review`
+      );
+
+      await page.goto('/profile/inbox', { waitUntil: 'domcontentloaded' });
+      const chatCard = page.locator('[data-inbox-card="chat"]');
+      await expect(chatCard).toBeVisible({ timeout: 15_000 });
+      await expect(chatCard.locator('[data-card-count]')).toHaveText('2', { timeout: 10_000 });
+      await expect(chatCard.locator('[data-card-prose]')).toHaveText(
+        '2 unread conversations, 1 with mentions across 1 project',
+        { timeout: 10_000 }
+      );
+      await expect(chatCard.locator('a[data-card-prose-link="chat-unread"]')).toHaveAttribute(
+        'href',
+        '/chat?filter=unread'
+      );
+      await expect(chatCard.locator('a[data-card-prose-link="chat-mentions"]')).toHaveAttribute(
+        'href',
+        '/chat?filter=mentions'
+      );
+      await expect(chatCard.locator('a[data-card-prose-link="chat-starred"]')).toHaveCount(0);
+
+      // Plant sentinel to prove star/unstar updates happen without page reload.
+      await page.evaluate(() => {
+        (window as unknown as { __chatStarSentinel?: string }).__chatStarSentinel = 'alive';
+      });
+
+      // Star a message via the session's browser fetch (cookie auth).
+      const starStatus = await page.evaluate(
+        async ({ msgId, convKey }) => {
+          const res = await fetch(`/api/v1/chat/stars/${encodeURIComponent(msgId)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ conversationKey: convKey }),
+          });
+          return res.status;
+        },
+        { msgId: mentionMsgId, convKey: mentionTopic }
+      );
+      expect(starStatus).toBeLessThan(300);
+
+      // Live update adds starred clause & link; badge total stays 2 (AC-10).
+      await expect(chatCard.locator('[data-card-prose]')).toHaveText(
+        '2 unread conversations, 1 with mentions, 1 starred message across 1 project',
+        { timeout: 7_000 }
+      );
+      await expect(chatCard.locator('a[data-card-prose-link="chat-starred"]')).toHaveAttribute(
+        'href',
+        '/chat?filter=starred'
+      );
+      await expect(chatCard.locator('[data-card-count]')).toHaveText('2');
+
+      // Unstar the message; starred clause & link disappear without reload.
+      const unstarStatus = await page.evaluate(async (msgId) => {
+        const res = await fetch(`/api/v1/chat/stars/${encodeURIComponent(msgId)}`, {
+          method: 'DELETE',
+        });
+        return res.status;
+      }, mentionMsgId);
+      expect(unstarStatus).toBe(204);
+
+      await expect(chatCard.locator('[data-card-prose]')).toHaveText(
+        '2 unread conversations, 1 with mentions across 1 project',
+        { timeout: 7_000 }
+      );
+      await expect(chatCard.locator('a[data-card-prose-link="chat-starred"]')).toHaveCount(0);
+
+      const sentinel = await page.evaluate(
+        () => (window as unknown as { __chatStarSentinel?: string }).__chatStarSentinel
+      );
+      expect(sentinel).toBe('alive');
+
+      // Click the "1 with mentions" link -> /chat?filter=mentions hydrates, strips param, persists.
+      await chatCard.locator('a[data-card-prose-link="chat-mentions"]').click();
+      const rail = page.locator('scion-chat-space-rail');
+      await expect(rail).toBeVisible({ timeout: 15_000 });
+      await expect
+        .poll(() => new URL(page.url()).searchParams.has('filter'), { timeout: 5_000 })
+        .toBe(false);
+      const storedFilter = await page.evaluate(() =>
+        localStorage.getItem('scion-chat-space-filter')
+      );
+      expect(storedFilter).toBe('mentions');
+
+      const unreadBtn = rail.locator('.filter-toggle button', { hasText: 'Unread' });
+      const mentionsChip = rail.locator('[data-mentions-chip]');
+      await expect(unreadBtn).toHaveAttribute('aria-pressed', 'true');
+      await expect(mentionsChip).toBeVisible();
+      await expect(mentionsChip).toHaveAttribute('aria-pressed', 'true');
+
+      // Expand the shown space and confirm only the mentioned thread appears (plain unread thread and Unread DMs hidden).
+      const spaceHeader = rail.locator('.space-header').first();
+      await expect(spaceHeader).toBeVisible({ timeout: 10_000 });
+      await spaceHeader.click();
+      await expect(rail.locator('.thread-item .thread-name', { hasText: 'mentions-' })).toBeVisible(
+        { timeout: 10_000 }
+      );
+      await expect(rail.locator('.thread-item .thread-name', { hasText: 'plain-' })).toHaveCount(0);
+      await expect(rail.locator('.dm-section')).toHaveCount(0);
+
+      // AC-8 extended: toolbar and individual filter button labels do not overflow or clip across 200-260px rail widths.
+      for (const width of [200, 230, 240, 260]) {
+        const probe = await page.evaluate((w) => {
+          const chatPage = document.querySelector('scion-page-chat');
+          const railWrap = chatPage?.shadowRoot?.querySelector<HTMLElement>('.v2-rail');
+          if (railWrap) {
+            railWrap.style.width = `${w}px`;
+            railWrap.style.minWidth = `${w}px`;
+            railWrap.style.maxWidth = `${w}px`;
+          }
+          const railEl = chatPage?.shadowRoot?.querySelector('scion-chat-space-rail');
+          const toolbar = railEl?.shadowRoot?.querySelector<HTMLElement>('.rail-toolbar');
+          const subfilter = railEl?.shadowRoot?.querySelector<HTMLElement>('.rail-subfilter');
+          const buttons = Array.from(
+            railEl?.shadowRoot?.querySelectorAll<HTMLElement>('.filter-toggle button') ?? []
+          );
+          const buttonOverflows = buttons.map((b) => ({
+            label: b.textContent?.trim() ?? '',
+            scrollWidth: b.scrollWidth,
+            clientWidth: b.clientWidth,
+            clipped: b.scrollWidth > b.clientWidth + 1,
+          }));
+          return {
+            width: w,
+            railWidth: railEl?.getBoundingClientRect().width ?? 0,
+            toolbarOverflow: toolbar ? toolbar.scrollWidth > toolbar.clientWidth + 1 : true,
+            subfilterOverflow: subfilter ? subfilter.scrollWidth > subfilter.clientWidth + 1 : true,
+            buttonOverflows,
+          };
+        }, width);
+        expect(probe.railWidth, `width=${width}`).toBeLessThanOrEqual(width + 1);
+        expect(probe.toolbarOverflow, `width=${width}`).toBe(false);
+        expect(probe.subfilterOverflow, `width=${width}`).toBe(false);
+        expect(probe.buttonOverflows.length, `width=${width}`).toBeGreaterThanOrEqual(3);
+        expect(
+          probe.buttonOverflows.every((b) => !b.clipped),
+          `width=${width}: ${JSON.stringify(probe.buttonOverflows)}`
+        ).toBe(true);
+      }
+
+      // Hydrate ?filter=starred directly -> Starred active, chip hidden, param stripped.
+      await page.goto('/chat?filter=starred', { waitUntil: 'domcontentloaded' });
+      await expect(rail).toBeVisible({ timeout: 15_000 });
+      await expect
+        .poll(() => new URL(page.url()).searchParams.has('filter'), { timeout: 5_000 })
+        .toBe(false);
+      await expect(rail.locator('.filter-toggle button', { hasText: 'Starred' })).toHaveAttribute(
+        'aria-pressed',
+        'true'
+      );
+      await expect(rail.locator('[data-mentions-chip]')).toHaveCount(0);
+
+      expect(pageErrors).toEqual([]);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('Artifact Reviews card renders to-address, requested and drafts links, live-updates on draft create/delete without changing badge total, and hydrates /artifacts filters (Phase 4 AC-9, AC-10)', async ({
+    browser,
+  }) => {
+    const context = await browser.newContext({
+      baseURL: hub.baseURL,
+      storageState: user.storageStatePath,
+    });
+    const page = await context.newPage();
+    const pageErrors: string[] = [];
+    page.on('pageerror', (err) => pageErrors.push(err.message));
+
+    const publishArtifact = async (
+      token: string,
+      opts: {
+        artifactId?: string;
+        title?: string;
+        kind?: 'publish' | 'review';
+        bodyText: string;
+      }
+    ): Promise<{ id: string; seq: number }> => {
+      const data = Buffer.from(opts.bodyText, 'utf-8');
+      const sha256 = createHash('sha256').update(data).digest('hex');
+      const req: Record<string, unknown> = {
+        entry: 'doc.md',
+        files: [{ path: 'doc.md', size: data.length, sha256 }],
+      };
+      if (opts.title) req.title = opts.title;
+      if (opts.kind) req.kind = opts.kind;
+      if (!opts.artifactId) req.scope = projectId;
+
+      const created = await hubApi<{
+        artifact: { id: string };
+        version: { seq: number };
+        upload: { required?: string[] };
+      }>(
+        hub,
+        token,
+        'POST',
+        opts.artifactId
+          ? `/api/v1/artifacts/${encodeURIComponent(opts.artifactId)}/versions`
+          : '/api/v1/artifacts',
+        req
+      );
+      expect(created.status, JSON.stringify(created.body)).toBeLessThan(300);
+      const { id } = created.body.artifact;
+      const { seq } = created.body.version;
+      for (const path of created.body.upload.required ?? []) {
+        const upRes = await fetch(
+          `${hub.baseURL}/api/v1/artifacts/${encodeURIComponent(id)}/versions/${seq}/files/${encodeURIComponent(path)}`,
+          {
+            method: 'PUT',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/octet-stream',
+              'X-Content-SHA256': sha256,
+            },
+            body: data,
+            signal: AbortSignal.timeout(15_000),
+          }
+        );
+        expect(upRes.status, await upRes.text()).toBeLessThan(300);
+      }
+      const fin = await hubApi(
+        hub,
+        token,
+        'POST',
+        `/api/v1/artifacts/${encodeURIComponent(id)}/versions/${seq}/finalize`,
+        opts.kind === 'review' ? { base: 1 } : undefined
+      );
+      expect(fin.status, JSON.stringify(fin.body)).toBeLessThan(300);
+      return { id, seq };
+    };
+
+    try {
+      const stamp = Date.now();
+      const ownedTitle = `Owned Reviewed Doc ${stamp}`;
+      const requestedTitle = `Requested Review Doc ${stamp}`;
+
+      // 1. User owns an artifact with a submitted review on latest -> toAddress = 1.
+      const owned = await publishArtifact(user.accessToken, {
+        title: ownedTitle,
+        bodyText: '# Owned doc\nInitial version.\n',
+      });
+      await publishArtifact(user.accessToken, {
+        artifactId: owned.id,
+        kind: 'review',
+        bodyText: '# Owned doc\nInitial version.{>>Looks good with minor edits<<}\n',
+      });
+
+      // 2. Dev admin publishes an artifact in the project and requests review from user -> requested = 1.
+      const reqArt = await publishArtifact(hub.devToken, {
+        title: requestedTitle,
+        bodyText: '# Requested doc\nPlease review.\n',
+      });
+      const reqRes = await hubApi(
+        hub,
+        hub.devToken,
+        'POST',
+        `/api/v1/artifacts/${encodeURIComponent(reqArt.id)}/review-requests`,
+        { reviewers: [`user:${user.user.id}`], note: 'Please check' }
+      );
+      expect(reqRes.status, JSON.stringify(reqRes.body)).toBe(200);
+
+      // Open /profile/inbox and verify Artifact Reviews card with toAddress=1, requested=1 (drafts=0 dropped).
+      await page.goto('/profile/inbox', { waitUntil: 'domcontentloaded' });
+      const reviewsCard = page.locator('[data-inbox-card="reviews"]');
+      await expect(reviewsCard).toBeVisible({ timeout: 15_000 });
+      await expect(reviewsCard.locator('.card-title')).toHaveText('Artifact Reviews');
+      await expect(reviewsCard.locator('[data-card-count]')).toHaveText('2', { timeout: 10_000 });
+      await expect(reviewsCard.locator('[data-card-prose]')).toHaveText(
+        '1 review to address, 1 review requested',
+        { timeout: 10_000 }
+      );
+      await expect(
+        reviewsCard.locator('a[data-card-prose-link="reviews-to-address"]')
+      ).toHaveAttribute('href', '/artifacts?review_on_latest=1&owner=me');
+      await expect(
+        reviewsCard.locator('a[data-card-prose-link="reviews-requested"]')
+      ).toHaveAttribute('href', '/artifacts?requested=1');
+      await expect(reviewsCard.locator('a[data-card-prose-link="reviews-drafts"]')).toHaveCount(0);
+
+      // Plant sentinel to verify draft create/delete live-updates via SSE without page reload.
+      await page.evaluate(() => {
+        (window as unknown as { __reviewsSentinel?: string }).__reviewsSentinel = 'alive';
+      });
+
+      // 3. Save a review draft -> live update adds "1 unfinished draft" without changing badge count 2 (AC-10).
+      const putDraftRes = await hubApi(
+        hub,
+        user.accessToken,
+        'PUT',
+        `/api/v1/artifacts/${encodeURIComponent(reqArt.id)}/review-draft`,
+        {
+          rev: 0,
+          base: 1,
+          entry: 'doc.md',
+          body: '# Requested doc\nPlease review.{>>WIP note<<}\n',
+        }
+      );
+      expect(putDraftRes.status, JSON.stringify(putDraftRes.body)).toBe(200);
+
+      await expect(reviewsCard.locator('[data-card-prose]')).toHaveText(
+        '1 review to address, 1 review requested, 1 unfinished draft',
+        { timeout: 7_000 }
+      );
+      await expect(reviewsCard.locator('a[data-card-prose-link="reviews-drafts"]')).toHaveAttribute(
+        'href',
+        '/artifacts?drafts=1'
+      );
+      await expect(reviewsCard.locator('[data-card-count]')).toHaveText('2');
+
+      const sentinel = await page.evaluate(
+        () => (window as unknown as { __reviewsSentinel?: string }).__reviewsSentinel
+      );
+      expect(sentinel).toBe('alive');
+
+      // 4. Verify each of the three links hydrates the /artifacts list with row count matching the card's number (AC-9).
+      const checkArtifactsLink = async (
+        linkKey: string,
+        expectedCount: number,
+        expectedTitle: string,
+        unexpectedTitle: string
+      ): Promise<void> => {
+        await page.goto('/profile/inbox', { waitUntil: 'domcontentloaded' });
+        const link = page.locator(
+          `[data-inbox-card="reviews"] a[data-card-prose-link="${linkKey}"]`
+        );
+        await expect(link).toBeVisible({ timeout: 15_000 });
+        await link.click();
+        const artifactsPage = page.locator('scion-page-artifacts');
+        await expect(artifactsPage).toBeVisible({ timeout: 15_000 });
+        await expect(artifactsPage.locator('tbody tr')).toHaveCount(expectedCount, {
+          timeout: 15_000,
+        });
+        await expect(artifactsPage).toContainText(expectedTitle, { timeout: 15_000 });
+        await expect(artifactsPage).not.toContainText(unexpectedTitle);
+      };
+
+      await checkArtifactsLink('reviews-to-address', 1, ownedTitle, requestedTitle);
+      await checkArtifactsLink('reviews-requested', 1, requestedTitle, ownedTitle);
+      await checkArtifactsLink('reviews-drafts', 1, requestedTitle, ownedTitle);
+
+      // 5. Delete the draft -> live update removes the drafts clause without reload.
+      await page.goto('/profile/inbox', { waitUntil: 'domcontentloaded' });
+      await expect(reviewsCard.locator('[data-card-prose]')).toHaveText(
+        '1 review to address, 1 review requested, 1 unfinished draft',
+        { timeout: 10_000 }
+      );
+      const delDraftRes = await hubApi(
+        hub,
+        user.accessToken,
+        'DELETE',
+        `/api/v1/artifacts/${encodeURIComponent(reqArt.id)}/review-draft`
+      );
+      expect(delDraftRes.status, JSON.stringify(delDraftRes.body)).toBe(204);
+      await expect(reviewsCard.locator('[data-card-prose]')).toHaveText(
+        '1 review to address, 1 review requested',
+        { timeout: 7_000 }
+      );
+      await expect(reviewsCard.locator('a[data-card-prose-link="reviews-drafts"]')).toHaveCount(0);
 
       expect(pageErrors).toEqual([]);
     } finally {

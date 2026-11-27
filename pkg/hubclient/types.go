@@ -360,6 +360,15 @@ type ResolvedProjectSetting struct {
 	// HubValue is the raw hub-configured value when HubDefault is "present",
 	// null otherwise. Informational only — not an effective value.
 	HubValue any `json:"hubValue"`
+	// Ceiling is the active Hub run-limit ceiling for this setting when
+	// configured and enabled, null otherwise.
+	Ceiling any `json:"ceiling"`
+	// LockedBy reports the layer locking this setting ("hub"), or null when unlocked.
+	LockedBy *string `json:"lockedBy"`
+	// Effective is the enforced value when LockedBy is non-null, null otherwise.
+	Effective any `json:"effective"`
+	// StoredValue is the shadowed project value when LockedBy is non-null, null otherwise.
+	StoredValue any `json:"storedValue"`
 }
 
 // ResolvedProjectSettings is the GET /api/v1/projects/{id}/settings/resolved
@@ -509,6 +518,9 @@ type BrokerCapabilities struct {
 	// (ptone/scion#5605; store.BrokerCapabilities.UnlimitedCountLimits is
 	// its counterpart).
 	UnlimitedCountLimits bool `json:"unlimitedCountLimits,omitempty"`
+	// LimitCeilings indicates the broker enforces Hub-supplied LimitCeilings
+	// (store.BrokerCapabilities.LimitCeilings is its counterpart).
+	LimitCeilings bool `json:"limitCeilings,omitempty"`
 	// ClearedResourceSubfields indicates the broker applies the resources
 	// sub-field entries of cleared_fields at start (ptone/scion#5676;
 	// store.BrokerCapabilities.ClearedResourceSubfields is its

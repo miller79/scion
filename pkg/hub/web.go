@@ -3485,6 +3485,10 @@ func isCompressBypassPath(path string) bool {
 	if len(segs) >= 2 && segs[0] == "secret-requests" {
 		return true
 	}
+	// Command request output returns captured execution container output.
+	if len(segs) == 3 && segs[0] == "command-requests" && segs[2] == "output" {
+		return true
+	}
 	// POST /api/v1/projects/{projectId}/webhook-endpoints and
 	// POST /api/v1/projects/{projectId}/webhook-endpoints/{id}/rotate-secret
 	// return one-time HMAC signing secrets.
@@ -3500,14 +3504,15 @@ func isCompressBypassPath(path string) bool {
 			return true
 		case "agents":
 			// Agent item responses (GET/PATCH /api/v1/agents/{id} and the
-			// project-scoped form) stay uncompressed, as does the agent
-			// returned by DELETE /api/v1/agents/{id}/pending-config.
+			// project-scoped form) stay uncompressed, as do the agents
+			// returned by DELETE /api/v1/agents/{id}/pending-config and
+			// PATCH /api/v1/agents/{id}/labels.
 			if i+2 == len(segs) {
 				return true
 			}
 			if i+2 < len(segs) {
 				switch segs[i+2] {
-				case "pty", "ports", "workspace", "pending-config":
+				case "pty", "ports", "workspace", "pending-config", "labels":
 					return true
 				case "workspace-download":
 					// The broker-self signed workspace download
@@ -3519,6 +3524,12 @@ func isCompressBypassPath(path string) bool {
 					// (/api/v1/runtime-brokers/{id}/agents/{agentId}/move-bundle/{rid}/{upload-url,download-urls})
 					// answer with signed object URLs.
 					return true
+				case "trajectory":
+					// POST /api/v1/agents/{id}/trajectory/segments:prepare
+					// returns a signed or capability upload URL.
+					if i+3 < len(segs) && segs[i+3] == "segments:prepare" {
+						return true
+					}
 				}
 			}
 		}

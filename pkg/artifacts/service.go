@@ -490,8 +490,8 @@ func (s *Service) RegisterRoutes(mux Mux, guard Guard) {
 // ServeHTTP routes a request:
 //
 //	POST /api/v1/artifacts?name=<file>[&title=][&scope=]    single-file publish
-//	POST /api/v1/artifacts                                  create a pending version (JSON manifest)
-//	GET  /api/v1/artifacts?mine=1[&q=][&review_pending=1][&owner=me][&limit=][&cursor=]
+//	POST /api/v1/artifacts                                  create a pending version (JSON manifest) or publish fromAttachment by reference
+//	GET  /api/v1/artifacts?mine=1[&q=][&review_on_latest=1][&owner=me][&limit=][&cursor=]
 //	                                                        artifacts the caller owns, is granted, or shares a project with
 //	GET  /api/v1/artifacts/{id}                             metadata of the current version
 //	GET  /api/v1/artifacts/{id}/files/{path}                a file of the current version
@@ -635,11 +635,20 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		s.handleTransferTargets(w, r, id)
 	case len(segs) == 2 && segs[1] == reviewRequestsSegment:
+		switch {
+		case isRead(r.Method):
+			s.handleListReviewRequests(w, r, id)
+		case r.Method == http.MethodPost:
+			s.handleCreateReviewRequests(w, r, id)
+		default:
+			writeMethodNotAllowed(w, http.MethodGet, http.MethodHead, http.MethodPost)
+		}
+	case len(segs) == 4 && segs[1] == reviewRequestsSegment && segs[3] == "withdraw":
 		if r.Method != http.MethodPost {
 			writeMethodNotAllowed(w, http.MethodPost)
 			return
 		}
-		s.handleCreateReviewRequests(w, r, id)
+		s.handleWithdrawReviewRequest(w, r, id, segs[2])
 	case len(segs) == 3 && segs[1] == reviewRequestSegment && segs[2] == "dismiss":
 		if r.Method != http.MethodPost {
 			writeMethodNotAllowed(w, http.MethodPost)

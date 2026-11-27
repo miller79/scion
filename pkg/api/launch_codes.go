@@ -108,6 +108,14 @@ const (
 	// LaunchCodeWorkspaceNotPermitted: the agent's workspace path is not
 	// permitted on this hosted server or runtime broker.
 	LaunchCodeWorkspaceNotPermitted = "workspace_not_permitted"
+	// LaunchCodeLimitCeilingsUnsupported: the Hub has agent_limits ceilings
+	// configured, but the target runtime broker does not advertise the
+	// limitCeilings capability.
+	LaunchCodeLimitCeilingsUnsupported = "limit_ceilings_unsupported"
+	// LaunchCodeTelemetryEnforcementUnsupported: the hub enforces telemetry
+	// fleet-wide, but the target runtime broker does not report the
+	// templateTiers capability required to apply TelemetryPolicy.
+	LaunchCodeTelemetryEnforcementUnsupported = "telemetry_enforcement_unsupported"
 
 	// LaunchCodeImagePullFailed: the agent image could not be pulled
 	// (Kubernetes ImagePullBackOff or ErrImagePull, or a failed local

@@ -15,6 +15,8 @@
 package messages
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -58,6 +60,17 @@ func TestNormalizeCommandRequest(t *testing.T) {
 		}
 		if got.CommandSHA256 != CommandRequestCanonicalHash("gcloud config list\n", "", DefaultCommandRequestTimeoutS) {
 			t.Errorf("CommandSHA256 mismatch")
+		}
+	})
+
+	t.Run("rejects reserved md- key prefix (O3)", func(t *testing.T) {
+		for _, k := range []string{"md-abc", "MD-123-def"} {
+			if _, err := NormalizeCommandRequest("command_request", &CommandRequestInput{
+				Key:    k,
+				Script: "echo hi\n",
+			}); err == nil {
+				t.Errorf("NormalizeCommandRequest(%q): expected error for reserved md- prefix", k)
+			}
 		}
 	})
 
@@ -244,6 +257,41 @@ func TestStructuredMessage_LogAttrs_OmitsCommandRequestContent(t *testing.T) {
 	if !foundPlain {
 		t.Errorf("non-command-request message should still emit message_content")
 	}
+
+	outputMarker := "SHARED_OUTPUT_NEVER_IN_SLOG"
+	respMsg := &StructuredMessage{
+		Sender:    "system:hub",
+		Recipient: "agent:builder",
+		Type:      TypeCommandResponse,
+		Msg:       "Finished.\n```\n" + outputMarker + "\n```",
+		Metadata: map[string]string{
+			"command_run_status":        "succeeded",
+			"command_run_reason":        "PRIVATE_REASON_NEVER_IN_LOG",
+			"command_run_output_status": "captured",
+		},
+	}
+	respAttrs := respMsg.LogAttrs()
+	respKV := make(map[string]any, len(respAttrs)/2)
+	for i := 0; i+1 < len(respAttrs); i += 2 {
+		if k, ok := respAttrs[i].(string); ok {
+			respKV[k] = respAttrs[i+1]
+		}
+	}
+	if _, hasContent := respKV["message_content"]; hasContent {
+		t.Fatalf("TypeCommandResponse LogAttrs must omit message_content, got %v", respKV["message_content"])
+	}
+	if respKV["message_content_omitted"] != true {
+		t.Errorf("TypeCommandResponse message_content_omitted = %v, want true", respKV["message_content_omitted"])
+	}
+	if respKV["meta_command_run_status"] != "succeeded" {
+		t.Errorf("meta_command_run_status = %v, want succeeded", respKV["meta_command_run_status"])
+	}
+	if _, hasReason := respKV["meta_command_run_reason"]; hasReason {
+		t.Errorf("TypeCommandResponse LogAttrs must omit meta_command_run_reason, got %v", respKV["meta_command_run_reason"])
+	}
+	if _, hasOutStatus := respKV["meta_command_run_output_status"]; hasOutStatus {
+		t.Errorf("TypeCommandResponse LogAttrs must omit meta_command_run_output_status, got %v", respKV["meta_command_run_output_status"])
+	}
 }
 
 func TestCommandWorkdirKind(t *testing.T) {
@@ -294,5 +342,34 @@ func TestRenderCommandRequestFallback_NonASCIINote(t *testing.T) {
 	fenceIdx := strings.Index(nonASCII, "```sh")
 	if noteIdx < 0 || fenceIdx < 0 || noteIdx > fenceIdx {
 		t.Errorf("expected non-ASCII note before ```sh fence, got: %s", nonASCII)
+	}
+}
+
+func TestCommandRequestCanonicalHash_SharedVectors(t *testing.T) {
+	raw, err := os.ReadFile("testdata/command_request_hash_vectors.json")
+	if err != nil {
+		t.Fatalf("read shared hash vectors: %v", err)
+	}
+	var doc struct {
+		Version int `json:"version"`
+		Vectors []struct {
+			Name     string `json:"name"`
+			Script   string `json:"script"`
+			Workdir  string `json:"workdir"`
+			TimeoutS int    `json:"timeout_s"`
+			SHA256   string `json:"sha256"`
+		} `json:"vectors"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal shared hash vectors: %v", err)
+	}
+	if len(doc.Vectors) == 0 {
+		t.Fatal("expected at least one shared hash vector")
+	}
+	for _, v := range doc.Vectors {
+		got := CommandRequestCanonicalHash(v.Script, v.Workdir, v.TimeoutS)
+		if got != v.SHA256 {
+			t.Errorf("%s: CommandRequestCanonicalHash = %q, want %q", v.Name, got, v.SHA256)
+		}
 	}
 }

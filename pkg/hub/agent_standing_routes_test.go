@@ -329,6 +329,15 @@ func TestAgentStanding_CredentialRoutesCoverage(t *testing.T) {
 			wantDen: assertForbidden,
 		},
 		{
+			key:    "POST /api/v1/agents/{id}/trajectory/segments:prepare",
+			method: http.MethodPost,
+			path: func(_ *standingCoverageFixture, a *store.Agent) string {
+				return "/api/v1/agents/" + a.ID + "/trajectory/segments:prepare"
+			},
+			body:    func(*standingCoverageFixture) any { return map[string]any{} },
+			wantDen: assertForbidden,
+		},
+		{
 			key:    "POST /api/v1/agents",
 			method: http.MethodPost,
 			path:   func(*standingCoverageFixture, *store.Agent) string { return "/api/v1/agents" },
@@ -591,12 +600,13 @@ func TestAgentStanding_CredentialRoutesCoverage(t *testing.T) {
 
 	// Explicit exempt RouteAgentToken routes (non-credential routes).
 	exemptAgentTokenRoutes := map[string]string{
-		"GET /api/v1/agent/hub":          "returns only the hub's non-secret hub_id identifier; issues no credentials, tokens, or secrets",
-		"/api/v1/agent/decisions":        "reads and records agent decisions; issues no credentials, tokens, or secrets",
-		"/api/v1/agent/decisions/":       "reads and records agent decisions; issues no credentials, tokens, or secrets",
-		"/api/v1/agent/secret-requests":  "lists and withdraws the calling agent's secret request metadata; never reads, writes, or returns secret values",
-		"/api/v1/agent/secret-requests/": "lists and withdraws the calling agent's secret request metadata; never reads, writes, or returns secret values",
-		"/api/v1/agent/command-requests": "lists the calling agent's own command request metadata and run status; never executes commands or issues credentials",
+		"GET /api/v1/agent/hub":           "returns only the hub's non-secret hub_id identifier; issues no credentials, tokens, or secrets",
+		"/api/v1/agent/decisions":         "reads and records agent decisions; issues no credentials, tokens, or secrets",
+		"/api/v1/agent/decisions/":        "reads and records agent decisions; issues no credentials, tokens, or secrets",
+		"/api/v1/agent/secret-requests":   "lists and withdraws the calling agent's secret request metadata; never reads, writes, or returns secret values",
+		"/api/v1/agent/secret-requests/":  "lists and withdraws the calling agent's secret request metadata; never reads, writes, or returns secret values",
+		"/api/v1/agent/command-requests":  "lists and withdraws the calling agent's own command request metadata and run status; never executes commands or issues credentials",
+		"/api/v1/agent/command-requests/": "lists and withdraws the calling agent's own command request metadata and run status; never executes commands or issues credentials",
 	}
 
 	// Explicit pre-authentication public credential routes (ExemptionPublicEndpoint).
@@ -748,6 +758,11 @@ func TestAgentStanding_CredentialRoutesCoverage(t *testing.T) {
 			reason: "user session only; refuses agent tokens",
 			method: http.MethodPost,
 			path:   func(*standingCoverageFixture) string { return "/api/v1/pending-secrets/ps-1/reveal" },
+		},
+		"GET /api/v1/command-requests/{id}/output": {
+			reason: "user session only (approver + live attach); refuses agent tokens",
+			method: http.MethodGet,
+			path:   func(*standingCoverageFixture) string { return "/api/v1/command-requests/cr-1/output" },
 		},
 		"POST /api/v1/projects/register": {
 			reason: "user/broker project registration; refuses agent tokens",
@@ -992,6 +1007,8 @@ func TestAgentStanding_CredentialRoutesCoverage(t *testing.T) {
 				e.Name == experiments.Triggers ||
 				e.Name == experiments.Artifacts ||
 				e.Name == experiments.FederationProjectVisitors ||
+				e.Name == experiments.CommandRequests ||
+				e.Name == experiments.TokenomicsTrajectoryCapture ||
 				e.Name == conduitExperiment {
 				e.Default = true
 			}

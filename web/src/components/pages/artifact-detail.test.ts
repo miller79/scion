@@ -189,7 +189,11 @@ async function mount(
   flag: boolean,
   path = `/projects/p-1/artifacts/${ID}`
 ): Promise<ScionPageArtifactDetail> {
-  window.__SCION_FEATURES__ = { 'hub.artifacts': flag };
+  window.__SCION_FEATURES__ = {
+    'hub.artifacts': flag,
+    'web.artifact_review_editor': false,
+    'web.artifact_manage_access': false,
+  };
   const el = document.createElement('scion-page-artifact-detail') as ScionPageArtifactDetail;
   el.pageData = { path } as ScionPageArtifactDetail['pageData'];
   document.body.appendChild(el);
@@ -1352,7 +1356,7 @@ describe('artifact page', () => {
     });
     const el = await mount(true);
     const badge = el.shadowRoot!.querySelector('scion-detail-header > sl-badge');
-    expect(badge?.textContent).toContain('Review pending');
+    expect(badge?.textContent).toContain('Review on latest');
     const banner = el.shadowRoot!.querySelector('sl-alert.review-banner');
     expect(banner?.textContent).toContain('1 comment and 1 suggestion on v1');
     expect(banner?.textContent).toContain('was notified');
@@ -1470,7 +1474,7 @@ describe('artifact page', () => {
       true
     );
     expect(el.shadowRoot!.querySelector('scion-detail-header > sl-badge')?.textContent).toContain(
-      'Review pending'
+      'Review on latest'
     );
   });
 
@@ -1759,7 +1763,7 @@ describe('artifact page', () => {
     expect(el.shadowRoot!.querySelector('.review-editor')).toBeNull();
   });
 
-  it('shows Review pending while the current version is a review, also on an older version', async () => {
+  it('shows Review on latest while the current version is a review, also on an older version', async () => {
     const meta = reviewMeta();
     const old = {
       ...meta,
@@ -1773,7 +1777,7 @@ describe('artifact page', () => {
     });
     const el = await mount(true, `/projects/p-1/artifacts/${ID}/v/1`);
     expect(el.shadowRoot!.querySelector('scion-detail-header > sl-badge')?.textContent).toContain(
-      'Review pending'
+      'Review on latest'
     );
   });
 
@@ -1784,7 +1788,7 @@ describe('artifact page', () => {
     mockFetch(meta, MARKED);
     const el = await mount(true);
     const banner = el.shadowRoot!.querySelector('sl-alert.review-banner')!;
-    expect(banner.textContent).toContain('Review pending');
+    expect(banner.textContent).toContain('Review on latest');
     expect(banner.textContent).not.toContain('was notified');
   });
 
@@ -2125,7 +2129,7 @@ describe('artifact page', () => {
 });
 
 /**
- * ptone/scion#6851 (Refresh, and the Review pending badge following a newer
+ * ptone/scion#6851 (Refresh, and the Review on latest badge following a newer
  * version), ptone/scion#6847 (back and after a delete, return to where the
  * page was opened from) and ptone/scion#6852 (version kind, author, date
  * and state in the version menu and the header).
@@ -2158,7 +2162,11 @@ describe('artifact page: refresh, origin and version labels', () => {
 
   /** Mounts the page as user u-1, so a version by u-1 shows as "You". */
   async function mountAs(path = `/projects/p-1/artifacts/${ID}`): Promise<ScionPageArtifactDetail> {
-    window.__SCION_FEATURES__ = { 'hub.artifacts': true };
+    window.__SCION_FEATURES__ = {
+      'hub.artifacts': true,
+      'web.artifact_review_editor': false,
+      'web.artifact_manage_access': false,
+    };
     const el = document.createElement('scion-page-artifact-detail') as ScionPageArtifactDetail;
     el.pageData = { path, user: { id: 'u-1' } } as ScionPageArtifactDetail['pageData'];
     document.body.appendChild(el);
@@ -2207,7 +2215,7 @@ describe('artifact page: refresh, origin and version labels', () => {
 
   function reviewBadge(el: ScionPageArtifactDetail): Element | undefined {
     return Array.from(el.shadowRoot!.querySelectorAll('scion-detail-header > sl-badge')).find(
-      (b) => text(b) === 'Review pending'
+      (b) => text(b) === 'Review on latest'
     );
   }
 

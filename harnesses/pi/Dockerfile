@@ -19,6 +19,9 @@ FROM ${BASE_IMAGE}
 # Exact pi release; bump deliberately together with package.json and
 # package-lock.json. Never use a floating tag.
 ARG PI_VERSION=1.3.0
+ARG PI_URL
+ARG PI_SHA256
+ARG PI_INTEGRITY
 
 RUN mkdir -p /home/scion/.pi/agent/extensions /home/scion/.pi/agent/skills \
       /home/scion/.pi/agent/sessions && \
@@ -33,7 +36,11 @@ RUN mkdir -p /home/scion/.pi/agent/extensions /home/scion/.pi/agent/skills \
 COPY package.json package-lock.json /opt/scion-pi/
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     locked_ver="$(node -p "require('/opt/scion-pi/package.json').dependencies['@earendil-works/pi-coding-agent']")" \
-  && if [ "${PI_VERSION}" = "${locked_ver}" ]; then \
+  && if [ -n "${PI_URL}${PI_SHA256}${PI_INTEGRITY}" ]; then \
+       sh /opt/scion-image-build/lib/install-pinned-npm.sh \
+         "${PI_VERSION}" "${PI_URL}" "${PI_SHA256}" "${PI_INTEGRITY}" \
+         --ignore-scripts --no-audit --no-fund; \
+     elif [ "${PI_VERSION}" = "${locked_ver}" ]; then \
        npm ci --prefix /opt/scion-pi --omit=dev --ignore-scripts --no-audit --no-fund \
        && ln -sf /opt/scion-pi/node_modules/.bin/pi /usr/local/bin/pi; \
      else \

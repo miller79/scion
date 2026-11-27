@@ -175,6 +175,10 @@ interface ResolvedHubSetting {
   projectValue: string | null;
   hubDefault: 'present' | 'absent' | 'unknown';
   hubValue: any;
+  ceiling?: number | string | null;
+  lockedBy?: string | null;
+  effective?: unknown;
+  storedValue?: unknown;
 }
 
 interface ResolvedProjectSettings {
@@ -1604,6 +1608,18 @@ export class ScionPageProjectSettings extends LitElement {
     }
   }
 
+  /** Whether the hub operator has locked telemetry on for all agents. */
+  private isTelemetryLockedByHub(): boolean {
+    return this.resolvedSettings?.['scion.io/telemetry-enabled']?.lockedBy === 'hub';
+  }
+
+  /** Whether a stored project telemetry=false is overridden by hub enforcement. */
+  private isTelemetryShadowedDisabled(): boolean {
+    if (!this.isTelemetryLockedByHub()) return false;
+    const entry = this.resolvedSettings?.['scion.io/telemetry-enabled'];
+    return entry?.storedValue === false || this.configTelemetryEnabled === false;
+  }
+
   /** Fallback for loading hub telemetry default when /settings/resolved is unavailable. */
   private async loadHubTelemetryDefaultFallback(): Promise<void> {
     const settings = await getPublicSettings();
@@ -1648,11 +1664,19 @@ export class ScionPageProjectSettings extends LitElement {
     return !!entry && !entry.projectSet && entry.hubDefault === 'present';
   }
 
+  private hubCeiling(annotationKey: string): number | string | null {
+    const c = this.resolvedSettings?.[annotationKey]?.ceiling;
+    if (typeof c === 'number' && c > 0) return c;
+    if (typeof c === 'string' && c.trim() !== '') return c.trim();
+    return null;
+  }
+
   /**
    * A project default count limit: a number input plus an Unlimited box,
    * as on the agent Edit page. Empty with the box clear is Inherit (null);
    * the box sends 0 (Unlimited); a positive integer is a limit
-   * (ptone/scion#3925).
+   * (ptone/scion#3925). When a hub ceiling is active, Unlimited is hidden
+   * and the input carries `max` + a "Hub ceiling: N" helper note.
    */
   private renderCountLimitField(
     label: string,
@@ -1663,6 +1687,10 @@ export class ScionPageProjectSettings extends LitElement {
     canEdit: boolean
   ) {
     const unlimited = value === 0;
+    const rawCeiling = this.hubCeiling(annotationKey);
+    const maxCeiling = typeof rawCeiling === 'number' ? rawCeiling : null;
+    const ceilingNote = maxCeiling !== null ? ` Hub ceiling: ${maxCeiling}.` : '';
+    const storedUnlimitedOverridden = unlimited && maxCeiling !== null;
     return html`<div
       class="config-field ${this.isHubDefault(annotationKey) ? 'hub-inherited' : ''}"
     >
@@ -1670,15 +1698,24 @@ export class ScionPageProjectSettings extends LitElement {
       <sl-input
         type="number"
         inputmode="numeric"
-        placeholder=${unlimited ? 'Unlimited' : this.hubHint(annotationKey) || 'Inherit'}
+        max=${maxCeiling !== null ? String(maxCeiling) : nothing}
+        placeholder=${unlimited && maxCeiling === null
+          ? 'Unlimited'
+          : this.hubHint(annotationKey) || 'Inherit'}
         .value=${value && value > 0 ? String(value) : ''}
-        ?disabled=${!canEdit || unlimited}
+        ?disabled=${!canEdit || (unlimited && maxCeiling === null)}
         @sl-input=${(e: Event) => {
-          const parsed = parseCountLimitInput((e.target as HTMLInputElement).value);
+          const rawInput = (e.target as HTMLInputElement).value;
+          const parsed = parseCountLimitInput(rawInput);
           const errors = { ...this.countLimitErrors };
-          if (parsed.error) {
+          if (maxCeiling !== null && /^0+$/.test(rawInput.trim())) {
+            errors[annotationKey] =
+              `Unlimited (0) is not allowed while a hub ceiling (${maxCeiling}) is set.`;
+          } else if (parsed.error) {
             // Keep the current value: an invalid entry never clears a stored limit.
             errors[annotationKey] = parsed.error;
+          } else if (maxCeiling !== null && parsed.value !== null && parsed.value > maxCeiling) {
+            errors[annotationKey] = `Must be at most the hub ceiling (${maxCeiling}).`;
           } else {
             delete errors[annotationKey];
             set(parsed.value);
@@ -1686,24 +1723,30 @@ export class ScionPageProjectSettings extends LitElement {
           this.countLimitErrors = errors;
         }}
       ></sl-input>
-      <sl-checkbox
-        size="small"
-        class="unlimited"
-        ?checked=${unlimited}
-        ?disabled=${!canEdit}
-        @sl-change=${(e: Event) => {
-          const errors = { ...this.countLimitErrors };
-          delete errors[annotationKey];
-          this.countLimitErrors = errors;
-          set((e.target as HTMLInputElement).checked ? 0 : null);
-        }}
-        >Unlimited</sl-checkbox
-      >
+      ${maxCeiling === null
+        ? html`<sl-checkbox
+            size="small"
+            class="unlimited"
+            ?checked=${unlimited}
+            ?disabled=${!canEdit}
+            @sl-change=${(e: Event) => {
+              const errors = { ...this.countLimitErrors };
+              delete errors[annotationKey];
+              this.countLimitErrors = errors;
+              set((e.target as HTMLInputElement).checked ? 0 : null);
+            }}
+            >Unlimited</sl-checkbox
+          >`
+        : nothing}
       ${this.countLimitErrors[annotationKey]
         ? html`<span class="field-help count-limit-error" style="color: var(--sl-color-danger-600);"
             >${this.countLimitErrors[annotationKey]}</span
           >`
-        : html`<span class="field-help">${help}</span>`}
+        : html`<span class="field-help"
+            >${help}${ceilingNote}${storedUnlimitedOverridden
+              ? ' Stored Unlimited is overridden by the hub ceiling.'
+              : ''}</span
+          >`}
     </div>`;
   }
 
@@ -2588,7 +2631,6 @@ export class ScionPageProjectSettings extends LitElement {
         defaultHarnessConfig: this.configDefaultHarnessConfig || '',
         defaultHarnessAuth: this.configDefaultHarnessAuth || '',
         defaultModel: defaultModel || '',
-        telemetryEnabled: this.configTelemetryEnabled,
         autoExposePortsEnabled: this.configAutoExposePortsEnabled,
         defaultMaxDuration: this.configDefaultMaxDuration || '',
         defaultResources: defaultResources ?? {},
@@ -2601,6 +2643,9 @@ export class ScionPageProjectSettings extends LitElement {
         maxAgentRole: this.configMaxAgentRole || '',
         defaultAgentRole: this.configDefaultAgentRole || '',
       };
+      if (!this.isTelemetryLockedByHub()) {
+        body.telemetryEnabled = this.configTelemetryEnabled;
+      }
       if (this.configDefaultMaxTurns !== this.loadedDefaultMaxTurns) {
         body.defaultMaxTurns = this.configDefaultMaxTurns;
       }
@@ -3360,16 +3405,26 @@ export class ScionPageProjectSettings extends LitElement {
                 class="config-field ${this.isHubDefault('scion.io/telemetry-enabled')
                   ? 'hub-inherited'
                   : ''}"
+                data-testid="project-telemetry-field"
               >
                 <label>Telemetry ${this.renderHubIndicator('scion.io/telemetry-enabled')}</label>
                 <sl-select
-                  value=${this.configTelemetryEnabled === true
+                  data-testid="project-telemetry-select"
+                  value=${this.isTelemetryLockedByHub()
                     ? 'enabled'
-                    : this.configTelemetryEnabled === false
-                      ? 'disabled'
-                      : 'inherit'}
-                  ?disabled=${!canEdit}
+                    : this.configTelemetryEnabled === true
+                      ? 'enabled'
+                      : this.configTelemetryEnabled === false
+                        ? 'disabled'
+                        : 'inherit'}
+                  help-text=${this.isTelemetryLockedByHub()
+                    ? this.isTelemetryShadowedDisabled()
+                      ? 'Required by hub operator. Project setting (Disabled) is overridden.'
+                      : 'Required by hub operator'
+                    : nothing}
+                  ?disabled=${!canEdit || this.isTelemetryLockedByHub()}
                   @sl-change=${(e: Event) => {
+                    if (this.isTelemetryLockedByHub()) return;
                     const val = (e.target as HTMLSelectElement).value;
                     this.configTelemetryEnabled =
                       val === 'enabled' ? true : val === 'disabled' ? false : null;
@@ -3386,10 +3441,12 @@ export class ScionPageProjectSettings extends LitElement {
                   <sl-option value="enabled">Enabled</sl-option>
                   <sl-option value="disabled">Disabled</sl-option>
                 </sl-select>
-                <span class="field-help"
-                  >Controls telemetry for agents in this project. "Use hub default" inherits the
-                  server-level setting.</span
-                >
+                ${this.isTelemetryLockedByHub()
+                  ? nothing
+                  : html`<span class="field-help"
+                      >Controls telemetry for agents in this project. "Use hub default" inherits the
+                      server-level setting.</span
+                    >`}
               </div>
 
               <div
@@ -3643,7 +3700,8 @@ export class ScionPageProjectSettings extends LitElement {
           <sl-tab-panel name="limits">
             <div class="config-form">
               <span class="field-help" style="display: block; margin-bottom: 0.25rem;"
-                >Applied to new agents unless overridden by template or agent config.</span
+                >Applied to new agents unless overridden by template or agent config. Turn and
+                model-call limits are cooperative budget guardrails, not a security boundary.</span
               >
 
               ${this.renderCountLimitField(
@@ -3690,7 +3748,12 @@ export class ScionPageProjectSettings extends LitElement {
                     this.configDefaultMaxDuration = (e.target as HTMLInputElement).value;
                   }}
                 ></sl-input>
-                <span class="field-help">Maximum execution time (Go duration format).</span>
+                <span class="field-help"
+                  >Maximum execution time (Go duration
+                  format).${this.hubCeiling('scion.io/default-max-duration')
+                    ? ` Hub ceiling: ${this.hubCeiling('scion.io/default-max-duration')}.`
+                    : ''}</span
+                >
               </div>
             </div>
           </sl-tab-panel>

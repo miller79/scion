@@ -603,7 +603,10 @@ func (r *PodmanRuntime) Attach(ctx context.Context, id string) error {
 		return fmt.Errorf("failed to list containers: %w", err)
 	}
 
-	agent := findContainerAgent(agents, id)
+	agent, err := findContainerAgent(agents, id)
+	if err != nil {
+		return err
+	}
 	if agent == nil {
 		return fmt.Errorf("agent '%s' container not found, it may have exited and been removed", id)
 	}
@@ -686,7 +689,10 @@ func (r *PodmanRuntime) Sync(ctx context.Context, id string, direction SyncDirec
 		return fmt.Errorf("failed to list containers: %w", err)
 	}
 
-	agent := findContainerAgent(agents, id)
+	agent, err := findContainerAgent(agents, id)
+	if err != nil {
+		return err
+	}
 	if agent == nil {
 		return fmt.Errorf("agent '%s' container not found", id)
 	}
@@ -703,8 +709,14 @@ func (r *PodmanRuntime) Sync(ctx context.Context, id string, direction SyncDirec
 func (r *PodmanRuntime) Exec(ctx context.Context, id string, cmd []string) (string, error) {
 	// Resolve slug/name to actual container ID (container names include the
 	// project prefix, e.g. "myproject--agent", so the bare slug won't match).
-	if agents, err := r.List(ctx, nil); err == nil {
-		id = resolveContainerID(agents, id)
+	if !resolvedContainerID(ctx) {
+		if agents, err := r.List(ctx, nil); err == nil {
+			resolved, err := resolveContainerID(agents, id)
+			if err != nil {
+				return "", err
+			}
+			id = resolved
+		}
 	}
 	args := append([]string{"exec", "--user", r.ExecUser(), id}, cmd...)
 	out, err := runCombinedCommand(ctx, r.Command, args...)
@@ -717,8 +729,14 @@ func (r *PodmanRuntime) Exec(ctx context.Context, id string, cmd []string) (stri
 // given reader. The -i flag is required for `podman exec` to attach stdin.
 // See #1355.
 func (r *PodmanRuntime) ExecWithStdin(ctx context.Context, id string, cmd []string, stdin io.Reader) (string, error) {
-	if agents, err := r.List(ctx, nil); err == nil {
-		id = resolveContainerID(agents, id)
+	if !resolvedContainerID(ctx) {
+		if agents, err := r.List(ctx, nil); err == nil {
+			resolved, err := resolveContainerID(agents, id)
+			if err != nil {
+				return "", err
+			}
+			id = resolved
+		}
 	}
 	args := append([]string{"exec", "-i", "--user", r.ExecUser(), id}, cmd...)
 	return runSimpleCommandWithStdin(ctx, stdin, r.Command, args...)

@@ -61,6 +61,7 @@ const (
 	MinCommandRequestTimeoutS         = 1
 	DefaultCommandRequestTimeoutS     = 600
 	MaxCommandRequestTimeoutS         = 3600
+	MaxPendingCommandRequestsPerAgent = 10
 
 	CommandRequestInterpreterBashLogin = "bash-login"
 	CommandRequestHashPrefix           = "scion.command_request.v1\n"
@@ -216,6 +217,7 @@ type CommandRequestInput struct {
 	Workdir              string `json:"workdir,omitempty"`
 	TimeoutS             int    `json:"timeout_s,omitempty"`
 	ShareOutputRequested bool   `json:"share_output_requested,omitempty"`
+	Approver             string `json:"approver,omitempty"`
 }
 
 // CommandRequest is a validated, normalized command request ready for persistence.
@@ -253,6 +255,8 @@ func NormalizeCommandRequest(root string, in *CommandRequestInput) (*CommandRequ
 		add(root+".key", DecisionErrRequired, "key is required")
 	case !ValidCommandRequestKey(key):
 		add(root+".key", DecisionErrInvalid, "key must match [A-Za-z0-9][A-Za-z0-9._-]{0,%d}", MaxCommandRequestKeyLen-1)
+	case strings.HasPrefix(norm, "md-"):
+		add(root+".key", DecisionErrInvalid, "key must not start with reserved prefix 'md-'")
 	}
 
 	desc := strings.TrimSpace(in.Description)
@@ -339,6 +343,23 @@ type CommandRequestApproved struct {
 	Surface  string    `json:"surface"`
 }
 
+// CommandRequestDismissed describes who dismissed a request and why.
+type CommandRequestDismissed struct {
+	At       time.Time `json:"at"`
+	ByUserID string    `json:"byUserId,omitempty"`
+	ByName   string    `json:"byName"`
+	ByEmail  string    `json:"byEmail,omitempty"`
+	Reason   string    `json:"reason,omitempty"`
+	Surface  string    `json:"surface,omitempty"`
+}
+
+// CommandRequestWithdrawn describes when and why a request was withdrawn.
+type CommandRequestWithdrawn struct {
+	At     time.Time `json:"at"`
+	By     string    `json:"by,omitempty"`
+	Reason string    `json:"reason,omitempty"`
+}
+
 // CommandRequestRunView is the client-visible view of a command run (no output).
 type CommandRequestRunView struct {
 	RunID         string     `json:"runId"`
@@ -355,6 +376,7 @@ type CommandRequestRunView struct {
 	DurationMS    *int64     `json:"durationMs,omitempty"`
 	OutputBytes   *int64     `json:"outputBytes,omitempty"`
 	OutputStatus  string     `json:"outputStatus,omitempty"`
+	OutputTail    string     `json:"outputTail,omitempty"`
 	CreatedAt     time.Time  `json:"createdAt"`
 	DispatchedAt  *time.Time `json:"dispatchedAt,omitempty"`
 	FinishedAt    *time.Time `json:"finishedAt,omitempty"`
@@ -369,8 +391,9 @@ type CommandRequestExecContainerView struct {
 	ProjectID      string `json:"projectId,omitempty"`
 	ProjectName    string `json:"projectName,omitempty"`
 	HomePersistent *bool  `json:"homePersistent,omitempty"`
-	// CanWake reports whether this hub supports waking a suspended execution
-	// container on approval. Always false until P2 (wake-on-approve) lands.
+	// CanWake reports whether the approver's suspended execution container
+	// can be woken on approval (true only when suspended, non-managed runtime,
+	// and the approver holds agent.lifecycle permission).
 	CanWake bool   `json:"canWake"`
 	Reason  string `json:"reason,omitempty"`
 }
@@ -407,6 +430,8 @@ type CommandRequestView struct {
 	ResolvedAt           *time.Time                `json:"resolvedAt,omitempty"`
 	ReplacedBy           *CommandRequestReplacedBy `json:"replacedBy,omitempty"`
 	Approved             *CommandRequestApproved   `json:"approved,omitempty"`
+	Dismissed            *CommandRequestDismissed  `json:"dismissed,omitempty"`
+	Withdrawn            *CommandRequestWithdrawn  `json:"withdrawn,omitempty"`
 	Run                  *CommandRequestRunView    `json:"run,omitempty"`
 }
 
@@ -422,9 +447,10 @@ type CommandRequestDetailResponse struct {
 	ApproverEmail          string                           `json:"approverEmail,omitempty"`
 	PreviousVersionUnknown *CommandRequestPreviousUnknown   `json:"previousVersionUnknown,omitempty"`
 	CanApprove             bool                             `json:"canApprove"`
-	// CanDismiss is a P5 feature-detect hook; false until the dismiss API lands in P5.
+	// CanDismiss is true for the named approver while the request is pending and unexpired.
 	CanDismiss bool `json:"canDismiss,omitempty"`
-	// OutputAvailable is a P4 feature-detect hook; false until the output API lands in P4.
+	// OutputAvailable is true for the approver when the run has finished and
+	// an action_run output row exists in exec_run_outputs.
 	OutputAvailable bool   `json:"outputAvailable,omitempty"`
 	Reason          string `json:"reason,omitempty"`
 }
@@ -433,8 +459,28 @@ type CommandRequestDetailResponse struct {
 type ApproveCommandRequestBody struct {
 	RowID          string `json:"row_id,omitempty"`
 	CommandSHA256  string `json:"command_sha256"`
-	ShareOutput    bool   `json:"share_output,omitempty"`
+	ShareOutput    *bool  `json:"share_output,omitempty"`
 	Surface        string `json:"surface,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+}
+
+// CommandRequestOutputResponse is the 200 response of
+// GET /api/v1/command-requests/{id}/output (approver-only, Cache-Control: no-store).
+type CommandRequestOutputResponse struct {
+	RunID        string `json:"runId"`
+	CaptureMode  string `json:"captureMode"`
+	OutputStatus string `json:"outputStatus,omitempty"`
+	OutputBytes  *int64 `json:"outputBytes,omitempty"`
+	Output       string `json:"output,omitempty"`
+}
+
+// CreateCommandRequestFromMessageBody is the request body of
+// POST /api/v1/command-requests/from-message (§4.14).
+type CreateCommandRequestFromMessageBody struct {
+	MessageID      string `json:"message_id"`
+	Script         string `json:"script"`
+	CommandSHA256  string `json:"command_sha256"`
+	ShareOutput    *bool  `json:"share_output,omitempty"`
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
@@ -444,6 +490,32 @@ type ApproveCommandRequestResponse struct {
 	Request  CommandRequestView    `json:"request"`
 	Run      CommandRequestRunView `json:"run"`
 	Replayed bool                  `json:"replayed,omitempty"`
+}
+
+// DismissCommandRequestBody is the request body of POST /api/v1/command-requests/{id}/dismiss.
+type DismissCommandRequestBody struct {
+	Reason         string `json:"reason,omitempty"`
+	Surface        string `json:"surface,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+}
+
+// DismissCommandRequestResponse is the 200 response of POST /api/v1/command-requests/{id}/dismiss.
+type DismissCommandRequestResponse struct {
+	Request          CommandRequestView `json:"request"`
+	AlreadyDismissed bool               `json:"already_dismissed,omitempty"`
+	Replayed         bool               `json:"replayed,omitempty"`
+}
+
+// WithdrawCommandRequestBody is the request body of POST /api/v1/agent/command-requests/withdraw.
+type WithdrawCommandRequestBody struct {
+	Key    string `json:"key"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// WithdrawCommandRequestResponse is the 200 response of POST /api/v1/agent/command-requests/withdraw.
+type WithdrawCommandRequestResponse struct {
+	Request          CommandRequestView `json:"request"`
+	AlreadyWithdrawn bool               `json:"already_withdrawn,omitempty"`
 }
 
 // AgentCommandRequestListResponse is the 200 response of GET /api/v1/agent/command-requests.

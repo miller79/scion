@@ -47,9 +47,14 @@ declare global {
  * literals.
  */
 const DEFAULT_ON_FLAGS = new Set([
-  'web.native_chat',
+  'hub.artifacts',
+  'hub.flat_runtime_brokers',
+  'hub.user_delete_force_cascade',
   'web.agent_edit',
-  'web.chat_starred_messages',
+  'web.artifact_manage_access',
+  'web.artifact_review_editor',
+  'web.native_chat',
+  'web.sse_hidden_tab_close',
 ]);
 
 /**
@@ -189,7 +194,7 @@ export const AGENT_EDIT_FLAG = 'web.agent_edit';
  * Brokers area (broker UI Option A, slice A1): with the registered
  * experiment hub.flat_runtime_brokers on, /brokers and /brokers/{id} render
  * the new Brokers area; with it off, the existing pages. Presentation only:
- * every hub check is server-side. Default OFF (not in DEFAULT_ON_FLAGS).
+ * every hub check is server-side. Default ON.
  */
 export const FLAT_BROKERS_FLAG = 'hub.flat_runtime_brokers';
 
@@ -204,7 +209,7 @@ export const AGENT_BADGES_FLAG = 'web.agent_badges';
  * Hidden-tab stream close (ptone/scion#5235): a tab hidden for 60 s closes
  * its events streams (view, agent feed, terminal metadata) and reopens them
  * with a resync when shown. PTY sockets are unaffected. Presentation only:
- * the hub behaves the same either way. Default OFF.
+ * the hub behaves the same either way. Default ON.
  */
 export const SSE_HIDDEN_TAB_CLOSE_FLAG = 'web.sse_hidden_tab_close';
 
@@ -213,7 +218,7 @@ export const SSE_HIDDEN_TAB_CLOSE_FLAG = 'web.sse_hidden_tab_close';
  * opens in a graphical editor with marks inline, where typing is recorded
  * as suggestions, with a Graphical and Source toggle. Presentation only:
  * every save goes through the unchanged review publish, which the hub
- * checks. Default OFF.
+ * checks. Default ON.
  */
 export const ARTIFACT_REVIEW_EDITOR_FLAG = 'web.artifact_review_editor';
 
@@ -221,7 +226,7 @@ export const ARTIFACT_REVIEW_EDITOR_FLAG = 'web.artifact_review_editor';
  * Manage access dialog (ptone/scion#7107): one Manage access button and
  * dialog on the artifact page instead of Share, Grant review access and
  * Retention…. Presentation only: every change goes through the existing
- * routes, which the hub decides. Default OFF.
+ * routes, which the hub decides. Default ON.
  */
 export const ARTIFACT_MANAGE_ACCESS_FLAG = 'web.artifact_manage_access';
 
@@ -256,7 +261,7 @@ export const ARTIFACTS_REVIEW_REQUESTS_FLAG = 'hub.artifacts_review_requests';
  * Force user delete (ptone/scion#2143): the admin users page offers to
  * force-delete a user who has agents and shows a deletion in
  * progress. Presentation only: the hub checks the experiment on the force
- * request and on the deletion resource. Default OFF.
+ * request and on the deletion resource. Default ON.
  */
 export const USER_DELETE_FORCE_CASCADE_FLAG = 'hub.user_delete_force_cascade';
 
@@ -526,4 +531,31 @@ export const COMMAND_REQUESTS_FLAG = 'hub.command_requests';
 /** Whether command-request UI surfaces are enabled in this session. */
 export function commandRequestsEnabled(): boolean {
   return isFeatureEnabled(COMMAND_REQUESTS_FLAG);
+}
+
+/**
+ * Agent limit ceilings (agent_policy.limit_ceilings, ptone/scion#9371):
+ * shows the Admin Server Config Agent Limit Ceilings panel and ceiling hints.
+ * Presentation only: Hub enforces ceilings on create/PUT/dispatch and returns
+ * ceilings in resolved settings only while enabled. Default OFF.
+ */
+export const AGENT_LIMIT_CEILINGS_FLAG = 'agent_policy.limit_ceilings';
+
+/** Whether the Agent Limit Ceilings admin UI is enabled in this session. */
+export function agentLimitCeilingsEnabled(): boolean {
+  return isFeatureEnabled(AGENT_LIMIT_CEILINGS_FLAG);
+}
+
+/**
+ * Hub-enforced telemetry (agent_policy.telemetry_enforcement, ptone/scion#9370):
+ * shows the Admin Server Config "Enforce telemetry for all agents" toggle
+ * (or a mismatch warning when stored while the experiment is off).
+ * Presentation only: Hub enforces telemetry on create/PATCH/PUT/dispatch only
+ * while the experiment is enabled. Default OFF.
+ */
+export const TELEMETRY_ENFORCEMENT_FLAG = 'agent_policy.telemetry_enforcement';
+
+/** Whether Hub-enforced telemetry admin UI is enabled in this session. */
+export function telemetryEnforcementEnabled(): boolean {
+  return isFeatureEnabled(TELEMETRY_ENFORCEMENT_FLAG);
 }

@@ -343,6 +343,9 @@ func runServerStart(cmd *cobra.Command, args []string) error {
 	if _, err := cfg.RuntimeBroker.InitFirewall.Normalize(); err != nil {
 		return fmt.Errorf("invalid server.broker.init_firewall: %w", err)
 	}
+	if _, err := config.ResolveConduitDeliverRuntimes(cfg.RuntimeBroker.ConduitDeliverRuntimes); err != nil {
+		return fmt.Errorf("invalid server.broker.conduit_deliver_runtimes: %w", err)
+	}
 	if _, err := cfg.Hub.InitFirewall.Normalize(); err != nil {
 		return fmt.Errorf("invalid server.hub.init_firewall: %w", err)
 	}
@@ -647,12 +650,51 @@ func runServerStart(cmd *cobra.Command, args []string) error {
 		}
 		log.Print(obs.Tracing.LogLine())
 
-		// Wire hub OTel metrics export to Cloud Monitoring.
-		if obs.Metrics.Enabled {
-			mp, mpErr := hubmetrics.NewMeterProvider(ctx, obs.Metrics.Project.ID, telemetryID.metricsOptions()...)
+		// Wire hub OTel metrics export to Cloud Monitoring and/or operator OTLP.
+		otlpEndpointConfigured := hubmetrics.HasOTLPEndpointEnv()
+		if otlpEndpointConfigured {
+			obs.OTLPMetrics = &hubexport.OTLPMetricsStatus{
+				Configured: true,
+				Endpoint:   strings.TrimSpace(os.Getenv("SCION_OTEL_ENDPOINT")),
+			}
+		}
+		if obs.Metrics.Enabled || otlpEndpointConfigured {
+			gcpMetricsProjectID := ""
+			if obs.Metrics.Enabled {
+				gcpMetricsProjectID = obs.Metrics.Project.ID
+			}
+			mp, mpErr := hubmetrics.NewMeterProvider(ctx, gcpMetricsProjectID, telemetryID.metricsOptions()...)
 			if mpErr != nil {
-				obs.Metrics = obs.Metrics.Failed(mpErr)
-			} else {
+				var partialErr *hubmetrics.PartialError
+				if errors.As(mpErr, &partialErr) && mp != nil {
+					if partialErr.GCPErr != nil && obs.Metrics.Enabled {
+						obs.Metrics = obs.Metrics.Failed(partialErr.GCPErr)
+					}
+					if obs.OTLPMetrics != nil {
+						if partialErr.OTLPErr != nil {
+							obs.OTLPMetrics.Enabled = false
+							obs.OTLPMetrics.Reason = fmt.Sprintf("exporter could not be created: %v", partialErr.OTLPErr)
+						} else {
+							obs.OTLPMetrics.Enabled = true
+							obs.OTLPMetrics.Reason = "SCION_OTEL_ENDPOINT configured"
+						}
+					}
+				} else {
+					if obs.Metrics.Enabled {
+						obs.Metrics = obs.Metrics.Failed(mpErr)
+					}
+					if obs.OTLPMetrics != nil {
+						obs.OTLPMetrics.Enabled = false
+						obs.OTLPMetrics.Reason = fmt.Sprintf("exporter could not be created: %v", mpErr)
+					}
+					log.Printf("WARNING: hub metrics/OTLP configured but no exporter started; Hub usage OTel re-emission and container suppression are inactive")
+					mp = nil
+				}
+			} else if obs.OTLPMetrics != nil {
+				obs.OTLPMetrics.Enabled = true
+				obs.OTLPMetrics.Reason = "SCION_OTEL_ENDPOINT configured"
+			}
+			if mp != nil {
 				exit.addFlush(mp.Shutdown)
 				lifecycleMeterProvider = mp
 
@@ -686,6 +728,9 @@ func runServerStart(cmd *cobra.Command, args []string) error {
 			}
 		}
 		log.Print(obs.Metrics.LogLine())
+		if obs.OTLPMetrics != nil {
+			log.Print(obs.OTLPMetrics.LogLine())
+		}
 		hubSrv.SetObservabilityExportStatus(obs)
 		wireLifecycleEventsSink(hubSrv, cfg, devAuthToken != "")
 
@@ -997,6 +1042,7 @@ func runServerStart(cmd *cobra.Command, args []string) error {
 									"hmac_key":    secretKey,
 									"broker_id":   brokerID,
 									"plugin_name": bt,
+									scionplugin.ConfigKeyHubInboundConversation: "1",
 								}
 								// Inject project slug map so hub-managed plugins can resolve
 								// human-readable project names without user-level API access.
@@ -3274,6 +3320,13 @@ func wireHubCoreMetrics(hubSrv *hub.Server, mp metric.MeterProvider) dbmetrics.R
 	if err := hubSrv.RegisterNeverSuspendMetrics(mp); err != nil {
 		log.Printf("WARNING: hub never-suspend metrics disabled: %v", err)
 	}
+	if err := hubSrv.RegisterUsageOTelMetrics(
+		mp,
+		hub.WithUsageOTelActiveSink(true),
+		hub.WithUsageOTelCardinality(hub.UsageOTelCardinalityFromEnv()),
+	); err != nil {
+		log.Printf("WARNING: hub usage OTel re-emission metrics disabled: %v", err)
+	}
 
 	if drainRec, err := hub.NewOTelConduitIngressDrainMetrics(mp); err != nil {
 		log.Printf("WARNING: hub conduit ingress drain metrics disabled: %v", err)
@@ -3684,6 +3737,53 @@ func initHubServer(ctx context.Context, cfg *config.GlobalConfig, s store.Store,
 		}
 	}
 
+	log.Printf("Database: %s (%s)", cfg.Database.Driver, config.RedactDatabaseURL(cfg.Database.Driver, cfg.Database.URL))
+
+	// Warn once (outside the settings retry loop below) about SCION_SERVER_*
+	// and SCION_SEED_* names that no loader maps to a setting, so a
+	// misspelled override is not silently ignored (ptone/scion#1081). Names
+	// only, never values.
+	config.WarnUnmatchedSettingsEnv(slog.Default(), os.Environ(), opsettings.IsLayer1Key)
+
+	// --- Settings-DB Phase 3: OperationalSettings wiring (§3.9) ---
+	// Driver-agnostic: initOperationalSettings handles both postgres (advisory
+	// locking) and SQLite (single-writer) via the existing AdvisoryLocker branch.
+	//
+	// Runs before resource bootstrap and storage sync so startup resource
+	// hashing (e.g. hub.content_hash_v2) honors stored experiment overrides,
+	// and fail-closed startup checks abort before mutating storage or spawning
+	// background sync goroutines.
+	//
+	// Fail-closed: if settings cannot be loaded the hub must not serve ordinary
+	// traffic, because a DB-persisted admin_mode=true would be invisible to this
+	// process. Retry with exponential backoff to tolerate transient DB issues,
+	// then fail the hub startup if all attempts are exhausted.
+	// NOTE: this call and its error-return chain (up to runServerStart) is what makes
+	// settings init fail-closed. Do NOT revert to the old log-and-continue
+	// pattern — that would let the server accept traffic without authoritative
+	// settings, silently bypassing a DB-persisted admin_mode=true.
+	// See TestInitOperationalSettings_FailClosed for the regression test.
+	if err := initOperationalSettingsWithRetry(ctx, cfg, hubSrv, s, globalDir); err != nil {
+		return nil, fmt.Errorf("operational settings init failed after retries (driver=%s): %w",
+			cfg.Database.Driver, err)
+	}
+	// Test admin tier G8, second half: no federation in the stored
+	// operational settings either.
+	if err := hubSrv.VerifyTestAdminFederationOff(); err != nil {
+		return nil, err
+	}
+	// A hub that starts without the offline hub-admin delegation setting
+	// ends every offline hub-admin delegation and revokes the identities
+	// they issued. Nothing listens yet; a failure refuses startup.
+	if err := hubSrv.EndOfflineAdminDelegationsWhenOff(ctx); err != nil {
+		return nil, err
+	}
+	// A keyring file needs the server.secret_rotation experiment, read
+	// from the operational settings just loaded; nothing listens yet.
+	if err := verifyKeyringExperiment(hubSrv); err != nil {
+		return nil, err
+	}
+
 	if hostedMode {
 		// Hosted mode: bootstrap bundled resources directly into the Hub from
 		// the binary's embedded catalog. This removes the dependency on local
@@ -3717,48 +3817,6 @@ func initHubServer(ctx context.Context, cfg *config.GlobalConfig, s store.Store,
 	// the local DB reflects reality before any dispatch is attempted.
 	go hubSrv.SyncAllHarnessConfigsFromStorage(ctx)
 	go hubSrv.SyncAllTemplatesFromStorage(ctx)
-
-	log.Printf("Database: %s (%s)", cfg.Database.Driver, config.RedactDatabaseURL(cfg.Database.Driver, cfg.Database.URL))
-
-	// Warn once (outside the settings retry loop below) about SCION_SERVER_*
-	// and SCION_SEED_* names that no loader maps to a setting, so a
-	// misspelled override is not silently ignored (ptone/scion#1081). Names
-	// only, never values.
-	config.WarnUnmatchedSettingsEnv(slog.Default(), os.Environ(), opsettings.IsLayer1Key)
-
-	// --- Settings-DB Phase 3: OperationalSettings wiring (§3.9) ---
-	// Driver-agnostic: initOperationalSettings handles both postgres (advisory
-	// locking) and SQLite (single-writer) via the existing AdvisoryLocker branch.
-	//
-	// Fail-closed: if settings cannot be loaded the hub must not serve ordinary
-	// traffic, because a DB-persisted admin_mode=true would be invisible to this
-	// process. Retry with exponential backoff to tolerate transient DB issues,
-	// then fail the hub startup if all attempts are exhausted.
-	// NOTE: this call and its error-return chain (up to runServerStart) is what makes
-	// settings init fail-closed. Do NOT revert to the old log-and-continue
-	// pattern — that would let the server accept traffic without authoritative
-	// settings, silently bypassing a DB-persisted admin_mode=true.
-	// See TestInitOperationalSettings_FailClosed for the regression test.
-	if err := initOperationalSettingsWithRetry(ctx, cfg, hubSrv, s, globalDir); err != nil {
-		return nil, fmt.Errorf("operational settings init failed after retries (driver=%s): %w",
-			cfg.Database.Driver, err)
-	}
-	// Test admin tier G8, second half: no federation in the stored
-	// operational settings either.
-	if err := hubSrv.VerifyTestAdminFederationOff(); err != nil {
-		return nil, err
-	}
-	// A hub that starts without the offline hub-admin delegation setting
-	// ends every offline hub-admin delegation and revokes the identities
-	// they issued. Nothing listens yet; a failure refuses startup.
-	if err := hubSrv.EndOfflineAdminDelegationsWhenOff(ctx); err != nil {
-		return nil, err
-	}
-	// A keyring file needs the server.secret_rotation experiment, read
-	// from the operational settings just loaded; nothing listens yet.
-	if err := verifyKeyringExperiment(hubSrv); err != nil {
-		return nil, err
-	}
 
 	// ptone/scion#1316 fault 3: confirm the hub's own agent_defaults resolve
 	// to registered resources now that bundled resources are seeded and
@@ -4914,6 +4972,10 @@ func startRuntimeBroker(ctx context.Context, cmd *cobra.Command, cfg *config.Glo
 	if err != nil {
 		return fmt.Errorf("invalid server.broker.init_firewall: %w", err)
 	}
+	conduitDeliverRuntimes, err := config.ResolveConduitDeliverRuntimes(cfg.RuntimeBroker.ConduitDeliverRuntimes)
+	if err != nil {
+		return fmt.Errorf("invalid server.broker.conduit_deliver_runtimes: %w", err)
+	}
 
 	// Create Runtime Broker server configuration
 	rhCfg := runtimebroker.ServerConfig{
@@ -4931,6 +4993,7 @@ func startRuntimeBroker(ctx context.Context, cmd *cobra.Command, cfg *config.Glo
 		CORSMaxAge:                    cfg.RuntimeBroker.CORSMaxAge,
 		AllowContainerScriptHarnesses: cfg.RuntimeBroker.AllowContainerScriptHarnesses,
 		InitFirewall:                  brokerInitFirewall,
+		ConduitDeliverRuntimes:        conduitDeliverRuntimes,
 		StateDir:                      rhStateDir,
 		NFSConfig:                     brokerNFS,
 		StorageOverridesCheck:         brokerStorageOverridesCheck,

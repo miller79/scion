@@ -26,6 +26,7 @@ import (
 	"text/tabwriter"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -67,16 +68,20 @@ func init() {
 func newCommandRequestCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "request",
-		Short: "List or approve command requests",
-		Long: `Inspect or approve command execution requests.
+		Short: "List, withdraw, approve, or dismiss command requests",
+		Long: `Inspect, withdraw, approve, or dismiss command execution requests.
 
 Commands:
   scion command request list [--key <key>] [--json]              (agent mode)
-  scion command request approve <id> [--confirm-sha256 <hex>]    (human)`,
+  scion command request withdraw <key> [--reason <text>]         (agent mode)
+  scion command request approve <id> [--confirm-sha256 <hex>]    (human)
+  scion command request dismiss <id> [--reason <text>]           (human)`,
 	}
 	cmd.AddCommand(
 		newCommandRequestListCmd(),
+		newCommandRequestWithdrawCmd(),
 		newCommandRequestApproveCmd(),
+		newCommandRequestDismissCmd(),
 	)
 	return cmd
 }
@@ -107,6 +112,38 @@ request's canonical command_sha256.`,
 		RunE: runCommandRequestApprove,
 	}
 	cmd.Flags().String("confirm-sha256", "", "Full 64-character hex command_sha256 for non-interactive confirmation")
+	cmd.Flags().Bool("share-output", false, "Share a redacted <= 4 KiB output tail with the requesting agent (defaults to what the agent requested)")
+	cmd.Flags().Bool("no-share-output", false, "Do not share command output with the requesting agent (overrides agent's share_output_requested)")
+	cmd.Flags().Bool("json", false, "Output in JSON format")
+	return cmd
+}
+
+func newCommandRequestDismissCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "dismiss <id>",
+		Short: "Dismiss a pending command request without running it",
+		Long: `Dismiss a pending command request (human approver only).
+
+Repeating dismiss on an already-dismissed request is an idempotent no-op.`,
+		Args: cobra.ExactArgs(1),
+		RunE: runCommandRequestDismiss,
+	}
+	cmd.Flags().String("reason", "", fmt.Sprintf("Optional plain-text reason for dismissing the request (at most %d characters)", msgaction.MaxReasonRunes))
+	cmd.Flags().Bool("json", false, "Output in JSON format")
+	return cmd
+}
+
+func newCommandRequestWithdrawCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "withdraw <key>",
+		Short: "Withdraw a pending command request that is no longer needed",
+		Long: `Withdraw the latest pending version of a command request made by this agent (agent mode only).
+
+Repeating withdraw on an already-withdrawn key is an idempotent no-op.`,
+		Args: cobra.ExactArgs(1),
+		RunE: runCommandRequestWithdraw,
+	}
+	cmd.Flags().String("reason", "", fmt.Sprintf("Optional plain-text reason why the command is no longer needed (at most %d characters)", msgaction.MaxReasonRunes))
 	cmd.Flags().Bool("json", false, "Output in JSON format")
 	return cmd
 }
@@ -209,6 +246,13 @@ func runCommandRequestApprove(cmd *cobra.Command, args []string) error {
 	confirmHash, _ := cmd.Flags().GetString("confirm-sha256")
 	confirmHash = strings.ToLower(strings.TrimSpace(confirmHash))
 
+	shareFlagSet := cmd.Flags().Changed("share-output")
+	noShareFlagSet := cmd.Flags().Changed("no-share-output")
+	if shareFlagSet && noShareFlagSet {
+		return newUsageError("--share-output and --no-share-output are mutually exclusive")
+	}
+	shareFlagVal, _ := cmd.Flags().GetBool("share-output")
+
 	client, err := commandRequestsClientFactory()
 	if err != nil {
 		return err
@@ -229,6 +273,15 @@ func runCommandRequestApprove(cmd *cobra.Command, args []string) error {
 		return errors.New("command request hash does not match the displayed script; refusing to approve")
 	}
 
+	shareOutput := detail.Request.ShareOutputRequested
+	switch {
+	case shareFlagSet:
+		shareOutput = shareFlagVal
+	case noShareFlagSet:
+		// Any use of --no-share-output means do not share output.
+		shareOutput = false
+	}
+
 	out := cmd.OutOrStdout()
 	containerLabel := "your execution container"
 	if detail.ExecContainer != nil && detail.ExecContainer.AgentName != "" {
@@ -240,7 +293,7 @@ func runCommandRequestApprove(cmd *cobra.Command, args []string) error {
 
 	wantJSON := commandRequestsWantJSON(cmd)
 	if !wantJSON {
-		printCommandRequestConfirmationSummary(out, detail, containerLabel)
+		printCommandRequestConfirmationSummary(out, detail, containerLabel, shareOutput)
 	}
 
 	if commandApproveIsTerminal() && !wantJSON {
@@ -275,6 +328,7 @@ func runCommandRequestApprove(cmd *cobra.Command, args []string) error {
 	resp, err := client.CommandRequests().Approve(ctx, reqID, &messages.ApproveCommandRequestBody{
 		RowID:          detail.Request.RowID,
 		CommandSHA256:  detail.Request.CommandSHA256,
+		ShareOutput:    &shareOutput,
 		Surface:        msgaction.CommandRequestSurfaceCLI,
 		IdempotencyKey: uuid.NewString(),
 	})
@@ -290,7 +344,100 @@ func runCommandRequestApprove(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func printCommandRequestConfirmationSummary(out io.Writer, detail *messages.CommandRequestDetailResponse, containerLabel string) {
+func runCommandRequestDismiss(cmd *cobra.Command, args []string) error {
+	if resolveMode() == ModeAgent {
+		return errors.New(errMsgCommandRequestHumansOnly)
+	}
+	reqID := strings.TrimSpace(args[0])
+	if reqID == "" {
+		return newUsageError("command request <id> is required")
+	}
+	rawReason, _ := cmd.Flags().GetString("reason")
+	reason := strings.TrimSpace(rawReason)
+	if utf8.RuneCountInString(reason) > msgaction.MaxReasonRunes {
+		return newUsageError("--reason must be at most %d characters", msgaction.MaxReasonRunes)
+	}
+
+	client, err := commandRequestsClientFactory()
+	if err != nil {
+		return err
+	}
+
+	baseCtx := cmd.Context()
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
+	defer cancel()
+
+	resp, err := client.CommandRequests().Dismiss(ctx, reqID, &messages.DismissCommandRequestBody{
+		Reason:         reason,
+		Surface:        msgaction.CommandRequestSurfaceCLI,
+		IdempotencyKey: uuid.NewString(),
+	})
+	if err != nil {
+		return formatCommandRequestAPIError(err)
+	}
+
+	out := cmd.OutOrStdout()
+	if commandRequestsWantJSON(cmd) {
+		return writeJSONTo(out, resp)
+	}
+	if resp.AlreadyDismissed {
+		_, _ = fmt.Fprintf(out, "%s v%d already dismissed.\n", safeText(resp.Request.Key), resp.Request.Version)
+		return nil
+	}
+	_, _ = fmt.Fprintf(out, "Dismissed %s v%d (%s).\n", safeText(resp.Request.Key), resp.Request.Version, safeText(resp.Request.RowID))
+	return nil
+}
+
+func runCommandRequestWithdraw(cmd *cobra.Command, args []string) error {
+	if resolveMode() != ModeAgent {
+		return errors.New(errMsgCommandRequestAgentsOnly)
+	}
+	key := strings.TrimSpace(args[0])
+	if key == "" {
+		return newUsageError("command request <key> is required")
+	}
+	rawReason, _ := cmd.Flags().GetString("reason")
+	reason := strings.TrimSpace(rawReason)
+	if utf8.RuneCountInString(reason) > msgaction.MaxReasonRunes {
+		return newUsageError("--reason must be at most %d characters", msgaction.MaxReasonRunes)
+	}
+
+	client, err := commandRequestsClientFactory()
+	if err != nil {
+		return err
+	}
+
+	baseCtx := cmd.Context()
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
+	defer cancel()
+
+	resp, err := client.CommandRequests().Withdraw(ctx, &messages.WithdrawCommandRequestBody{
+		Key:    key,
+		Reason: reason,
+	})
+	if err != nil {
+		return formatCommandRequestAPIError(err)
+	}
+
+	out := cmd.OutOrStdout()
+	if commandRequestsWantJSON(cmd) {
+		return writeJSONTo(out, resp)
+	}
+	if resp.AlreadyWithdrawn {
+		_, _ = fmt.Fprintf(out, "%s v%d already withdrawn.\n", safeText(resp.Request.Key), resp.Request.Version)
+		return nil
+	}
+	_, _ = fmt.Fprintf(out, "%s v%d withdrawn.\n", safeText(resp.Request.Key), resp.Request.Version)
+	return nil
+}
+
+func printCommandRequestConfirmationSummary(out io.Writer, detail *messages.CommandRequestDetailResponse, containerLabel string, shareOutput bool) {
 	req := detail.Request
 	_, _ = fmt.Fprintf(out, "Command request: %s v%d (%s)\n", safeText(req.Key), req.Version, safeText(req.RowID))
 	_, _ = fmt.Fprintf(out, "Requested by:    %s\n", safeText(req.AgentName))
@@ -309,6 +456,14 @@ func printCommandRequestConfirmationSummary(out io.Writer, detail *messages.Comm
 		_, _ = fmt.Fprintln(out, "WARNING:         workdir is a shared directory (agent-writable)")
 	}
 	_, _ = fmt.Fprintf(out, "Timeout:         %ds\n", req.TimeoutS)
+	shareStr := "no"
+	if shareOutput {
+		shareStr = "yes (redacted <= 4 KiB tail)"
+	}
+	if req.ShareOutputRequested {
+		shareStr += " [agent requested]"
+	}
+	_, _ = fmt.Fprintf(out, "Share output:    %s\n", shareStr)
 	_, _ = fmt.Fprintf(out, "Container:       %s", containerLabel)
 	if detail.ExecContainer != nil && detail.ExecContainer.State != "" {
 		_, _ = fmt.Fprintf(out, " [%s]", safeText(detail.ExecContainer.State))

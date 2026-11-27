@@ -119,6 +119,7 @@ import (
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/testinframarker"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/threadgroup"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/threadgroupmember"
+	"github.com/GoogleCloudPlatform/scion/pkg/ent/trajectorysegment"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/trigger"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/triggerevent"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/triggerfire"
@@ -126,6 +127,7 @@ import (
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/usageevent"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/usagereservation"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/usagerollupdaily"
+	"github.com/GoogleCloudPlatform/scion/pkg/ent/usagerolluphourly"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/usagescopecounterdaily"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/user"
 	"github.com/GoogleCloudPlatform/scion/pkg/ent/useraccesstoken"
@@ -301,6 +303,7 @@ func checkColumn(t, c string) error {
 			testinframarker.Table:               testinframarker.ValidColumn,
 			threadgroup.Table:                   threadgroup.ValidColumn,
 			threadgroupmember.Table:             threadgroupmember.ValidColumn,
+			trajectorysegment.Table:             trajectorysegment.ValidColumn,
 			trigger.Table:                       trigger.ValidColumn,
 			triggerevent.Table:                  triggerevent.ValidColumn,
 			triggerfire.Table:                   triggerfire.ValidColumn,
@@ -308,6 +311,7 @@ func checkColumn(t, c string) error {
 			usageevent.Table:                    usageevent.ValidColumn,
 			usagereservation.Table:              usagereservation.ValidColumn,
 			usagerollupdaily.Table:              usagerollupdaily.ValidColumn,
+			usagerolluphourly.Table:             usagerolluphourly.ValidColumn,
 			usagescopecounterdaily.Table:        usagescopecounterdaily.ValidColumn,
 			user.Table:                          user.ValidColumn,
 			useraccesstoken.Table:               useraccesstoken.ValidColumn,

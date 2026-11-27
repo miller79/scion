@@ -26,9 +26,17 @@ const inboxNothingWaitingProse = "Nothing Waiting"
 type inboxLinkKey string
 
 const (
-	// inboxLinkPrimary resolves to the category's hub href; Phases 3 and 4 add
-	// chat-* and reviews-* link keys mirroring web/src/utils/inbox-prose.ts.
-	inboxLinkPrimary inboxLinkKey = "primary"
+	// inboxLinkPrimary resolves to the category's hub href; merged secrets,
+	// chat-* and reviews-* link keys mirror web/src/utils/inbox-prose.ts.
+	inboxLinkPrimary          inboxLinkKey = "primary"
+	inboxLinkSecretsRequests  inboxLinkKey = "secrets-requests"
+	inboxLinkSecretsPending   inboxLinkKey = "secrets-pending"
+	inboxLinkChatUnread       inboxLinkKey = "chat-unread"
+	inboxLinkChatMentions     inboxLinkKey = "chat-mentions"
+	inboxLinkChatStarred      inboxLinkKey = "chat-starred"
+	inboxLinkReviewsToAddress inboxLinkKey = "reviews-to-address"
+	inboxLinkReviewsRequested inboxLinkKey = "reviews-requested"
+	inboxLinkReviewsDrafts    inboxLinkKey = "reviews-drafts"
 )
 
 type inboxProseSegment struct {
@@ -41,6 +49,38 @@ type inboxProseSegment struct {
 // (design §6.2, §9, §14.3).
 func formatInboxProseSegments(category string, count int, capped bool, breakdown map[string]int) []inboxProseSegment {
 	switch category {
+	case "secrets":
+		requests := breakdown["secretRequests"]
+		pending := breakdown["pendingSecrets"]
+		requestsCapped := breakdown["secretRequestsCapped"] > 0 || (capped && requests > 0 && pending == 0)
+		pendingCapped := breakdown["pendingSecretsCapped"] > 0 || (capped && pending > 0 && requests == 0)
+		if requests <= 0 && pending <= 0 {
+			return nil
+		}
+		var segments []inboxProseSegment
+		if requests > 0 {
+			segments = append(segments, inboxProseSegment{
+				Text: formatCountNoun(requests, requestsCapped, "secret request", "secret requests"),
+				Link: inboxLinkSecretsRequests,
+			})
+			if agents := breakdown[hubclient.InboxBreakdownAgents]; agents > 0 {
+				segments = appendUnlinkedSegment(segments, " from "+pluralizeInbox(agents, "agent", "agents"))
+			}
+		}
+		if pending > 0 {
+			if requests > 0 {
+				segments = appendUnlinkedSegment(segments, ", ")
+			}
+			segments = append(segments, inboxProseSegment{
+				Text: formatCountNoun(pending, pendingCapped, "pending secret", "pending secrets"),
+				Link: inboxLinkSecretsPending,
+			})
+			segments = appendUnlinkedSegment(segments, " to approve")
+		}
+		if projects := breakdown[hubclient.InboxBreakdownProjects]; projects > 0 {
+			segments = appendUnlinkedSegment(segments, ", across "+pluralizeInbox(projects, "project", "projects"))
+		}
+		return segments
 	case hubclient.InboxCategoryDecisions:
 		if count <= 0 {
 			return nil
@@ -50,7 +90,7 @@ func formatInboxProseSegments(category string, count int, capped bool, breakdown
 			breakdown[hubclient.InboxBreakdownAgents],
 			breakdown[hubclient.InboxBreakdownProjects],
 		)
-	case "agent_secrets":
+	case hubclient.InboxCategoryAgentSecrets:
 		if count <= 0 {
 			return nil
 		}
@@ -80,12 +120,61 @@ func formatInboxProseSegments(category string, count int, capped bool, breakdown
 			breakdown[hubclient.InboxBreakdownProjects],
 		)
 	case hubclient.InboxCategoryReviews:
-		if count <= 0 {
+		_, hasToAddress := breakdown[hubclient.InboxBreakdownToAddress]
+		_, hasRequested := breakdown[hubclient.InboxBreakdownRequested]
+		_, hasDrafts := breakdown[hubclient.InboxBreakdownDrafts]
+		if !hasToAddress && !hasRequested && !hasDrafts {
+			if count <= 0 {
+				return nil
+			}
+			return []inboxProseSegment{
+				{Text: formatCountNoun(count, capped, "pending review", "pending reviews"), Link: inboxLinkPrimary},
+			}
+		}
+		toAddress := breakdown[hubclient.InboxBreakdownToAddress]
+		requested := breakdown[hubclient.InboxBreakdownRequested]
+		drafts := breakdown[hubclient.InboxBreakdownDrafts]
+		explicitToAddressCapped := breakdown[hubclient.InboxBreakdownToAddressCapped] > 0
+		explicitRequestedCapped := breakdown[hubclient.InboxBreakdownRequestedCapped] > 0
+		// Fallback for a CLI talking to an older hub that omits per-clause *Capped keys.
+		hasExplicitCap := explicitToAddressCapped || explicitRequestedCapped
+		toAddressCapped := explicitToAddressCapped || (capped && !hasExplicitCap)
+		requestedCapped := explicitRequestedCapped || (capped && !hasExplicitCap)
+		draftsCapped := breakdown[hubclient.InboxBreakdownDraftsCapped] > 0
+
+		var segments []inboxProseSegment
+		hasClause := false
+		if toAddress > 0 {
+			segments = append(segments, inboxProseSegment{
+				Text: formatCountNoun(toAddress, toAddressCapped, "review to address", "reviews to address"),
+				Link: inboxLinkReviewsToAddress,
+			})
+			hasClause = true
+		}
+		if requested > 0 {
+			if hasClause {
+				segments = appendUnlinkedSegment(segments, ", ")
+			}
+			segments = append(segments, inboxProseSegment{
+				Text: formatCountNoun(requested, requestedCapped, "review requested", "reviews requested"),
+				Link: inboxLinkReviewsRequested,
+			})
+			hasClause = true
+		}
+		if drafts > 0 {
+			if hasClause {
+				segments = appendUnlinkedSegment(segments, ", ")
+			}
+			segments = append(segments, inboxProseSegment{
+				Text: formatCountNoun(drafts, draftsCapped, "unfinished draft", "unfinished drafts"),
+				Link: inboxLinkReviewsDrafts,
+			})
+			hasClause = true
+		}
+		if !hasClause {
 			return nil
 		}
-		return []inboxProseSegment{
-			{Text: formatCountNoun(count, capped, "pending review", "pending reviews"), Link: inboxLinkPrimary},
-		}
+		return segments
 	case hubclient.InboxCategoryChat:
 		unread := count
 		if breakdown != nil {
@@ -94,7 +183,8 @@ func formatInboxProseSegments(category string, count int, capped bool, breakdown
 			}
 		}
 		mentions := breakdown[hubclient.InboxBreakdownMentions]
-		starred := breakdown["starredMessages"]
+		starred := breakdown[hubclient.InboxBreakdownStarredMessages]
+		starredCapped := breakdown[hubclient.InboxBreakdownStarredMessagesCapped] > 0
 		projects := breakdown[hubclient.InboxBreakdownProjects]
 
 		var segments []inboxProseSegment
@@ -102,24 +192,28 @@ func formatInboxProseSegments(category string, count int, capped bool, breakdown
 		if unread > 0 {
 			segments = append(segments, inboxProseSegment{
 				Text: formatCountNoun(unread, capped, "unread conversation", "unread conversations"),
-				Link: inboxLinkPrimary,
+				Link: inboxLinkChatUnread,
 			})
 			hasClause = true
 		}
 		if mentions > 0 {
-			prefix := ""
 			if hasClause {
-				prefix = ", "
+				segments = appendUnlinkedSegment(segments, ", ")
 			}
-			segments = appendUnlinkedSegment(segments, fmt.Sprintf("%s%d with mentions", prefix, mentions))
+			segments = append(segments, inboxProseSegment{
+				Text: fmt.Sprintf("%d with mentions", mentions),
+				Link: inboxLinkChatMentions,
+			})
 			hasClause = true
 		}
 		if starred > 0 {
-			prefix := ""
 			if hasClause {
-				prefix = ", "
+				segments = appendUnlinkedSegment(segments, ", ")
 			}
-			segments = appendUnlinkedSegment(segments, prefix+pluralizeInbox(starred, "starred message", "starred messages"))
+			segments = append(segments, inboxProseSegment{
+				Text: formatCountNoun(starred, starredCapped, "starred message", "starred messages"),
+				Link: inboxLinkChatStarred,
+			})
 			hasClause = true
 		}
 		if !hasClause {

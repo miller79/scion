@@ -61,6 +61,10 @@ func warnRemovedMode(source string) {
 // Deliberately absent: "inbox". Human-mode only (ptone/scion#9008, parent
 // ptone/scion#8962): GET /api/v1/users/me/inbox/summary refuses agent
 // identities, and agents already have scion decisions and scion notifications.
+//
+// Deliberately absent: "label". Human-mode only (ptone/scion#9521): agent
+// identities are refused label edits on the Hub, and only human callers with
+// agent.update may curate agent labels.
 var agentAllowed = map[string]bool{
 	"create":                      true,
 	"delete":                      true,
@@ -176,6 +180,7 @@ var agentAllowed = map[string]bool{
 	"artifact.list":                 true,
 	"artifact.view":                 true,
 	"artifact.comments":             true,
+	"artifact.review-requests":      true,
 	// artifact share, artifact grants, artifact transfer and artifact delete
 	// are human-only and deliberately absent (ptone/scion#4529, ptone/scion#4579,
 	// ptone/scion#9337): agents may not share, transfer or delete artifacts, or
@@ -236,10 +241,11 @@ var agentAllowed = map[string]bool{
 	"secret.request.withdraw": true,
 
 	// Command-request self-service list for agents (ptone/scion#9278 §4.5).
-	// command.request.approve is human-only and intentionally omitted.
-	"command":              true,
-	"command.request":      true,
-	"command.request.list": true,
+	// command.request.approve and command.request.dismiss are human-only and intentionally omitted.
+	"command":                  true,
+	"command.request":          true,
+	"command.request.list":     true,
+	"command.request.withdraw": true,
 
 	// Decision self-service as the calling agent (ptone/scion#7797,
 	// decision Q1; withdraw ptone/scion#8190). Hub routes enforce

@@ -17,6 +17,11 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 ARG GROK_VERSION=latest
+ARG GROK_CLI_VERSION
+ARG GROK_CLI_URL_AMD64
+ARG GROK_CLI_URL_ARM64
+ARG GROK_CLI_SHA256_AMD64
+ARG GROK_CLI_SHA256_ARM64
 
 # Pre-seed grok config directories and seed config.
 RUN mkdir -p /home/scion/.grok/hooks \
@@ -34,10 +39,23 @@ COPY --chown=scion:scion home/.grok/config.toml /home/scion/.grok/config.toml
 # image is self-contained after removing ~/.grok.
 # Do NOT switch back to USER scion — sciontool init handles the user switch.
 USER root
-RUN curl -fsSL https://x.ai/cli/install.sh | bash \
+RUN if [ -n "${GROK_CLI_VERSION}${GROK_CLI_URL_AMD64}${GROK_CLI_URL_ARM64}${GROK_CLI_SHA256_AMD64}${GROK_CLI_SHA256_ARM64}" ]; then \
+      case "$(dpkg --print-architecture)" in \
+        amd64) URL="${GROK_CLI_URL_AMD64}"; SHA="${GROK_CLI_SHA256_AMD64}" ;; \
+        arm64) URL="${GROK_CLI_URL_ARM64}"; SHA="${GROK_CLI_SHA256_ARM64}" ;; \
+        *) exit 1 ;; \
+      esac && \
+      test -n "${GROK_CLI_VERSION}" && test -n "$URL" && test -n "$SHA" && \
+      curl -fsSL "$URL" -o /tmp/grok.tar.gz && \
+      printf '%s  /tmp/grok.tar.gz\n' "$SHA" | sha256sum -c - && \
+      tar -xzf /tmp/grok.tar.gz -C /usr/local/bin grok && \
+      chmod +x /usr/local/bin/grok && rm /tmp/grok.tar.gz; \
+    else \
+    curl -fsSL https://x.ai/cli/install.sh | bash \
     && rm -f /usr/local/bin/grok /usr/local/bin/agent \
     && cp -fL /root/.grok/bin/grok /usr/local/bin/grok \
     && chmod +x /usr/local/bin/grok \
-    && rm -rf /root/.grok
+    && rm -rf /root/.grok; \
+    fi
 
 CMD ["grok"]

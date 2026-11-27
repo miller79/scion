@@ -418,6 +418,31 @@ func (d *HTTPAgentDispatcher) SetTokenGenerator(gen AgentTokenGenerator) {
 	d.tokenGenerator = gen
 }
 
+// recordDroppedScopeWarnings attaches any user-facing dropped-scope warning to
+// ctx and logs demoted dropped scopes (such as project:skill:write,
+// ptone/scion#9452) at Hub debug level.
+func (d *HTTPAgentDispatcher) recordDroppedScopeWarnings(ctx context.Context, agent *store.Agent, grant *AgentTokenGrant) {
+	if w := droppedScopesWarning(agent, grant); w != "" {
+		addDispatchWarnings(ctx, w)
+	}
+	if demoted := debugOnlyDroppedScopesFromGrant(grant); len(demoted) > 0 && d.log != nil {
+		agentID, agentSlug := "", ""
+		if agent != nil {
+			agentID = agent.ID
+			agentSlug = agent.Slug
+		}
+		names := make([]string, len(demoted))
+		for i, s := range demoted {
+			names[i] = string(s)
+		}
+		d.log.DebugContext(ctx, "agent token issued without ceiling-optional scopes",
+			"agent_id", agentID,
+			"agent_slug", agentSlug,
+			"dropped_scopes", names,
+		)
+	}
+}
+
 // agentRoleAndScopes extracts the effective role and config-based additional
 // scopes (e.g. GCP token) from the agent record. Used by all dispatch call
 // sites to keep role/scope computation in a single place.
@@ -1038,7 +1063,7 @@ func (d *HTTPAgentDispatcher) buildCreateRequestFor(ctx context.Context, agent *
 			return nil, fmt.Errorf("%s: %w", callerName, err)
 		}
 		req.tokenGrant = grant
-		addDispatchWarnings(ctx, droppedScopesWarning(agent, grant))
+		d.recordDroppedScopeWarnings(ctx, agent, grant)
 	} else if d.debug {
 		d.log.Debug("No token generator configured - agent will not have Hub credentials")
 	}
@@ -1811,6 +1836,7 @@ func brokerEffectiveConfigOf(info *RemoteAgentInfo, brokerID string, log *slog.L
 		{"runtime", info.Runtime, &eff.Runtime},
 		{"brokerBuild", info.BrokerBuild, &eff.BrokerBuild},
 		{"maxDuration", info.MaxDuration, &eff.MaxDuration},
+		{"runDeadline", info.RunDeadline, &eff.RunDeadline},
 	} {
 		if validEchoString(f.src) {
 			*f.dst = f.src
@@ -2316,11 +2342,19 @@ func (d *HTTPAgentDispatcher) DispatchAgentCreate(ctx context.Context, agent *st
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
+	if err := d.telemetryEnforcementPrecheck(ctx, agent); err != nil {
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
 	if err := d.createHomeFilesPrecheck(ctx, agent, false); err != nil {
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	if err := d.gateGitHubTokenInstallationOnly(ctx, agent); err != nil {
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+	if err := d.limitCeilingsBrokerPrecheck(ctx, agent); err != nil {
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
@@ -2472,10 +2506,16 @@ func (d *HTTPAgentDispatcher) dispatchProvisionWithWorkspaceSource(ctx context.C
 	if err := d.hostedConfigPrecheck(ctx, agent); err != nil {
 		return err
 	}
+	if err := d.telemetryEnforcementPrecheck(ctx, agent); err != nil {
+		return err
+	}
 	if err := d.createHomeFilesPrecheck(ctx, agent, reprovision); err != nil {
 		return err
 	}
 	if err := d.gateGitHubTokenInstallationOnly(ctx, agent); err != nil {
+		return err
+	}
+	if err := d.limitCeilingsBrokerPrecheck(ctx, agent); err != nil {
 		return err
 	}
 
@@ -2732,10 +2772,16 @@ func (d *HTTPAgentDispatcher) DispatchAgentCreateWithGather(ctx context.Context,
 	if err := d.hostedConfigPrecheck(ctx, agent); err != nil {
 		return nil, err
 	}
+	if err := d.telemetryEnforcementPrecheck(ctx, agent); err != nil {
+		return nil, err
+	}
 	if err := d.createHomeFilesPrecheck(ctx, agent, false); err != nil {
 		return nil, err
 	}
 	if err := d.gateGitHubTokenInstallationOnly(ctx, agent); err != nil {
+		return nil, err
+	}
+	if err := d.limitCeilingsBrokerPrecheck(ctx, agent); err != nil {
 		return nil, err
 	}
 
@@ -2955,10 +3001,16 @@ func (d *HTTPAgentDispatcher) finalizeEnv(ctx context.Context, agent *store.Agen
 	if err := d.hostedConfigPrecheck(ctx, agent); err != nil {
 		return nil, err
 	}
+	if err := d.telemetryEnforcementPrecheck(ctx, agent); err != nil {
+		return nil, err
+	}
 	if err := d.createHomeFilesPrecheck(ctx, agent, false); err != nil {
 		return nil, err
 	}
 	if err := d.gateGitHubTokenInstallationOnly(ctx, agent); err != nil {
+		return nil, err
+	}
+	if err := d.limitCeilingsBrokerPrecheck(ctx, agent); err != nil {
 		return nil, err
 	}
 
@@ -4028,7 +4080,7 @@ func (d *HTTPAgentDispatcher) buildStartEnv(ctx context.Context, agent *store.Ag
 			return startEnvResult{}, fmt.Errorf("%s: %w", caller, err)
 		}
 		tokenGrant = grant
-		addDispatchWarnings(ctx, droppedScopesWarning(agent, grant))
+		d.recordDroppedScopeWarnings(ctx, agent, grant)
 	}
 
 	// Transport token minting for platform-layer auth (IAP / Cloud Run invoker).
@@ -4216,6 +4268,10 @@ func (d *HTTPAgentDispatcher) dispatchAgentStart(ctx context.Context, agent *sto
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
+	if err := d.limitCeilingsBrokerPrecheck(ctx, agent); err != nil {
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
 
 	endpoint, err := d.getProvisioningBrokerEndpoint(ctx, agent)
 	if err != nil {
@@ -4236,6 +4292,10 @@ func (d *HTTPAgentDispatcher) dispatchAgentStart(ctx context.Context, agent *sto
 		return nil, err
 	}
 	if err := d.hostedConfigPrecheck(ctx, agent); err != nil {
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+	if err := d.telemetryEnforcementPrecheck(ctx, agent); err != nil {
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
@@ -4641,6 +4701,9 @@ func (d *HTTPAgentDispatcher) DispatchAgentRestart(ctx context.Context, agent *s
 	if err := d.gateGitHubTokenInstallationOnly(ctx, agent); err != nil {
 		return err
 	}
+	if err := d.limitCeilingsBrokerPrecheck(ctx, agent); err != nil {
+		return err
+	}
 	ctx = withRecordedRuntime(ctx, agent.Runtime)
 
 	endpoint, err := d.getProvisioningBrokerEndpoint(ctx, agent)
@@ -4657,6 +4720,9 @@ func (d *HTTPAgentDispatcher) DispatchAgentRestart(ctx context.Context, agent *s
 		return err
 	}
 	if err := d.hostedConfigPrecheck(ctx, agent); err != nil {
+		return err
+	}
+	if err := d.telemetryEnforcementPrecheck(ctx, agent); err != nil {
 		return err
 	}
 
@@ -5847,6 +5913,21 @@ func (d *HTTPAgentDispatcher) resolveSecrets(ctx context.Context, agent *store.A
 	if resolveOpts == nil && d.agentSecretsEnabled() && agent != nil && agent.ID != "" && !isShellAgent(agent) {
 		resolveOpts = &secret.ResolveOpts{AgentID: agent.ID}
 	}
+	if d.hostedMode {
+		if resolveOpts == nil {
+			resolveOpts = &secret.ResolveOpts{}
+		}
+		resolveOpts.DropReservedFileTargets = true
+		resolveOpts.OnReservedFileTargetSkipped = func(m secret.SecretMeta) {
+			if isShellAgent(agent) && m.Scope != store.ScopeUser {
+				return
+			}
+			if ta.restricted && !ta.allowed[m.Scope] {
+				return
+			}
+			d.warnReservedTelemetryCredentialSecret(ctx, agent, m.Name, m.Scope)
+		}
+	}
 
 	projectID, brokerID := agent.ProjectID, agent.RuntimeBrokerID
 	if isShellAgent(agent) {
@@ -5876,6 +5957,13 @@ func (d *HTTPAgentDispatcher) resolveSecrets(ctx context.Context, agent *store.A
 			if d.debug {
 				d.log.Debug("resolveSecrets: dropping reserved-target secret", "name", sv.Name, "target", sv.Target, "scope", sv.Scope)
 			}
+			continue
+		}
+		// Defense in depth for custom/fake backends that did not honor
+		// DropReservedFileTargets: never deliver a non-hub-scope secret with
+		// the reserved telemetry credential name or file target in hosted mode.
+		if d.hostedMode && secret.IsReservedNonHubSecret(sv.Scope, sv.Name, sv.SecretType, sv.Target) {
+			d.warnReservedTelemetryCredentialSecret(ctx, agent, sv.Name, sv.Scope)
 			continue
 		}
 		// Only skip as_needed environment-type secrets (handled by the
@@ -5912,6 +6000,24 @@ func (d *HTTPAgentDispatcher) resolveSecrets(ctx context.Context, agent *store.A
 			"asNeededKeys", asNeededKeys)
 	}
 	return result, asNeededKeys, nil
+}
+
+// warnReservedTelemetryCredentialSecret logs and emits a dispatch warning when
+// a pre-existing non-hub-scope secret using the reserved telemetry credential
+// name or file target path is skipped during hosted dispatch. The secret's
+// value is never included.
+func (d *HTTPAgentDispatcher) warnReservedTelemetryCredentialSecret(ctx context.Context, agent *store.Agent, name, scope string) {
+	agentID := ""
+	if agent != nil {
+		agentID = agent.ID
+	}
+	if d.log != nil {
+		d.log.WarnContext(ctx, "skipping non-hub secret targeting reserved telemetry credential name or path",
+			"agent_id", agentID, "secret", name, "scope", scope)
+	}
+	addDispatchWarnings(ctx, fmt.Sprintf(
+		"Warning: skipping secret %q (%s scope): telemetry credential name %q and target path ~/.scion/telemetry-gcp-credentials.json are reserved for hub-scoped secrets in hosted mode",
+		name, scope, "scion-telemetry-gcp-credentials"))
 }
 
 // filterShellUserSecrets restricts resolved secrets for shell execution

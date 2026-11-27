@@ -186,6 +186,9 @@ type routingResult struct {
 	Def152DerivedRecipient bool
 	// UserResolved tracks whether RecipientID came from user resolution (GetUser/GetUserByEmail).
 	UserResolved bool
+	// ExplicitUserRecipient records that S1 resolved a caller-supplied user
+	// recipient, even if S6 later overwrote Recipient/UserResolved for group routing.
+	ExplicitUserRecipient bool
 }
 
 // outboundThreadState is the result of outboundThreadConversationState.
@@ -318,6 +321,7 @@ func (s *Server) resolveOutboundRouting(
 	recipientID := req.RecipientID
 	recipient := req.Recipient
 	userResolved := false
+	explicitUserRecipient := false
 
 	if recipientID == "" && recipient != "" {
 		// Explicit recipient string provided without an ID — resolve the user.
@@ -338,6 +342,7 @@ func (s *Server) resolveOutboundRouting(
 				recipientID = u.ID
 				recipient = "user:" + userAddressName(u)
 				userResolved = true
+				explicitUserRecipient = true
 			} else if errors.Is(err, store.ErrNotFound) {
 				writeError(w, http.StatusBadRequest, ErrCodeAddrUnknown,
 					fmt.Sprintf("user:%s is not a valid addressee. No user exists with that ID.", identifier), nil)
@@ -359,6 +364,7 @@ func (s *Server) resolveOutboundRouting(
 				}
 				recipient = "user:" + name
 				userResolved = true
+				explicitUserRecipient = true
 			} else if errors.Is(err, store.ErrNotSingular) {
 				writeError(w, http.StatusBadRequest, ErrCodeAddrAmbiguous,
 					fmt.Sprintf("user:%s is not a valid addressee. Multiple users match that email; resolve the duplicate before sending.", identifier), nil)
@@ -414,6 +420,7 @@ func (s *Server) resolveOutboundRouting(
 				recipient = "user:" + userAddressName(u)
 			}
 			userResolved = true
+			explicitUserRecipient = true
 		} else if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusBadRequest, ErrCodeAddrUnknown,
 				fmt.Sprintf("recipient_id %s is not a valid addressee. No user exists with that ID.", recipientID), nil)
@@ -1071,6 +1078,7 @@ func (s *Server) resolveOutboundRouting(
 	result.ConvRefResolved = convRefResolved
 	result.Def152DerivedRecipient = def152DerivedRecipient
 	result.UserResolved = userResolved
+	result.ExplicitUserRecipient = explicitUserRecipient
 
 	return result, nil
 }
@@ -1358,15 +1366,14 @@ func (s *Server) handleAgentOutboundMessage(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if commandRequestSend != nil {
-		if outboundTargetAgentID != "" || result.DeliveryPath == deliveryAgentDM ||
-			result.RecipientID == "" || !strings.HasPrefix(result.Recipient, "user:") ||
-			(result.ConvResult != nil && result.ConvResult.Kind != "direct") {
-			ValidationError(w, "command requests are only supported in direct messages to a user",
+		if outboundTargetAgentID != "" || result.DeliveryPath == deliveryAgentDM {
+			ValidationError(w, "command requests can be sent only to a user or a conversation, not to an agent",
 				map[string]interface{}{"field": "recipient"})
 			return
 		}
-		commandRequestSend.approverID = result.RecipientID
-		commandRequestSend.approverHint = strings.TrimPrefix(result.Recipient, "user:")
+		if !s.resolveCommandRequestApprover(ctx, w, commandRequestSend, result) {
+			return
+		}
 	}
 
 	// Attachments stored as artifacts named by id (ptone/scion#4596): the
@@ -1627,7 +1634,7 @@ func (s *Server) handleAgentOutboundMessage(w http.ResponseWriter, r *http.Reque
 	storeOutboundRow := func(storeCtx context.Context) error {
 		if decisionSend != nil {
 			// The message and its decisions in one transaction.
-			if err := s.storeDecisionPrompt(storeCtx, decisionSend, agent, storeMsg, structuredMsg); err != nil {
+			if err := s.storeDecisionPrompt(storeCtx, decisionSend, agent, storeMsg, structuredMsg, outboundArtifactRefs); err != nil {
 				return err
 			}
 		} else if secretRequestSend != nil {
@@ -1864,10 +1871,11 @@ func (s *Server) handleAgentOutboundMessage(w http.ResponseWriter, r *http.Reque
 		})
 	}
 
-	// A group post that @mentions no agent goes to the conversation's
-	// default agent. The sender's agentGroupPostDecision already allowed
-	// the post in resolveOutboundRouting; wakeGroupDefaultAgent adds the
-	// pairwise check, the loop guard, and groupAgentJoinAllowed
+	// A group post that @mentions no agent and neither addresses nor
+	// @mentions a human goes to the conversation's default agent. The
+	// sender's agentGroupPostDecision already allowed the post in
+	// resolveOutboundRouting; wakeGroupDefaultAgent adds the pairwise
+	// check, the loop guard, and groupAgentJoinAllowed
 	// (group_message_mode.go).
 	isGroupPost := result.ConvResult != nil && result.ConvResult.Kind == "group"
 	var defaultAgentResult *messages.MentionResult
@@ -1879,6 +1887,8 @@ func (s *Server) handleAgentOutboundMessage(w http.ResponseWriter, r *http.Reque
 			Msg:               originalMsgForMentions,
 			Type:              req.Type,
 			MentionResults:    mentionResults,
+			AddressedToHuman:  s.isGroupPostAddressedToHuman(ctx, &req, result, humanMembers),
+			HumanMembers:      humanMembers,
 			ParentMessageID:   storeMsg.ID,
 			ParentAttachments: boundAttachments,
 			Channel:           result.Channel,
@@ -1946,6 +1956,11 @@ func (s *Server) handleAgentOutboundMessage(w http.ResponseWriter, r *http.Reque
 	}
 	if decisionSend != nil {
 		respBody["decisions"] = decisionSendResults(agent.ID, decisionSend.result)
+		if decisionSend.update {
+			if notice := s.decisionUpdateDroppedArtifactsNotice(ctx, decisionSend.result, outboundArtifactRefs); notice != "" {
+				respBody["decision_artifact_notice"] = notice
+			}
+		}
 	}
 	if secretRequestSend != nil {
 		respBody["secret_requests"] = secretRequestSendResults(secretRequestSend.result)
@@ -2115,6 +2130,16 @@ func (s *Server) restoreAgent(w http.ResponseWriter, r *http.Request, id string)
 	// (ptone/scion#2769; errAgentOwnerUserMissing, see
 	// lockAgentGuardUserTx).
 	if err := s.restoreAgentTx(ctx, agent, auditActorFromContext(ctx)); err != nil {
+		if errors.Is(err, store.ErrQuotaExceeded) {
+			message, details := quotaRefusal(store.LimitMaxNeverSuspendAgentsPerProject, err)
+			writeError(w, http.StatusConflict, ErrCodeQuotaExceeded, message, details)
+			return
+		}
+		if errors.Is(err, ErrQuotaLockContention) {
+			writeError(w, http.StatusTooManyRequests, ErrCodeQuotaExceeded,
+				"quota check temporarily unavailable, please retry", nil)
+			return
+		}
 		if errors.Is(err, errAgentNotSoftDeleted) {
 			BadRequest(w, "Agent is not in deleted state")
 			return
@@ -2293,6 +2318,11 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request, id s
 	// Determine the message content and structured message to forward
 	if req.StructuredMessage != nil {
 		structuredMsg = req.StructuredMessage
+		// Conversation is hub-populated for hub→plugin outbound delivery only;
+		// strip any client-supplied value so callers cannot spoof external
+		// surface routing. Broker-authenticated callers supply top-level
+		// Surface/ExternalRef/ParentRef on MessageRequest instead.
+		structuredMsg.Conversation = nil
 		plainMessage = req.StructuredMessage.Msg
 		if req.Plain {
 			structuredMsg.Plain = true
@@ -2622,6 +2652,10 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request, id s
 		ValidationError(w, "external_ref requires surface to be set", nil)
 		return
 	}
+	if req.ParentRef != "" && req.ExternalRef == "" {
+		ValidationError(w, "parent_ref requires external_ref to be set", nil)
+		return
+	}
 
 	// A held target (ptone/scion#3433) is refused for a user send, with or
 	// without wake, with the refusal an agent send gets (ptone/scion#6859).
@@ -2639,23 +2673,16 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request, id s
 	}
 
 	if req.Surface != "" && req.ExternalRef != "" {
-		var keyOpts []messaging.ConversationByKeyOption
-		keyOpts = append(keyOpts, messaging.WithSurface(req.Surface))
-		if req.ParentRef != "" {
-			keyOpts = append(keyOpts, messaging.WithParentRef(req.ParentRef))
+		if _, keyErr := deriveBrokerInboundThreadKey(agent.ProjectID, req.ExternalRef); keyErr != nil {
+			messaging.WriteDenialMetrics.Inc("agent_msg.phase11")
+			ValidationError(w, "invalid external_ref for thread conversation", nil)
+			return
 		}
-		if agent.ID != "" {
-			agentID := agent.ID
-			keyOpts = append(keyOpts, messaging.WithDefaultAgentID(&agentID))
-		}
-		s.mu.RLock()
-		wcs := s.webChatStore
-		s.mu.RUnlock()
-		if wcs != nil {
-			keyOpts = append(keyOpts, messaging.WithKeyTopicLookup(wcs))
-		}
-		convResult, convErr := messaging.ResolveOrCreateConversationByKey(
-			ctx, s.store, s.messageLog, req.ExternalRef, "group", &agent.ProjectID, keyOpts...)
+		convResult, convErr := s.resolveBrokerInboundConversation(
+			ctx, s.messageLog, agent.ProjectID,
+			req.Surface, req.ExternalRef, req.ParentRef, "", agent.ID,
+			structuredMsg.Channel, structuredMsg.ThreadID,
+		)
 		if convErr != nil {
 			if externalRefOfOtherProject(convErr) {
 				logReferenceRefused(ctx, logging.RequestPath(r), reasonExternalRefOfOtherProject, GetIdentityFromContext(ctx))
@@ -2736,7 +2763,7 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request, id s
 		// The response waits on the resume and the readiness wait: extend
 		// this request's write deadline to cover them (ptone/scion#4178).
 		s.extendWriteDeadlineForDMWake(ctx, w)
-		wakeResult, wakeErr := s.wakeAgentForDM(ctx, agent)
+		wakeResult, wakeErr := s.wakeAgentForDMAuthorized(ctx, agent, s.explicitWakeAuthorize(ctx, GetIdentityFromContext(ctx)))
 		if wakeErr != nil {
 			WriteAgentDMError(w, wakeErr)
 			return
@@ -2752,6 +2779,11 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request, id s
 	// Reject messages to non-running agents when --wake is not set.
 	// For agent-to-agent DMs, phase validation is handled by ExecuteAgentDM.
 	if !userWake && !senderIsAgent && !delegatedSender && !deferDelivery {
+		if s.isHubAutoSuspending(agent) {
+			writeError(w, http.StatusConflict, ErrCodeAgentNotRunning,
+				fmt.Sprintf("Agent %q is suspending. Use --wake to resume and deliver.", agent.Slug), nil)
+			return
+		}
 		rest := store.EffectiveRestingPhase(agent)
 		switch state.Phase(rest) {
 		case state.PhaseRunning:
@@ -3527,7 +3559,7 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request, id s
 					s.extendWriteDeadlineForDMWake(ctx, w)
 					wctx, wcancel := context.WithTimeout(ctx, scheduledWakeBudget)
 					defer wcancel()
-					if err := s.syncAutoWakeForDM(wctx, target); err != nil {
+					if err := s.syncWakeForDM(wctx, target, req.Wake, GetIdentityFromContext(ctx)); err != nil {
 						return nil, nil, err
 					}
 					newCtx, newCancel := context.WithTimeout(dispatchCtx, 30*time.Second)
@@ -4353,6 +4385,8 @@ func (s *Server) handleProjectBroadcast(w http.ResponseWriter, r *http.Request, 
 		ValidationError(w, fmt.Sprintf("channel %q is reserved for internal use", req.StructuredMessage.Channel), nil)
 		return
 	}
+	// Strip client-supplied Conversation (hub-populated for outbound plugin delivery only).
+	req.StructuredMessage.Conversation = nil
 	// A broadcast carries text: attachment ids are refused above, and the
 	// messages store accepts an empty body (attachment-only chat messages,
 	// ptone/scion#6146), so an empty one is refused here, before fan-out.

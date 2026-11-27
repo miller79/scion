@@ -872,7 +872,7 @@ var chatOperations = []OperationSpec{
 	{
 		ID:          "chat.star.add",
 		Domain:      "chat",
-		Description: "Star a message for the caller (private). The message must be a live message of the conversation named in the body. A thread needs project:read on its project; a DM needs the caller in a user slot of its key. A token also needs inbox:write: a thread's project, or an agent DM's peer agent project with agent:read on the agent, inside its boundary; a DM between users needs a hub boundary. 404 while web.chat_starred_messages is off",
+		Description: "Star a message for the caller (private). The message must be a live message of the conversation named in the body. A thread needs project:read on its project; a DM needs the caller in a user slot of its key. A token also needs inbox:write: a thread's project, or an agent DM's peer agent project with agent:read on the agent, inside its boundary; a DM between users needs a hub boundary",
 		EntryPoints: []EntryPoint{
 			{Kind: EntryPointHTTPRoute, Pattern: "/api/v1/chat/stars/{messageId}", Method: "PUT"},
 		},
@@ -894,7 +894,7 @@ var chatOperations = []OperationSpec{
 	{
 		ID:          "chat.star.read",
 		Domain:      "chat",
-		Description: "Read the current detail of one of the caller's stars. Needs read access to the star's conversation now (project:read for a thread; the caller in a user slot of a DM key); a token also needs inbox:read under the same rule (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users). 404 while web.chat_starred_messages is off",
+		Description: "Read the current detail of one of the caller's stars. Needs read access to the star's conversation now (project:read for a thread; the caller in a user slot of a DM key); a token also needs inbox:read under the same rule (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users)",
 		EntryPoints: []EntryPoint{
 			{Kind: EntryPointHTTPRoute, Pattern: "/api/v1/chat/stars/{messageId}", Method: "GET"},
 		},
@@ -916,7 +916,7 @@ var chatOperations = []OperationSpec{
 	{
 		ID:          "chat.star.state",
 		Domain:      "chat",
-		Description: "Report which of up to 200 messages the caller starred, keeping only live messages in conversations the caller can read now (threads by project:read, DMs by participation); a token keeps only conversations it may read under inbox:read (a thread's or agent DM's project inside its boundary; a hub boundary for a DM between users). 404 while web.chat_starred_messages is off",
+		Description: "Report which of up to 200 messages the caller starred, keeping only live messages in conversations the caller can read now (threads by project:read, DMs by participation); a token keeps only conversations it may read under inbox:read (a thread's or agent DM's project inside its boundary; a hub boundary for a DM between users)",
 		EntryPoints: []EntryPoint{
 			{Kind: EntryPointHTTPRoute, Pattern: "/api/v1/chat/stars/state", Method: "GET"},
 		},
@@ -938,7 +938,7 @@ var chatOperations = []OperationSpec{
 	{
 		ID:          "chat.star.list",
 		Domain:      "chat",
-		Description: "List the caller's stars in one conversation (a thread or a DM), newest first, with a sealed cursor. Needs read access to it (project:read for a thread; the caller in a user slot of a DM key); a token also needs inbox:read under the same rule (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users). 404 while web.chat_starred_messages is off",
+		Description: "List the caller's stars in one conversation (a thread or a DM), newest first, with a sealed cursor. Needs read access to it (project:read for a thread; the caller in a user slot of a DM key); a token also needs inbox:read under the same rule (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users)",
 		EntryPoints: []EntryPoint{
 			{Kind: EntryPointHTTPRoute, Pattern: "/api/v1/chat/stars", Method: "GET"},
 		},
@@ -960,7 +960,7 @@ var chatOperations = []OperationSpec{
 	{
 		ID:          "chat.star.conversations",
 		Domain:      "chat",
-		Description: "List the conversations in which the caller has at least one live star (the Starred rail): one row per conversation with its current name, activity and project, no excerpt or count, sorted by activity or name, with a sealed cursor. Each conversation is kept only while the caller can read it now (project:read for a thread; the caller in a user slot of a DM key); a token keeps only conversations it may read under inbox:read (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users). An optional projectId must be a project the caller can read. 404 while web.chat_starred_messages is off",
+		Description: "List the conversations in which the caller has at least one live star (the Starred rail): one row per conversation with its current name, activity and project, no excerpt or count, sorted by activity or name, with a sealed cursor. Each conversation is kept only while the caller can read it now (project:read for a thread; the caller in a user slot of a DM key); a token keeps only conversations it may read under inbox:read (a thread's or agent DM's project inside its boundary, agent:read on a DM's agent; a hub boundary for a DM between users). An optional projectId must be a project the caller can read",
 		EntryPoints: []EntryPoint{
 			{Kind: EntryPointHTTPRoute, Pattern: "/api/v1/chat/starred-conversations", Method: "GET"},
 		},
@@ -981,7 +981,7 @@ var chatOperations = []OperationSpec{
 	{
 		ID:          "chat.conversation.history.starred",
 		Domain:      "chat",
-		Description: "Read only the caller's starred messages of one conversation (?starred=true), in history order with a sealed cursor bound to the conversation, the caller and the filter. Needs the conversation's normal read access (project:read on a thread's project, participation in a DM) and inbox:read: a token needs inbox:read for the thread's or peer agent's project, or a hub boundary for a DM between users. An around target must itself be starred. 404 while web.chat_starred_messages is off, never unfiltered history",
+		Description: "Read only the caller's starred messages of one conversation (?starred=true), in history order with a sealed cursor bound to the conversation, the caller and the filter. Needs the conversation's normal read access (project:read on a thread's project, participation in a DM) and inbox:read: a token needs inbox:read for the thread's or peer agent's project, or a hub boundary for a DM between users. An around target must itself be starred",
 		EntryPoints: []EntryPoint{
 			{Kind: EntryPointHTTPRoute, Pattern: "/api/v1/chat/conversations/{id}/messages", Method: "GET", Variant: "starred"},
 		},
@@ -1002,7 +1002,7 @@ var chatOperations = []OperationSpec{
 	{
 		ID:          "chat.star.remove",
 		Domain:      "chat",
-		Description: "Remove the caller's own star of a message; always 204. No message or conversation lookup; a project token removes only a star whose stored project is inside its boundary. 404 while web.chat_starred_messages is off",
+		Description: "Remove the caller's own star of a message; always 204. No message or conversation lookup; a project token removes only a star whose stored project is inside its boundary",
 		EntryPoints: []EntryPoint{
 			{Kind: EntryPointHTTPRoute, Pattern: "/api/v1/chat/stars/{messageId}", Method: "DELETE"},
 		},
@@ -1266,6 +1266,26 @@ var chatOperations = []OperationSpec{
 		Bearer: SessionOnly(ReasonInteractiveState),
 	},
 	{
+		ID:          "chat.usersecretrequests.list",
+		Domain:      "chat",
+		Description: "List open or resolved secret-request cards across the caller's member projects and DMs, with unfiltered open/answerable counts, filtered counts, agent/project facets, sort=recent|project, and cursor pagination. Requires an interactive human session (agents, visitors and UATs get 403); each row requires recipient membership and agent.read on the requesting agent; answerable counts additionally require answering recipient membership and agent.attach. Unsupported methods get 405; 404 while hub.agent_secrets is off",
+		EntryPoints: []EntryPoint{
+			{Kind: EntryPointHTTPRoute, Pattern: "/api/v1/users/me/secret-requests", Method: "GET"},
+		},
+		Principals:       []PrincipalKind{PrincipalUser},
+		Credentials:      []CredentialKind{CredentialSessionJWT},
+		ResourceResolver: "project-collection",
+		BasePermission:   "agent.read",
+		Effects:          []SecurityEffect{EffectListScoped},
+		DelegationKind:   DelegationNone,
+		AuthorityEval:    AuthorityEvalNone,
+		DenialCodes:      []DenialCode{DenialForbidden, DenialResourceNotFound},
+		TestRefs: []TestRef{
+			{Package: "pkg/hub", Function: "TestUserMeSecretRequests_AuthorizationAndScope"},
+		},
+		Bearer: SessionOnly(ReasonInteractiveState),
+	},
+	{
 		ID:          "chat.commandrequest.read",
 		Domain:      "chat",
 		Description: "Read a command-request row and its run view (never output), plus the approver's resolved execution container state for the named approver only. Requires an interactive human session and card recipient membership. 404 while hub.command_requests is off",
@@ -1316,6 +1336,100 @@ var chatOperations = []OperationSpec{
 		DenialCodes: []DenialCode{DenialForbidden, DenialResourceNotFound, DenialConflict},
 		TestRefs: []TestRef{
 			{Package: "pkg/hub", Function: "TestCommandRequests_EndToEnd"},
+		},
+		Bearer: SessionOnly(ReasonInteractiveState),
+	},
+	{
+		ID:          "chat.commandrequest.output",
+		Domain:      "chat",
+		Description: "Read the captured output tail of an approved command run. Requires an interactive human session, caller == run.approver_user_id, and live agent.attach on exec_agent_id (fails closed if deleted). Sets Cache-Control: no-store and bypasses response compression. 404 while hub.command_requests is off",
+		EntryPoints: []EntryPoint{
+			{Kind: EntryPointHTTPRoute, Pattern: "/api/v1/command-requests/{id}/output", Method: "GET", Response: ResponseCredential},
+		},
+		Principals:       []PrincipalKind{PrincipalUser},
+		Credentials:      []CredentialKind{CredentialSessionJWT},
+		ResourceResolver: "agent",
+		BasePermission:   "agent.attach",
+		Effects:          []SecurityEffect{EffectReadOne},
+		DelegationKind:   DelegationNone,
+		AuthorityEval:    AuthorityEvalNone,
+		AuditObligation: &AuditObligation{
+			EventType:              "chat.commandrequest.output",
+			ContextFields:          []string{"actor_id", "row_id", "run_id", "exec_agent_id", "command_sha256"},
+			Atomic:                 false,
+			NonAtomicJustification: "Read-only output fetch emits output_viewed audit event with metadata only (never output bytes) before writing the response",
+		},
+		DenialCodes: []DenialCode{DenialForbidden, DenialResourceNotFound},
+		TestRefs: []TestRef{
+			{Package: "pkg/hub", Function: "TestCommandRequestOutput_AuthzAndSharing"},
+		},
+		Bearer: SessionOnly(ReasonInteractiveState),
+	},
+	{
+		ID:          "chat.commandrequest.frommessage",
+		Domain:      "chat",
+		Description: "Create and approve a version-1 command request from a verbatim fenced shell block in an agent-authored chat message, inserting both the approved command_requests row (surface=markdown_block) and the single queued command_runs row in one insert-only transaction. Requires an interactive human session, same-origin CSRF check on cookie sessions, single-addressed-human recipient match, message age < 24 h, verbatim-fence and canonical-hash match, and an eligible non-stopped execution container. 404 while hub.command_requests is off",
+		EntryPoints: []EntryPoint{
+			{Kind: EntryPointHTTPRoute, Pattern: "/api/v1/command-requests/from-message", Method: "POST"},
+		},
+		Principals:       []PrincipalKind{PrincipalUser},
+		Credentials:      []CredentialKind{CredentialSessionJWT},
+		ResourceResolver: "agent",
+		BasePermission:   "agent.attach",
+		Effects:          []SecurityEffect{EffectCreateResource, EffectEmitExternal},
+		DelegationKind:   DelegationNone,
+		AuthorityEval:    AuthorityEvalNone,
+		ExternalPolicy: &ExternalEffectPolicy{
+			DeliveryMode:   DeliveryFireAndForget,
+			FailureMode:    FailureLogAndContinue,
+			IdempotencyKey: "idempotency_key (optional)",
+			RetryPolicy:    "insert-only on version 1; repeating with the same idempotency_key from the same caller replays the approved run, otherwise returns 409 already_resolved with the existing run",
+			AuthBeforeEmit: true,
+		},
+		AuditObligation: &AuditObligation{
+			EventType:              "chat.commandrequest.frommessage",
+			ContextFields:          []string{"actor_id", "message_id", "agent_id", "key", "command_sha256"},
+			AfterFields:            []string{"row_id", "run_id", "exec_agent_id"},
+			Atomic:                 false,
+			NonAtomicJustification: "Create-and-approve insert and command_runs insert share one transaction; SSE publish, audit event, and async executor launch run post-commit",
+		},
+		DenialCodes: []DenialCode{DenialForbidden, DenialResourceNotFound, DenialConflict},
+		TestRefs: []TestRef{
+			{Package: "pkg/hub", Function: "TestCommandRequests_FromMessage_EndToEnd"},
+		},
+		Bearer: SessionOnly(ReasonInteractiveState),
+	},
+	{
+		ID:          "chat.commandrequest.dismiss",
+		Domain:      "chat",
+		Description: "Dismiss a pending command request with an optional reason (<=500 runes), atomically transitioning pending -> dismissed, notifying the requesting agent via a command-response message, and emitting a dismissed audit event. Requires an interactive human session, same-origin CSRF check on cookie sessions, recipient membership, and named approver match. 404 while hub.command_requests is off",
+		EntryPoints: []EntryPoint{
+			{Kind: EntryPointHTTPRoute, Pattern: "/api/v1/command-requests/{id}/dismiss", Method: "POST"},
+		},
+		Principals:       []PrincipalKind{PrincipalUser},
+		Credentials:      []CredentialKind{CredentialSessionJWT},
+		ResourceResolver: "agent",
+		BasePermission:   "agent.attach",
+		Effects:          []SecurityEffect{EffectUpdateResource, EffectEmitExternal},
+		DelegationKind:   DelegationNone,
+		AuthorityEval:    AuthorityEvalNone,
+		ExternalPolicy: &ExternalEffectPolicy{
+			DeliveryMode:   DeliveryFireAndForget,
+			FailureMode:    FailureLogAndContinue,
+			IdempotencyKey: "idempotency_key (optional)",
+			RetryPolicy:    "repeating dismiss on an already-dismissed request is idempotent and returns the dismissed view without re-notifying",
+			AuthBeforeEmit: true,
+		},
+		AuditObligation: &AuditObligation{
+			EventType:              "chat.commandrequest.dismiss",
+			ContextFields:          []string{"actor_id", "row_id", "agent_id", "key", "command_sha256"},
+			AfterFields:            []string{"status"},
+			Atomic:                 false,
+			NonAtomicJustification: "Dismiss CAS runs in one transaction; SSE publish, audit event, and best-effort agent notification run post-commit",
+		},
+		DenialCodes: []DenialCode{DenialForbidden, DenialResourceNotFound, DenialConflict},
+		TestRefs: []TestRef{
+			{Package: "pkg/hub", Function: "TestCommandRequests_DismissAndWithdraw"},
 		},
 		Bearer: SessionOnly(ReasonInteractiveState),
 	},

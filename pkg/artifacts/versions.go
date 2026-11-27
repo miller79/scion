@@ -70,6 +70,14 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if req.FromAttachment != "" {
+		s.handlePublishFromAttachment(w, r, req)
+		return
+	}
+	if req.ScopeRef != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "scopeRef applies only with fromAttachment; use scope")
+		return
+	}
 	kind, ref, home, ok := s.host.Principal(ctx)
 	if !ok {
 		if s.writeMissingScope(w, r) {
@@ -200,6 +208,10 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleCreateVersion(w http.ResponseWriter, r *http.Request, id string) {
 	req, ok := decodeManifest(w, r)
 	if !ok {
+		return
+	}
+	if req.FromAttachment != "" || req.ScopeRef != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "fromAttachment and scopeRef apply only on POST /api/v1/artifacts")
 		return
 	}
 	if req.Title != "" || req.Key != "" || req.Scope != "" {
@@ -921,7 +933,7 @@ func (s *Service) handleFinalize(w http.ResponseWriter, r *http.Request, id stri
 			priorWasReview = true
 		}
 	}
-	updated, err := b.store.FinalizeVersion(work, a.ID, seq, claim, extra, base)
+	updated, finEffects, err := b.store.FinalizeVersionWithEffects(work, a.ID, seq, claim, extra, base)
 	if errors.Is(err, ErrStaleBase) {
 		// A version was published between the review check and now.
 		s.discardStaleReview(w, r, b, a, seq, claim)
@@ -966,6 +978,16 @@ func (s *Service) handleFinalize(w http.ResponseWriter, r *http.Request, id stri
 	var delivery *ReviewDeliveryInfo
 	if ready.Kind == VersionKindReview {
 		delivery = s.notifyReviewWithDelivery(ctx, w, updated, ready, access, freq.Wake)
+		if ready.CreatedByKind == PrincipalKindUser && ready.CreatedByRef != "" {
+			if finEffects.FulfilledRequestID != "" {
+				if notifier, ok := s.host.(ReviewRequestNotifier); ok {
+					notifier.RequestClosed(ctx, updated.ID, ready.CreatedByRef)
+				}
+			}
+			if finEffects.FulfilledRequestID != "" || finEffects.DraftDeleted {
+				s.notifyInboxChanged(ctx, ready.CreatedByRef)
+			}
+		}
 	} else if priorWasReview && updated.CurrentSeq == seq && updated.OwnerKind == PrincipalKindUser {
 		s.notifyInboxChanged(ctx, updated.OwnerRef)
 	}
@@ -1088,7 +1110,7 @@ func (s *Service) handleListVersions(w http.ResponseWriter, r *http.Request, id 
 			resp.Discarded = append(resp.Discarded, discardedVersionInfo(&versions[i]))
 			continue
 		}
-		vi := versionInfo(&versions[i], nil)
+		vi := s.versionInfoForViewer(r.Context(), b, &versions[i], nil)
 		vi.Files = nil
 		resp.Versions = append(resp.Versions, *vi)
 	}
@@ -1125,11 +1147,22 @@ func (s *Service) handleGetVersion(w http.ResponseWriter, r *http.Request, id st
 		writeError(w, http.StatusInternalServerError, "internal", "could not read the version")
 		return
 	}
-	resp := ArtifactResponse{Artifact: artifactInfo(a), Version: versionInfo(v, files), ScopeDeleted: s.scopeDeleted(r.Context(), a)}
+	resp := ArtifactResponse{Artifact: artifactInfo(a), Version: s.versionInfoForViewer(r.Context(), b, v, files), ScopeDeleted: s.scopeDeleted(r.Context(), a)}
 	if !s.capabilities(w, r, b, a, &resp) {
 		return
 	}
-	s.populateReviewState(r.Context(), b, a, &resp)
+	currentIsReview := false
+	if v.Seq == a.CurrentSeq {
+		currentIsReview = v.Kind == VersionKindReview
+	} else if a.CurrentSeq > 0 {
+		cv, err := b.store.GetVersion(r.Context(), a.ID, a.CurrentSeq)
+		if err == nil && cv != nil {
+			currentIsReview = cv.Kind == VersionKindReview
+		} else if err != nil && !errors.Is(err, ErrNotFound) {
+			slog.WarnContext(r.Context(), "artifacts: get current version for reviewState failed", "artifact", a.ID, "seq", a.CurrentSeq, "error", err)
+		}
+	}
+	s.populateReviewState(r.Context(), b, a, currentIsReview, &resp)
 	resp.Archive = s.archiveInfo(r.Context(), b, files)
 	writeJSON(w, http.StatusOK, resp)
 }

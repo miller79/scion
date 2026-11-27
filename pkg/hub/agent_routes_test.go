@@ -84,6 +84,8 @@ func agentRouteCases() []agentRouteCase {
 		byID(post, "/hold/lift", AgentRouteHoldLift, opAgentHoldLift, none),
 		byID(http.MethodDelete, "/pending-config", AgentRoutePendingConfig, opAgentPendingDiscard, none),
 		byID(get, "/pending-config", AgentRoutePendingConfig, "", none),
+		byID(http.MethodPatch, "/labels", AgentRouteLabels, opAgentLabelsUpdate, none),
+		byID(get, "/labels", AgentRouteLabels, "", none),
 		byID(post, "/delegations", AgentRouteDelegations, opAgentDelegationCreate, none),
 		byID(get, "/delegations", AgentRouteDelegations, opAgentDelegationList, none),
 		byID(http.MethodPut, "/delegations", AgentRouteDelegations, "", none),
@@ -115,6 +117,9 @@ func agentRouteCases() []agentRouteCase {
 		byID(get, "/usage", AgentRouteUsage, opAgentUsageRead, none),
 		byID(post, "/usage/events", AgentRouteUsageEvents, opAgentUsageIngest, none),
 		byID(get, "/usage/capabilities", AgentRouteUsageCapabilities, opAgentUsageCapabilities, none),
+		byID(post, "/trajectory/segments:prepare", AgentRouteTrajectoryPrepare, opAgentTrajectoryPrepare, none),
+		byID(post, "/trajectory/segments:commit", AgentRouteTrajectoryCommit, opAgentTrajectoryCommit, none),
+		byID(http.MethodPut, "/trajectory/segments/seg-1/content", AgentRouteTrajectoryContent, opAgentTrajectoryContent, AgentSubRouteSuffix{Param: "seg-1"}),
 		byID(post, "/set_message_mode", AgentRouteActionMessageMode, opAgentSetMessageMode, none),
 		byID(get, "/set_message_mode", AgentRouteActionMessageMode, "", none),
 		byID(http.MethodPut, "/set_message_mode", AgentRouteActionMessageMode, "", none),
@@ -149,6 +154,8 @@ func agentRouteCases() []agentRouteCase {
 		proj(post, "/reincarnate", ProjectAgentRouteActionReincarnate, opAgentReincarnate),
 		proj(post, "/reset-auth", ProjectAgentRouteActionResetAuth, opAgentResetAuth),
 		proj(post, "/keys", ProjectAgentRouteActionKeys, opAgentKeys),
+		proj(http.MethodPatch, "/labels", ProjectAgentRouteLabels, opAgentLabelsUpdate),
+		proj(get, "/labels", ProjectAgentRouteLabels, ""),
 	}
 }
 
@@ -295,6 +302,9 @@ func TestResolveAgentSubRoute_ClientPaths(t *testing.T) {
 		{http.MethodGet, byID + "/usage", AgentRouteUsage},
 		{http.MethodPost, byID + "/usage/events", AgentRouteUsageEvents},
 		{http.MethodGet, byID + "/usage/capabilities", AgentRouteUsageCapabilities},
+		{http.MethodPost, byID + "/trajectory/segments:prepare", AgentRouteTrajectoryPrepare},
+		{http.MethodPost, byID + "/trajectory/segments:commit", AgentRouteTrajectoryCommit},
+		{http.MethodPut, byID + "/trajectory/segments/seg-1/content", AgentRouteTrajectoryContent},
 		{http.MethodGet, byID + "/groups", AgentRouteGroups},
 		{http.MethodPost, "/api/v1/agents/stop-all", AgentRouteStopAll},
 		{http.MethodGet, "/api/v1/projects/" + pid + "/agents", ProjectAgentRouteCollection},
@@ -310,6 +320,7 @@ func TestResolveAgentSubRoute_ClientPaths(t *testing.T) {
 		{http.MethodPost, inProject + "/restart", ProjectAgentRouteActionRestart},
 		{http.MethodPost, inProject + "/reset-auth", ProjectAgentRouteActionResetAuth},
 		{http.MethodPost, inProject + "/keys", ProjectAgentRouteActionKeys},
+		{http.MethodPatch, inProject + "/labels", ProjectAgentRouteLabels},
 		{http.MethodPost, inProject + "/restore", ProjectAgentRouteActionRestore},
 		{http.MethodPost, inProject + "/message", ProjectAgentRouteActionMessage},
 		{http.MethodPost, inProject + "/outbound-message", ProjectAgentRouteActionOutbound},
@@ -406,9 +417,10 @@ func TestAgentSubRoute_CatalogDrift(t *testing.T) {
 		opAgentResetAuth, opAgentReincarnate, opAgentSetMessageMode,
 		opAgentTokenRefresh, opAgentOutboundMessage, opAgentMetricsReport,
 		opAgentUsageRead, opAgentUsageIngest, opAgentUsageCapabilities,
+		opAgentTrajectoryPrepare, opAgentTrajectoryCommit, opAgentTrajectoryContent,
 		opAgentStatusUpdate, opAgentLogsRead, opAgentScreenRead, opAgentMessagesRead, opAgentMetricsRead,
 		opAgentKeys, opAgentActionMessage, opAgentPortList, opAgentPortRegister,
-		opAgentPortTunnel, opAgentStopAllProject, opAgentPendingDiscard,
+		opAgentPortTunnel, opAgentStopAllProject, opAgentPendingDiscard, opAgentLabelsUpdate,
 	} {
 		assert.NotEmpty(t, discovered[op], "operation %s has no resolver entry point", op)
 	}

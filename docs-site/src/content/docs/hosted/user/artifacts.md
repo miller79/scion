@@ -8,7 +8,7 @@ An **artifact** is a file or a folder that you or an agent publish to the Hub. I
 This guide walks through the common tasks. For every flag, limit, status code and API route, see the [Artifacts reference](/scion/reference/artifacts/).
 
 :::caution[Experimental]
-Artifacts are behind the `hub.artifacts` [experiment](/scion/reference/experiments/), which is off by default. While the experiment is off, the web UI shows no artifact pages, every `scion artifact` command fails, and messages sent with `--artifact` lose their references. See [The artifacts experiment is off](#the-artifacts-experiment-is-off).
+Artifacts are behind the `hub.artifacts` [experiment](/scion/reference/experiments/), which is on by default. While the experiment is off, the web UI shows no artifact pages, every `scion artifact` command fails, and messages sent with `--artifact` lose their references. See [The artifacts experiment is off](#the-artifacts-experiment-is-off).
 :::
 
 ## Who does what
@@ -126,7 +126,7 @@ scion artifact get scion://artifact/5f1c2d3e-...@2 --out ./design-v2/
 
 ### Web
 
-The **Artifacts** item in the sidebar (under *Management*) lists the artifacts you own, those shared with you and those published in your projects. Search by title or key, or narrow the list with *Review pending*, *Owned by me* and *Shared with me*. A project's **Artifacts** view lists the artifacts of that one project, including those other projects shared with it.
+The **Artifacts** item in the sidebar (under *Management*) lists the artifacts you own, those shared with you and those published in your projects. Search by title or key, or narrow the list with *Review on latest*, *Owned by me* and *Shared with me*. A project's **Artifacts** view lists the artifacts of that one project, including those other projects shared with it.
 
 Opening an artifact shows its page with three tabs:
 
@@ -173,7 +173,7 @@ When the `web.artifact_review_editor` [experiment](/scion/reference/experiments/
 - Every save goes through the same review publish and Hub checks whether or not `web.artifact_review_editor` is on.
 :::
 
-While a review is the current version, the artifact shows a *Review pending* badge (also in the Artifacts list), and a banner names the reviewer and counts the marks. On a review, the preview's **Marks · Clean · Accepted** switch shows the marks, the text with every mark rejected, or the text with every mark accepted.
+While a review is the current version, the artifact shows a *Review on latest* badge (also in the Artifacts list), and a banner names the reviewer and counts the marks. On a review, the preview's **Marks · Clean · Accepted** switch shows the marks, the text with every mark rejected, or the text with every mark accepted.
 
 **Review** is shown to people who may publish versions of the artifact and to people given review access (see [Share an artifact](#share-an-artifact)). Use **Edit** for a plain edit instead of a review.
 
@@ -184,7 +184,7 @@ When the `hub.artifacts_review_drafts` [experiment](/scion/reference/experiments
 - **Saving and submitting:** The review footer shows **Cancel**, **Save Draft**, and **Submit Review** (replacing **Save review**). **Save Draft** saves immediately and resets the autosave timer; it works even before you add any marks or while text outside marks has changed. **Submit Review** publishes your review version as usual (requiring at least one mark and no unmarked edits) and deletes your saved draft on success. **Cancel** leaves Review mode immediately when there are no unsaved changes (keeping your saved draft); when you have unsaved changes, it asks whether to **Save draft and close**, **Discard changes** (reverts to the last saved draft without deleting it), or go **Back to review**.
 - **Autosave and status line:** A status line at the top of the review editor shows `Unsaved changes`, `Saving…`, `Draft saved HH:MM` (in your local time), or a warning if a save could not complete (`Not saved: retrying`, `Changed on another device or tab`, size or count limits, or lost review access, with a **Download** button when a draft cannot be saved). Nothing is saved until you make a change. Your first change starts a 30-second autosave timer (typing does not reset it), and switching away from the tab also triggers a save (for drafts up to 60 KiB). Leaving the page while changes are unsaved triggers a browser warning. If the same draft was saved in another tab or device, autosave pauses and asks whether to **Load the newer draft**, **Keep this one**, or **Download this one**.
 - **Resuming, discarding, and newer versions:** While you have a saved draft, a private **Draft** badge appears beside the header action button (which changes from **Review** to **Resume draft**), in the header **Version** menu, and on the drafted version's row in the **History** tab. Entering Review mode resumes your saved draft directly; in the graphical view, resumed suggestions are read-only, though they can still be edited in **Source** view. To start over instead, choose **Discard draft** from the **Draft** badge menu or the **Version** menu. If a newer version was published while you had a draft, resuming opens a dialog offering **Move my review to vN** (opens Review mode on the current version with your earlier text kept read-only alongside it; nothing is overwritten until you edit), **Download draft**, or **Discard draft**.
-- **Privacy and retention:** Review drafts are strictly private to you — the artifact owner, project admins, and other reviewers cannot see them, and saving or discarding a draft sends no notifications. Drafts are stored on the Hub (never in browser storage), expire 30 days after your last save, and are deleted if the artifact is deleted. See [Artifacts — Review drafts](/scion/reference/artifacts/#review-drafts).
+- **Privacy and retention:** Your draft's content (body, note, marks, carried text, and base version) is strictly private to you — the artifact owner, project admins, and other reviewers can never read or modify it, and saving or discarding a draft sends no notifications. When a publisher has an open review request assigned to you, the publisher sees only that a requested reviewer has a review in draft (never your draft content); unsolicited reviewers who were not asked stay completely invisible. Artifacts with your saved draft show a **Review in draft** badge in the list and detail header, can be filtered with the **My drafts** chip (`is:draft` / `drafts=1`) or `scion artifact list --drafts`, are stored on the Hub (never in browser storage), expire 30 days after your last save, and are deleted if the artifact is deleted. See [Artifacts — Review drafts](/scion/reference/artifacts/#review-drafts).
 
 ### Review from the CLI
 
@@ -196,13 +196,19 @@ scion artifact publish plan.md --review scion://artifact/5f1c2d3e-...
 
 As with `--version-of`, a reference with `@<n>` must name the current version. The [reference](/scion/reference/artifacts/#reviews) lists every mark and the rules for code.
 
-### Request and dismiss a review (experimental)
+### Request, list, withdraw, and dismiss a review (experimental)
 
-When the `hub.artifacts_review_requests` [experiment](/scion/reference/experiments/#server-experiments-with-notes) is on (alpha, off by default; requires `hub.artifacts`), a publisher can ask specific users who already have review access to review an artifact, and requested reviewers can list or dismiss their requests with an optional note:
+When the `hub.artifacts_review_requests` [experiment](/scion/reference/experiments/#server-experiments-with-notes) is on (alpha, off by default; requires `hub.artifacts`), a publisher can ask specific users to review an artifact (raising their grant to `review` automatically when the requester can administer the artifact), list or withdraw requests, and requested reviewers can list, fulfil (by submitting a review), or dismiss their requests with an optional note. Publishing a new version carries open requests forward:
 
 ```bash
 # Request a review from one or more users (ID, user:<id>, or email)
 scion artifact request-review scion://artifact/5f1c2d3e-... --user alice@example.com --note "Please check section 3"
+
+# List review requests on an artifact (publishers see all; others see their own)
+scion artifact review-requests scion://artifact/5f1c2d3e-...
+
+# Withdraw an open review request
+scion artifact request-review scion://artifact/5f1c2d3e-... --withdraw --user alice@example.com
 
 # List artifacts where your review has been requested
 scion artifact list --requested
@@ -225,7 +231,7 @@ scion artifact get scion://artifact/5f1c2d3e-... --accept    # every mark accept
 scion artifact get scion://artifact/5f1c2d3e-... --kind publish  # the newest non-review version
 ```
 
-Apply or answer the marks, then publish the resolved text as the next version with `--version-of`. The *Review pending* badge clears once an ordinary version is current again.
+Apply or answer the marks, then publish the resolved text as the next version with `--version-of`. The *Review on latest* badge clears once an ordinary version is current again.
 
 ## Share an artifact
 

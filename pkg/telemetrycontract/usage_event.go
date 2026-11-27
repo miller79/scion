@@ -71,6 +71,7 @@ const (
 	TokenStatusReported    = "reported"
 	TokenStatusPartial     = "partial"
 	TokenStatusNotReported = "not_reported"
+	TokenStatusUnverified  = "unverified"
 	TokenStatusMalformed   = "malformed"
 )
 
@@ -155,6 +156,14 @@ type UsageEvent struct {
 	ReportedCostMicros   *int64 `json:"reported_cost_micros,omitempty"`
 	ReportedCostCurrency string `json:"reported_cost_currency,omitempty"`
 	ReportedCostSource   string `json:"reported_cost_source,omitempty"`
+
+	// DirectOTelSuppressed records whether direct container OTel export of
+	// gen_ai.api.calls and scion.usage.tokens was suppressed when this event
+	// was recorded into the outbox (Tokenomics P2.2 R2). A nil pointer
+	// (including lines from pre-P2.2 producers) means false/not suppressed so
+	// pre-P2.2 events are never double-counted on Hub re-emission, while
+	// residual WAL events from a suppressed run carry &true across restarts.
+	DirectOTelSuppressed *bool `json:"direct_otel_suppressed,omitempty"`
 }
 
 // Validate checks the envelope plus the usage invariants that make a row
@@ -226,7 +235,7 @@ func (e *UsageEvent) Validate() error {
 		errs = append(errs, fmt.Errorf("input_derivation %q is not known", e.InputDerivation))
 	}
 	switch e.TokenStatus {
-	case TokenStatusReported, TokenStatusPartial, TokenStatusNotReported, TokenStatusMalformed:
+	case TokenStatusReported, TokenStatusPartial, TokenStatusNotReported, TokenStatusUnverified, TokenStatusMalformed:
 	default:
 		errs = append(errs, fmt.Errorf("token_status %q is not known", e.TokenStatus))
 	}
@@ -235,6 +244,9 @@ func (e *UsageEvent) Validate() error {
 	}
 	if e.TokenStatus == TokenStatusNotReported && e.hasTokens() {
 		errs = append(errs, errors.New("token_status not_reported must not carry token fields"))
+	}
+	if e.TokenStatus == TokenStatusUnverified && e.hasTokens() {
+		errs = append(errs, errors.New("token_status unverified must not carry token fields"))
 	}
 	if e.SourceTime != "" {
 		if _, err := ParseTS(e.SourceTime); err != nil {

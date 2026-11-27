@@ -75,7 +75,7 @@ import {
 import { navigateTo } from '../../client/navigation.js';
 import { showToast } from '../../utils/toast.js';
 import { showResponseWarnings, showResponseBodyWarnings } from '../../client/response-warnings.js';
-import type { ScionAgentConfigForm } from '../shared/agent-config-form.js';
+import type { AgentLimitCeilings, ScionAgentConfigForm } from '../shared/agent-config-form.js';
 import '../shared/agent-config-form.js';
 import '../shared/status-badge.js';
 
@@ -117,6 +117,9 @@ export class ScionPageAgentCreate extends LitElement {
   @state() private hubSettings: HubPublicDefaults = {};
   /** The selected project's settings, for the project-tier placeholders. */
   @state() private projectSettings: ProjectCreateDefaults | null = null;
+  /** Active Hub run-limit ceilings from resolved project settings, if any. */
+  @state() private limitCeilings: AgentLimitCeilings | null = null;
+  @state() private telemetryLockedByHub = false;
 
   /**
    * The GCP identity picker's state. Owned here, so submit can validate and
@@ -135,8 +138,15 @@ export class ScionPageAgentCreate extends LitElement {
   /** Harness prefill requested via URL query param (applied once feature flags allow). */
   private pendingUrlHarness = '';
 
-  /** Cached project settings keyed by projectId */
-  private projectSettingsCache: Map<string, ProjectCreateDefaults> = new Map();
+  /** Cached resolved project settings (defaults, ceilings, telemetry lock) keyed by projectId */
+  private projectResolvedCache: Map<
+    string,
+    {
+      project: ProjectCreateDefaults;
+      ceilings: AgentLimitCeilings | null;
+      telemetryLockedByHub: boolean;
+    }
+  > = new Map();
 
   /** The currently selected Runtime Broker, if any. */
   private get selectedBroker(): RuntimeBroker | undefined {
@@ -611,9 +621,13 @@ export class ScionPageAgentCreate extends LitElement {
   private async loadProjectSettings(): Promise<void> {
     const isStale = this.projectLoadGuard();
     this.projectSettings = null;
-    const settings = await this.fetchProjectSettings(this.projectId);
+    this.limitCeilings = null;
+    this.telemetryLockedByHub = false;
+    const resolved = await this.fetchProjectResolved(this.projectId);
     if (isStale()) return;
-    this.projectSettings = settings;
+    this.projectSettings = resolved?.project ?? null;
+    this.limitCeilings = resolved?.ceilings ?? null;
+    this.telemetryLockedByHub = resolved?.telemetryLockedByHub ?? false;
   }
 
   /**
@@ -802,17 +816,58 @@ export class ScionPageAgentCreate extends LitElement {
   }
 
   private async fetchProjectSettings(projectId: string): Promise<ProjectCreateDefaults | null> {
+    const resolved = await this.fetchProjectResolved(projectId);
+    return resolved?.project ?? null;
+  }
+
+  /**
+   * Fetches `/api/v1/projects/{id}/settings/resolved` once per project (falling
+   * back to `/settings` on older hubs where `/settings/resolved` is unavailable)
+   * and returns project defaults, active run-limit ceilings, and whether
+   * telemetry is locked by the hub operator.
+   */
+  private async fetchProjectResolved(projectId: string): Promise<{
+    project: ProjectCreateDefaults;
+    ceilings: AgentLimitCeilings | null;
+    telemetryLockedByHub: boolean;
+  } | null> {
     if (!projectId) return null;
 
-    const cached = this.projectSettingsCache.get(projectId);
+    const cached = this.projectResolvedCache.get(projectId);
     if (cached !== undefined) return cached;
 
     try {
+      const resolvedRes = await apiFetch(`/api/v1/projects/${projectId}/settings/resolved`);
+      if (resolvedRes.ok) {
+        const resolved = (await resolvedRes.json()) as {
+          project?: ProjectCreateDefaults;
+          settings?: Record<string, { lockedBy?: string | null; ceiling?: number | string | null }>;
+        } | null;
+        const s = resolved?.settings ?? {};
+        const ceilings: AgentLimitCeilings = {};
+        const turns = s['scion.io/default-max-turns']?.ceiling;
+        if (typeof turns === 'number' && turns > 0) ceilings.max_turns = turns;
+        const calls = s['scion.io/default-max-model-calls']?.ceiling;
+        if (typeof calls === 'number' && calls > 0) ceilings.max_model_calls = calls;
+        const dur = s['scion.io/default-max-duration']?.ceiling;
+        if (typeof dur === 'string' && dur.trim() !== '') ceilings.max_duration = dur.trim();
+        const entry = {
+          project: resolved?.project ?? {},
+          ceilings:
+            ceilings.max_turns || ceilings.max_model_calls || ceilings.max_duration
+              ? ceilings
+              : null,
+          telemetryLockedByHub: s['scion.io/telemetry-enabled']?.lockedBy === 'hub',
+        };
+        this.projectResolvedCache.set(projectId, entry);
+        return entry;
+      }
       const res = await apiFetch(`/api/v1/projects/${projectId}/settings`);
       if (res.ok) {
         const data = (await res.json()) as ProjectCreateDefaults;
-        this.projectSettingsCache.set(projectId, data);
-        return data;
+        const entry = { project: data, ceilings: null, telemetryLockedByHub: false };
+        this.projectResolvedCache.set(projectId, entry);
+        return entry;
       }
     } catch {
       // Non-critical
@@ -1121,9 +1176,11 @@ export class ScionPageAgentCreate extends LitElement {
           <scion-agent-config-form
             mode="create"
             .placeholders=${this.placeholders}
+            .limitCeilings=${this.limitCeilings}
             .gcpIdentity=${this.gcp}
             ?branchAvailable=${!!this.selectedProject?.gitRemote &&
             !isSharedWorkspace(this.selectedProject)}
+            ?telemetryLockedByHub=${this.telemetryLockedByHub}
             ?disabled=${this.submitting}
           ></scion-agent-config-form>
         </sl-details>

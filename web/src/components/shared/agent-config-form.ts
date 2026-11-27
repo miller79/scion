@@ -553,7 +553,7 @@ export const AGENT_CONFIG_FIELDS: ReadonlyArray<AgentConfigFieldDef> = [
     label: 'Max turns',
     control: 'limit-count',
     tier: 'T1',
-    help: 'Stop the agent after this many turns.',
+    help: 'Stop the agent after this many turns (cooperative budget guardrail, not a security boundary).',
     capability: (c) => c.limits?.max_turns,
   },
   {
@@ -563,7 +563,7 @@ export const AGENT_CONFIG_FIELDS: ReadonlyArray<AgentConfigFieldDef> = [
     label: 'Max model calls',
     control: 'limit-count',
     tier: 'T1',
-    help: 'Stop the agent after this many model calls.',
+    help: 'Stop the agent after this many model calls (cooperative budget guardrail, not a security boundary).',
     capability: (c) => c.limits?.max_model_calls,
   },
   {
@@ -761,6 +761,13 @@ export interface AgentConfigChangeDetail {
   touched: string[];
 }
 
+/** Hub-level run-limit ceilings surfaced from GET .../settings/resolved. */
+export interface AgentLimitCeilings {
+  max_turns?: number;
+  max_model_calls?: number;
+  max_duration?: string;
+}
+
 @customElement('scion-agent-config-form')
 export class ScionAgentConfigForm extends LitElement {
   /** 'create' renders every field as editable now; 'edit' follows editability. */
@@ -779,6 +786,9 @@ export class ScionAgentConfigForm extends LitElement {
   /** Inherited values for unset fields, by field key. */
   @property({ attribute: false }) placeholders: Record<string, AgentConfigPlaceholder> = {};
 
+  /** Active Hub run-limit ceilings from resolved project settings, when configured. */
+  @property({ attribute: false }) limitCeilings: AgentLimitCeilings | null = null;
+
   /** The hub's per-field editability for the agent and the caller. */
   @property({ attribute: false }) editability: AgentEditability | null = null;
 
@@ -789,6 +799,9 @@ export class ScionAgentConfigForm extends LitElement {
 
   /** Whether the Branch field applies (the project has a git remote, not a shared workspace). */
   @property({ type: Boolean }) branchAvailable = false;
+
+  /** Whether telemetry is enforced by the hub operator (disables opting out). */
+  @property({ type: Boolean }) telemetryLockedByHub = false;
 
   /** The GCP identity picker's state, owned by the page. */
   @property({ attribute: false }) gcpIdentity: GcpIdentityState | null = null;
@@ -952,6 +965,7 @@ export class ScionAgentConfigForm extends LitElement {
           break;
         }
         case 'telemetry': {
+          if (this.telemetryLockedByHub) break;
           const v: TelemetryConfig | null =
             d.cleared || d.text === '' ? null : { enabled: d.text === 'true' };
           if (v !== null || !create) out.telemetry = v;
@@ -1465,16 +1479,47 @@ export class ScionAgentConfigForm extends LitElement {
               >`
             : nothing;
         const unlimitedNote = this.unlimitedUnsupportedNote(f);
+        const ceilingNote = this.limitCeilingNote(f);
         const help = f.help ? `${f.help} ` : '';
         return html`<div class="status help">
-          <span>${help}${this.applyText(st)}${session}.</span>${clearNote}${unlimitedNote}
+          <span>${help}${this.applyText(st)}${session}.</span
+          >${ceilingNote}${clearNote}${unlimitedNote}
         </div>`;
       }
     }
   }
 
+  /** Active Hub ceiling for a limit field, or undefined when none applies. */
+  private ceilingFor(f: AgentConfigFieldDef): number | string | undefined {
+    const c = this.limitCeilings;
+    if (!c) return undefined;
+    switch (f.key) {
+      case 'config.max_turns':
+        return typeof c.max_turns === 'number' && c.max_turns > 0 ? c.max_turns : undefined;
+      case 'config.max_model_calls':
+        return typeof c.max_model_calls === 'number' && c.max_model_calls > 0
+          ? c.max_model_calls
+          : undefined;
+      case 'config.max_duration':
+        return typeof c.max_duration === 'string' && c.max_duration.trim() !== ''
+          ? c.max_duration.trim()
+          : undefined;
+      default:
+        return undefined;
+    }
+  }
+
+  private limitCeilingNote(f: AgentConfigFieldDef) {
+    const ceiling = this.ceilingFor(f);
+    if (ceiling === undefined) return nothing;
+    return html`<span class="ceiling-note" data-testid="limit-ceiling">
+      Hub ceiling: ${ceiling}.</span
+    >`;
+  }
+
   /** Why the Unlimited control is disabled, wherever that control is shown. */
   private unlimitedUnsupportedNote(f: AgentConfigFieldDef) {
+    if (this.ceilingFor(f) !== undefined) return nothing;
     if (!this.unlimitedUnsupported(f)) return nothing;
     return html`<span class="unlimited-note" data-testid="unlimited-unsupported">
       ${UNLIMITED_UNSUPPORTED_REASON}</span
@@ -1686,6 +1731,10 @@ export class ScionAgentConfigForm extends LitElement {
     const text = d ? d.text : this.storedText(f);
     const unlimited = d ? d.unlimited : this.storedUnlimited(f);
     const isLimit = f.control === 'limit-count' || f.control === 'limit-duration';
+    const ceiling = isLimit ? this.ceilingFor(f) : undefined;
+    const hasCeiling = ceiling !== undefined;
+    const numericMax =
+      f.control === 'limit-count' && typeof ceiling === 'number' ? String(ceiling) : nothing;
     const placeholder = d?.cleared ? `Cleared — ${this.placeholderFor(f)}` : this.placeholderFor(f);
     const onInput = (e: Event) =>
       this.editField(
@@ -1708,13 +1757,15 @@ export class ScionAgentConfigForm extends LitElement {
         : html`<sl-input
             id=${id}
             size="small"
+            type=${f.control === 'limit-count' && hasCeiling ? 'number' : 'text'}
+            max=${numericMax}
             .value=${unlimited ? '' : text}
-            placeholder=${unlimited ? 'Unlimited' : placeholder}
+            placeholder=${unlimited && !hasCeiling ? 'Unlimited' : placeholder}
             inputmode=${f.control === 'limit-count' ? 'numeric' : 'text'}
-            ?disabled=${off || unlimited}
+            ?disabled=${off || (unlimited && !hasCeiling)}
             @sl-input=${onInput}
           ></sl-input>`}
-      ${isLimit
+      ${isLimit && !hasCeiling
         ? html`<sl-checkbox
             size="small"
             class="unlimited"
@@ -1780,6 +1831,19 @@ export class ScionAgentConfigForm extends LitElement {
     d: FieldDraft | undefined,
     id: string
   ) {
+    if (f.control === 'telemetry' && this.telemetryLockedByHub) {
+      return html`<div class="row">
+        <sl-select
+          id=${id}
+          size="small"
+          .value=${'true'}
+          help-text="Required by hub operator"
+          disabled
+        >
+          <sl-option value="true">Enabled</sl-option>
+        </sl-select>
+      </div>`;
+    }
     const options =
       f.control === 'choice' || f.control === 'top-choice' ? f.options : TOGGLE_OPTIONS;
     const value = d ? (d.cleared ? '' : d.text) : this.storedText(f);

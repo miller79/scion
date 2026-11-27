@@ -1062,6 +1062,14 @@ func explicitEnvOf(ac *store.AgentAppliedConfig) map[string]string {
 // agent.AppliedConfig.InlineConfig.Skills. Fetches are best-effort: errors are
 // logged and that scope's skills are omitted for this provisioning.
 func (s *Server) mergeInjectedSkills(ctx context.Context, agent *store.Agent, project *store.Project) {
+	if isShellAgent(agent) {
+		// Shell execution containers have no LLM harness and do not consume
+		// skills; skip hub/user/project skill injection and clear any refs.
+		if agent.AppliedConfig != nil && agent.AppliedConfig.InlineConfig != nil {
+			agent.AppliedConfig.InlineConfig.Skills = nil
+		}
+		return
+	}
 	if agent.AppliedConfig.InlineConfig == nil {
 		agent.AppliedConfig.InlineConfig = &api.ScionConfig{}
 	}
@@ -1986,6 +1994,15 @@ func (s *Server) handleExistingAgent(
 
 	// Branch 3: Env-gather re-provisioning — provisioning + GatherEnv requested.
 	if req.GatherEnv && rest == string(state.PhaseProvisioning) {
+		// If the recreate flips auto -> never, check never-suspend headroom
+		// before tearing down the existing provisioning row so an over-cap
+		// request does not destroy the row and then fail at commitAgentCreate.
+		if req.SuspendPolicy == store.SuspendPolicyNever && existingAgent.SuspendPolicy != store.SuspendPolicyNever {
+			if err := s.checkNeverSuspendQuotaHeadroom(ctx, createdBy, existingAgent.ProjectID); err != nil {
+				writeQuotaReserveError(w, store.LimitMaxNeverSuspendAgentsPerProject, err)
+				return existingAgentErrored
+			}
+		}
 		// Snapshot any agent-scoped secrets before tearing down the existing
 		// provisioning agent so they survive recreate under the replacement
 		// agent's new ID. Fail closed on read error before deleting anything.

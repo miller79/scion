@@ -87,6 +87,7 @@ func newBearerMatrixFixture(t *testing.T) *bearerMatrixFixture {
 	// The inbox routes act on the caller's own records, so the matrix
 	// addresses the super-admin's records in the fixture project.
 	ids.inbox = seedInboxRecords(t, ctx, s, adminID, ids.project, ids.agent)
+	ids.inbox.groupMessageAttachment = seedInboxMessageAttachment(t, ctx, srv, adminID, ids.project, ids.inbox.groupMessage)
 	ids.userSkillInjection = seedUserSkillInjection(t, ctx, s, adminID)
 	ids.userTemplate, ids.userTemplateDel = seedUserTemplates(t, ctx, s, adminID)
 	// The chat routes likewise address the super-admin's own chat records.
@@ -359,8 +360,9 @@ func bearerMatrixBodyOverrides(f idFixtures) map[overrideKey]map[string]interfac
 // record, and the user the user delete row removes.
 func (m *bearerMatrixFixture) callerPatternOverrides() map[overrideKey]map[string]string {
 	return map[overrideKey]map[string]string{
-		{"user.self.update", "/api/v1/users/{id}"}:  {"id": m.adminID},
-		{"user.admin.delete", "/api/v1/users/{id}"}: {"id": m.userDelete},
+		{"user.self.update", "/api/v1/users/{id}"}:           {"id": m.adminID},
+		{"user.usage.self.read", "/api/v1/users/{id}/usage"}: {"id": m.adminID},
+		{"user.admin.delete", "/api/v1/users/{id}"}:          {"id": m.userDelete},
 	}
 }
 

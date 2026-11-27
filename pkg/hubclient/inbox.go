@@ -37,19 +37,27 @@ const (
 
 	// InboxCategory* are the stable keys returned in InboxSummaryResponse.Categories.
 	InboxCategoryDecisions      = "decisions"
+	InboxCategoryAgentSecrets   = "agent_secrets"
 	InboxCategoryWaiting        = "waiting"
 	InboxCategoryReviews        = "reviews"
 	InboxCategoryPendingSecrets = "pending_secrets"
 	InboxCategoryChat           = "chat"
 
 	// InboxBreakdown* are the documented stable keys for InboxCategory.Breakdown.
-	InboxBreakdownAgents              = "agents"
-	InboxBreakdownProjects            = "projects"
-	InboxBreakdownToAddress           = "toAddress"
-	InboxBreakdownRequested           = "requested"
-	InboxBreakdownUnreadConversations = "unreadConversations"
-	InboxBreakdownDMs                 = "dms"
-	InboxBreakdownMentions            = "mentions"
+	InboxBreakdownAgents                = "agents"
+	InboxBreakdownProjects              = "projects"
+	InboxBreakdownSecretsProjects       = "secretsProjects"
+	InboxBreakdownToAddress             = "toAddress"
+	InboxBreakdownToAddressCapped       = "toAddressCapped"
+	InboxBreakdownRequested             = "requested"
+	InboxBreakdownRequestedCapped       = "requestedCapped"
+	InboxBreakdownDrafts                = "drafts"
+	InboxBreakdownDraftsCapped          = "draftsCapped"
+	InboxBreakdownUnreadConversations   = "unreadConversations"
+	InboxBreakdownDMs                   = "dms"
+	InboxBreakdownMentions              = "mentions"
+	InboxBreakdownStarredMessages       = "starredMessages"
+	InboxBreakdownStarredMessagesCapped = "starredMessagesCapped"
 
 	// InboxState* are the valid values for InboxCategory.State.
 	InboxStateOK          = "ok"

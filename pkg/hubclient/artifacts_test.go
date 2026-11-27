@@ -306,20 +306,20 @@ func TestArtifactList(t *testing.T) {
 			return
 		}
 		queries = append(queries, r.URL.Query().Encode())
-		_, _ = io.WriteString(w, `{"artifacts":[{"id":"id-1","title":"T","ownerKind":"agent","reviewPending":true}],"nextCursor":"c1.next"}`)
+		_, _ = io.WriteString(w, `{"artifacts":[{"id":"id-1","title":"T","ownerKind":"agent","reviewOnLatest":true}],"nextCursor":"c1.next"}`)
 	}))
 	defer srv.Close()
 	c, _ := New(srv.URL)
 	ctx := context.Background()
 
 	got, err := c.Artifacts().List(ctx, nil)
-	if err != nil || len(got.Artifacts) != 1 || got.Artifacts[0].ID != "id-1" || !got.Artifacts[0].ReviewPending || got.NextCursor != "c1.next" {
+	if err != nil || len(got.Artifacts) != 1 || got.Artifacts[0].ID != "id-1" || !got.Artifacts[0].ReviewOnLatest || got.NextCursor != "c1.next" {
 		t.Fatalf("List = %+v, %v", got, err)
 	}
-	if _, err := c.Artifacts().List(ctx, &ListArtifactsOptions{Query: "a b", ReviewPending: true, OwnedOnly: true, Limit: 10, Cursor: "c1.x"}); err != nil {
+	if _, err := c.Artifacts().List(ctx, &ListArtifactsOptions{Query: "a b", ReviewOnLatest: true, OwnedOnly: true, Limit: 10, Cursor: "c1.x"}); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"mine=1", "cursor=c1.x&limit=10&mine=1&owner=me&q=a+b&review_pending=1"}
+	want := []string{"mine=1", "cursor=c1.x&limit=10&mine=1&owner=me&q=a+b&review_on_latest=1"}
 	if len(queries) != 2 || queries[0] != want[0] || queries[1] != want[1] {
 		t.Errorf("queries = %q, want %q", queries, want)
 	}
@@ -523,5 +523,46 @@ func TestArtifactGrantNotify(t *testing.T) {
 	res, err = c.Artifacts().PutGrant(context.Background(), "id-1", req)
 	if err != nil || res.Notified || res.NotifySkipped != "not_permitted" {
 		t.Fatalf("PutGrant skipped = %+v, %v", res, err)
+	}
+}
+
+func TestArtifactPublishFromAttachment(t *testing.T) {
+	var calls atomic.Int32
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/artifacts" {
+			t.Errorf("request %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"artifact":{"id":"a1","scopeRef":"p1","currentSeq":1},"version":{"seq":1,"sourceAttachmentId":"att-1","sourceMessageId":"msg-1"}}`)
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, WithRetry(3, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Artifacts().PublishFromAttachment(context.Background(), &PublishFromAttachmentRequest{
+		FromAttachment: "att-1",
+		Title:          "Shot",
+		ScopeRef:       "p1",
+		Key:            "shots",
+		Note:           "v1",
+		ExpiresIn:      "30d",
+	})
+	if err != nil {
+		t.Fatalf("PublishFromAttachment: %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Errorf("calls = %d, want 1", calls.Load())
+	}
+	if gotBody["fromAttachment"] != "att-1" || gotBody["scopeRef"] != "p1" || gotBody["key"] != "shots" {
+		t.Errorf("body = %v", gotBody)
+	}
+	if resp.Version == nil || resp.Version.SourceAttachmentID != "att-1" || resp.Version.SourceMessageID != "msg-1" {
+		t.Errorf("version = %+v", resp.Version)
 	}
 }

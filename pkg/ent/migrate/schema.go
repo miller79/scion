@@ -332,6 +332,14 @@ var (
 					Where: "harness_config IS NULL AND applied_config IS NOT NULL",
 				},
 			},
+			{
+				Name:    "agent_running_active",
+				Unique:  false,
+				Columns: []*schema.Column{AgentsColumns[0], AgentsColumns[58]},
+				Annotation: &entsql.IndexAnnotation{
+					Where: "deleted_at IS NULL AND phase = 'running'",
+				},
+			},
 		},
 	}
 	// AgentCredentialsColumns holds the columns for the "agent_credentials" table.
@@ -800,6 +808,7 @@ var (
 		{Name: "tool_calls", Type: field.TypeJSON, Nullable: true},
 		{Name: "languages", Type: field.TypeJSON, Nullable: true},
 		{Name: "created_at", Type: field.TypeTime},
+		{Name: "converted_at", Type: field.TypeTime, Nullable: true},
 	}
 	// AgentSessionMetricsTable holds the schema information for the "agent_session_metrics" table.
 	AgentSessionMetricsTable = &schema.Table{
@@ -821,6 +830,11 @@ var (
 				Name:    "agentsessionmetrics_started_at",
 				Unique:  false,
 				Columns: []*schema.Column{AgentSessionMetricsColumns[4]},
+			},
+			{
+				Name:    "agentsessionmetrics_converted_at_id",
+				Unique:  false,
+				Columns: []*schema.Column{AgentSessionMetricsColumns[16], AgentSessionMetricsColumns[0]},
 			},
 			{
 				Name:    "agentsessionmetrics_agent_id_session_id_started_at",
@@ -2832,6 +2846,8 @@ var (
 		{Name: "last_contiguous_seq", Type: field.TypeInt64, Default: 0},
 		{Name: "max_seq_seen", Type: field.TypeInt64, Default: 0},
 		{Name: "missing_ranges", Type: field.TypeJSON, Nullable: true},
+		{Name: "rejected_count", Type: field.TypeInt64, Default: 0},
+		{Name: "rejected_ranges", Type: field.TypeJSON, Nullable: true},
 		{Name: "last_source_activity_at", Type: field.TypeTime, Nullable: true},
 		{Name: "supported_signals", Type: field.TypeJSON, Nullable: true},
 		{Name: "anomalous_count", Type: field.TypeInt64, Default: 0},
@@ -2858,7 +2874,17 @@ var (
 			{
 				Name:    "meterhealth_final_state_updated_at",
 				Unique:  false,
-				Columns: []*schema.Column{MeterHealthColumns[12], MeterHealthColumns[13]},
+				Columns: []*schema.Column{MeterHealthColumns[14], MeterHealthColumns[15]},
+			},
+			{
+				Name:    "meterhealth_updated_at",
+				Unique:  false,
+				Columns: []*schema.Column{MeterHealthColumns[15]},
+			},
+			{
+				Name:    "meterhealth_last_receipt_at_agent_id",
+				Unique:  false,
+				Columns: []*schema.Column{MeterHealthColumns[4], MeterHealthColumns[1]},
 			},
 		},
 	}
@@ -3470,6 +3496,11 @@ var (
 				Unique:  false,
 				Columns: []*schema.Column{RunAttributionColumns[9], RunAttributionColumns[25]},
 			},
+			{
+				Name:    "runattribution_created_at_agent_id",
+				Unique:  false,
+				Columns: []*schema.Column{RunAttributionColumns[25], RunAttributionColumns[6]},
+			},
 		},
 	}
 	// RuntimeBrokersColumns holds the columns for the "runtime_brokers" table.
@@ -3915,6 +3946,11 @@ var (
 				Unique:  false,
 				Columns: []*schema.Column{SecretRequestsColumns[1], SecretRequestsColumns[29]},
 			},
+			{
+				Name:    "secretrequest_project_id_resolved_at",
+				Unique:  false,
+				Columns: []*schema.Column{SecretRequestsColumns[1], SecretRequestsColumns[31]},
+			},
 		},
 	}
 	// SkillsColumns holds the columns for the "skills" table.
@@ -4322,6 +4358,56 @@ var (
 			},
 		},
 	}
+	// TrajectorySegmentsColumns holds the columns for the "trajectory_segments" table.
+	TrajectorySegmentsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeString},
+		{Name: "hub_id", Type: field.TypeString},
+		{Name: "origin_hub_id", Type: field.TypeString, Nullable: true, Default: ""},
+		{Name: "project_id", Type: field.TypeString},
+		{Name: "agent_id", Type: field.TypeString},
+		{Name: "run_id", Type: field.TypeString},
+		{Name: "harness", Type: field.TypeString},
+		{Name: "native_relative_path", Type: field.TypeString},
+		{Name: "artifact_kind", Type: field.TypeString},
+		{Name: "generation", Type: field.TypeInt},
+		{Name: "byte_start", Type: field.TypeInt64},
+		{Name: "byte_end", Type: field.TypeInt64},
+		{Name: "raw_sha256", Type: field.TypeString},
+		{Name: "compressed_size", Type: field.TypeInt64},
+		{Name: "compressed_sha256", Type: field.TypeString},
+		{Name: "incomplete_tail", Type: field.TypeBool, Default: false},
+		{Name: "session_id", Type: field.TypeString, Nullable: true, Default: ""},
+		{Name: "object_path", Type: field.TypeString},
+		{Name: "manifest_path", Type: field.TypeString, Nullable: true, Default: ""},
+		{Name: "status", Type: field.TypeString, Default: "pending"},
+		{Name: "normalize_status", Type: field.TypeString, Default: "pending"},
+		{Name: "created_at", Type: field.TypeTime},
+		{Name: "committed_at", Type: field.TypeTime, Nullable: true},
+		{Name: "prepare_expires_at", Type: field.TypeTime},
+	}
+	// TrajectorySegmentsTable holds the schema information for the "trajectory_segments" table.
+	TrajectorySegmentsTable = &schema.Table{
+		Name:       "trajectory_segments",
+		Columns:    TrajectorySegmentsColumns,
+		PrimaryKey: []*schema.Column{TrajectorySegmentsColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "trajectorysegment_agent_id_run_id_harness_native_relative_path_generation_byte_start",
+				Unique:  true,
+				Columns: []*schema.Column{TrajectorySegmentsColumns[4], TrajectorySegmentsColumns[5], TrajectorySegmentsColumns[6], TrajectorySegmentsColumns[7], TrajectorySegmentsColumns[9], TrajectorySegmentsColumns[10]},
+			},
+			{
+				Name:    "trajectorysegment_project_id_agent_id_run_id",
+				Unique:  false,
+				Columns: []*schema.Column{TrajectorySegmentsColumns[3], TrajectorySegmentsColumns[4], TrajectorySegmentsColumns[5]},
+			},
+			{
+				Name:    "trajectorysegment_agent_id_created_at",
+				Unique:  false,
+				Columns: []*schema.Column{TrajectorySegmentsColumns[4], TrajectorySegmentsColumns[21]},
+			},
+		},
+	}
 	// TriggersColumns holds the columns for the "triggers" table.
 	TriggersColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeUUID},
@@ -4659,6 +4745,11 @@ var (
 				Unique:  false,
 				Columns: []*schema.Column{UsageEventsColumns[35]},
 			},
+			{
+				Name:    "usageevent_event_ts",
+				Unique:  false,
+				Columns: []*schema.Column{UsageEventsColumns[28]},
+			},
 		},
 	}
 	// UsageReservationsColumns holds the columns for the "usage_reservations" table.
@@ -4726,6 +4817,13 @@ var (
 		{Name: "reported_cost_micros", Type: field.TypeInt64, Default: 0},
 		{Name: "events", Type: field.TypeInt64, Default: 0},
 		{Name: "null_token_events", Type: field.TypeInt64, Default: 0},
+		{Name: "input_known_events", Type: field.TypeInt64, Default: 0},
+		{Name: "output_known_events", Type: field.TypeInt64, Default: 0},
+		{Name: "cache_read_known_events", Type: field.TypeInt64, Default: 0},
+		{Name: "cache_write_known_events", Type: field.TypeInt64, Default: 0},
+		{Name: "cache_write_1h_known_events", Type: field.TypeInt64, Default: 0},
+		{Name: "reasoning_known_events", Type: field.TypeInt64, Default: 0},
+		{Name: "presence_tracked_events", Type: field.TypeInt64, Default: 0},
 		{Name: "first_event_ts", Type: field.TypeTime},
 		{Name: "last_event_ts", Type: field.TypeTime},
 	}
@@ -4754,6 +4852,65 @@ var (
 				Name:    "usagerollupdaily_agent_id_bucket_start",
 				Unique:  false,
 				Columns: []*schema.Column{UsageRollupsDailyColumns[4], UsageRollupsDailyColumns[1]},
+			},
+		},
+	}
+	// UsageRollupsHourlyColumns holds the columns for the "usage_rollups_hourly" table.
+	UsageRollupsHourlyColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeUUID},
+		{Name: "bucket_start", Type: field.TypeTime},
+		{Name: "project_id", Type: field.TypeString},
+		{Name: "billing_user_id", Type: field.TypeString, Default: ""},
+		{Name: "agent_id", Type: field.TypeString},
+		{Name: "harness", Type: field.TypeString, Default: ""},
+		{Name: "model", Type: field.TypeString, Default: ""},
+		{Name: "usage_source", Type: field.TypeString},
+		{Name: "calls", Type: field.TypeInt64, Default: 0},
+		{Name: "error_calls", Type: field.TypeInt64, Default: 0},
+		{Name: "input", Type: field.TypeInt64, Default: 0},
+		{Name: "output", Type: field.TypeInt64, Default: 0},
+		{Name: "cache_read", Type: field.TypeInt64, Default: 0},
+		{Name: "cache_write", Type: field.TypeInt64, Default: 0},
+		{Name: "cache_write_1h", Type: field.TypeInt64, Default: 0},
+		{Name: "reasoning", Type: field.TypeInt64, Default: 0},
+		{Name: "reported_cost_micros", Type: field.TypeInt64, Default: 0},
+		{Name: "events", Type: field.TypeInt64, Default: 0},
+		{Name: "null_token_events", Type: field.TypeInt64, Default: 0},
+		{Name: "input_known_events", Type: field.TypeInt64, Default: 0},
+		{Name: "output_known_events", Type: field.TypeInt64, Default: 0},
+		{Name: "cache_read_known_events", Type: field.TypeInt64, Default: 0},
+		{Name: "cache_write_known_events", Type: field.TypeInt64, Default: 0},
+		{Name: "cache_write_1h_known_events", Type: field.TypeInt64, Default: 0},
+		{Name: "reasoning_known_events", Type: field.TypeInt64, Default: 0},
+		{Name: "presence_tracked_events", Type: field.TypeInt64, Default: 0},
+		{Name: "first_event_ts", Type: field.TypeTime},
+		{Name: "last_event_ts", Type: field.TypeTime},
+	}
+	// UsageRollupsHourlyTable holds the schema information for the "usage_rollups_hourly" table.
+	UsageRollupsHourlyTable = &schema.Table{
+		Name:       "usage_rollups_hourly",
+		Columns:    UsageRollupsHourlyColumns,
+		PrimaryKey: []*schema.Column{UsageRollupsHourlyColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "usage_rollups_hourly_key",
+				Unique:  true,
+				Columns: []*schema.Column{UsageRollupsHourlyColumns[1], UsageRollupsHourlyColumns[2], UsageRollupsHourlyColumns[3], UsageRollupsHourlyColumns[4], UsageRollupsHourlyColumns[5], UsageRollupsHourlyColumns[6], UsageRollupsHourlyColumns[7]},
+			},
+			{
+				Name:    "usagerolluphourly_project_id_bucket_start",
+				Unique:  false,
+				Columns: []*schema.Column{UsageRollupsHourlyColumns[2], UsageRollupsHourlyColumns[1]},
+			},
+			{
+				Name:    "usagerolluphourly_billing_user_id_bucket_start",
+				Unique:  false,
+				Columns: []*schema.Column{UsageRollupsHourlyColumns[3], UsageRollupsHourlyColumns[1]},
+			},
+			{
+				Name:    "usagerolluphourly_agent_id_bucket_start",
+				Unique:  false,
+				Columns: []*schema.Column{UsageRollupsHourlyColumns[4], UsageRollupsHourlyColumns[1]},
 			},
 		},
 	}
@@ -5191,6 +5348,7 @@ var (
 		TestInfraMarkerTable,
 		ThreadGroupsTable,
 		ThreadGroupMembersTable,
+		TrajectorySegmentsTable,
 		TriggersTable,
 		TriggerEventsTable,
 		TriggerFiresTable,
@@ -5198,6 +5356,7 @@ var (
 		UsageEventsTable,
 		UsageReservationsTable,
 		UsageRollupsDailyTable,
+		UsageRollupsHourlyTable,
 		UsageScopeCountersDailyTable,
 		UsersTable,
 		UserAccessTokensTable,
@@ -5492,6 +5651,9 @@ func init() {
 	ThreadGroupMembersTable.Annotation = &entsql.Annotation{
 		Table: "thread_group_members",
 	}
+	TrajectorySegmentsTable.Annotation = &entsql.Annotation{
+		Table: "trajectory_segments",
+	}
 	TriggersTable.Annotation = &entsql.Annotation{
 		Table: "triggers",
 	}
@@ -5514,6 +5676,9 @@ func init() {
 	UsageReservationsTable.ForeignKeys[0].RefTable = LimitDefinitionsTable
 	UsageRollupsDailyTable.Annotation = &entsql.Annotation{
 		Table: "usage_rollups_daily",
+	}
+	UsageRollupsHourlyTable.Annotation = &entsql.Annotation{
+		Table: "usage_rollups_hourly",
 	}
 	UsageScopeCountersDailyTable.Annotation = &entsql.Annotation{
 		Table: "usage_scope_counters_daily",

@@ -1071,6 +1071,12 @@ const AnnotationProjectAgentsGroup = "scion.io/project-agents-group"
 // one.
 const AnnotationProjectActiveProfile = "scion.io/active-profile"
 
+// AnnotationProjectTelemetryEnabled is the project annotation that holds the
+// project's telemetryEnabled setting and keys its entry in GET /settings/resolved.
+// pkg/hub keeps its own literal (projectSettingTelemetryEnabled) and pins that
+// the two agree; readers outside pkg/hub, such as the CLI preflight, use this one.
+const AnnotationProjectTelemetryEnabled = "scion.io/telemetry-enabled"
+
 // IsProjectMembersGroup reports whether g is a system project members group:
 // it belongs to a project and carries either members-group marker key with
 // the value "true".
@@ -1641,6 +1647,11 @@ type BrokerCapabilities struct {
 	// for such a broker does the hub accept a change of a count limit to
 	// Unlimited; an older broker would keep the inherited limit.
 	UnlimitedCountLimits bool `json:"unlimitedCountLimits,omitempty"`
+	// LimitCeilings indicates the broker enforces Hub-supplied LimitCeilings
+	// (config.ClampLimits) on create, start and restart and echoes effective
+	// limits back to the Hub (ptone/scion#9371). When Hub agent_limits
+	// ceilings are configured, the Hub refuses dispatch to brokers lacking it.
+	LimitCeilings bool `json:"limitCeilings,omitempty"`
 	// ClearedResourceSubfields indicates the broker applies the resources
 	// sub-field entries of cleared_fields (resources.requests.cpu and the
 	// like, api.ResourceSubPaths) at start, so a resources edit that drops
@@ -2560,6 +2571,15 @@ type RunningNeverSuspendCount struct {
 	ProjectID       string
 	RuntimeBrokerID string
 	Count           int64
+}
+
+// NeverSuspendAgentSummary is the narrow row projection returned by
+// ListNeverSuspendAgents for admin quota usage views.
+type NeverSuspendAgentSummary struct {
+	ID        string
+	ProjectID string
+	CreatedBy string
+	Created   time.Time
 }
 
 // CrossProjectInbound policy values define which external agents may deliver
@@ -3916,6 +3936,10 @@ type Message struct {
 	// artifacts here, to a reader only, so catch-up can say they were not
 	// delivered (ptone/scion#4596).
 	DeferredAttachments []DeferredAttachment `json:"deferredAttachments,omitempty"`
+
+	// Attachments lists the attachments of the message the caller may read,
+	// filled on conversation read routes only. Never persisted (ptone/scion#9579).
+	Attachments []MessageAttachment `json:"attachments,omitempty"`
 }
 
 // DeferredAttachment names one attachment of a deferred message: its
@@ -3923,6 +3947,18 @@ type Message struct {
 type DeferredAttachment struct {
 	Name string `json:"name"`
 	Size int64  `json:"size"`
+}
+
+// MessageAttachment describes one artifact-backed attachment of a message
+// returned on conversation read routes (ptone/scion#9579).
+type MessageAttachment struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Size        int64    `json:"size"`
+	ContentType string   `json:"contentType"`
+	SHA256      string   `json:"sha256"`
+	Ref         string   `json:"ref"`
+	PublishedAs []string `json:"publishedAs,omitempty"`
 }
 
 // MessageFilter defines query parameters for listing messages.
@@ -4868,6 +4904,7 @@ type AgentSessionMetrics struct {
 	ToolCalls       map[string]any `json:"toolCalls,omitempty"`
 	Languages       []string       `json:"languages,omitempty"`
 	CreatedAt       time.Time      `json:"createdAt"`
+	ConvertedAt     *time.Time     `json:"convertedAt,omitempty"`
 }
 
 // AgentSessionMetricsAggregates holds SQL-level aggregation results for
@@ -5951,8 +5988,13 @@ const (
 // System limit definition names
 const (
 	LimitMaxAgentsPerProject = "max_agents_per_project"
-	LimitMaxProjectsPerUser  = "max_projects_per_user"
-	LimitMaxMembersPerGroup  = "max_members_per_group"
+	// LimitMaxNeverSuspendAgentsPerProject caps non-deleted agents with
+	// suspend_policy = "never" (in any phase) per project. Seeded unlimited
+	// (0) like the other fairness quotas; enforced directly from agent rows
+	// rather than usage reservations.
+	LimitMaxNeverSuspendAgentsPerProject = "max_never_suspend_agents_per_project"
+	LimitMaxProjectsPerUser              = "max_projects_per_user"
+	LimitMaxMembersPerGroup              = "max_members_per_group"
 	// LimitMaxAgentsPerBroker is the per-runtime-broker ceiling on
 	// concurrently live agents (ptone/scion#1303). Unlike the other system
 	// limits, which are opt-in fairness quotas seeded unlimited and scoped to

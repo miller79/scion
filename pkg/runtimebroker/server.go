@@ -213,6 +213,14 @@ type ServerConfig struct {
 	// SCION_INIT_FIREWALL on a runtime-managed netns-setup path.
 	InitFirewall firewallpolicy.Policy
 
+	// ConduitDeliverRuntimes lists the runtime names whose agents may deliver
+	// messages over Conduit when the hub enables hub.conduit_deliver
+	// (server.broker.conduit_deliver_runtimes). Nil uses the default set
+	// (cloudrun, kubernetes, docker); an explicit non-nil empty slice disables
+	// Conduit delivery on all runtimes. Brokers connected to several hubs
+	// always use exec regardless of this setting.
+	ConduitDeliverRuntimes []string
+
 	// NFSConfig holds NFS workspace storage settings for this broker. The
 	// server command sets it from server.workspace_storage when the backend
 	// is "nfs" (see brokerNFSConfig in cmd). When non-nil with shares
@@ -666,6 +674,10 @@ type Server struct {
 	// running-agent control-path sweep (startControlPathSweep).
 	controlPathSweepOnce   sync.Once
 	controlPathSweepCancel context.CancelFunc
+	// durationBackstopSweepOnce and durationBackstopSweepCancel run and stop
+	// the background durationBackstopSweeper (ptone/scion#9372).
+	durationBackstopSweepOnce   sync.Once
+	durationBackstopSweepCancel context.CancelFunc
 	// shareHealth is the project storage share's visibility on a shared
 	// Layout, re-checked by startShareHealthLoop (share_health.go).
 	shareHealth shareHealthState
@@ -1791,6 +1803,10 @@ func (s *Server) startServices(ctx context.Context, withListener bool) error {
 	// against the Runtime Broker control paths (controlPathSweeper).
 	s.startControlPathSweep(ctx)
 
+	// Sweep all scion-managed runtimes every 60s for expired max_duration
+	// deadlines (durationBackstopSweeper, ptone/scion#9372).
+	s.startDurationBackstopSweep(ctx)
+
 	// Purge agent homes a home reset moved aside that an interrupted purge
 	// left behind (background, once per process; ptone/scion#7757).
 	go func() {
@@ -1950,9 +1966,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	s.mu.RLock()
 	sweepCancel := s.controlPathSweepCancel
+	backstopCancel := s.durationBackstopSweepCancel
 	s.mu.RUnlock()
 	if sweepCancel != nil {
 		sweepCancel()
+	}
+	if backstopCancel != nil {
+		backstopCancel()
 	}
 	s.stopShareHealthLoop()
 

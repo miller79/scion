@@ -48,7 +48,11 @@ import {
   validate as validateFilterQuery,
   type ViewSchema,
 } from '../../shared/filter-query/index.js';
-import { ARTIFACTS_REVIEW_REQUESTS_FLAG, isFeatureEnabled } from '../../utils/feature-flags.js';
+import {
+  ARTIFACTS_REVIEW_DRAFTS_FLAG,
+  ARTIFACTS_REVIEW_REQUESTS_FLAG,
+  isFeatureEnabled,
+} from '../../utils/feature-flags.js';
 import type { FilterCommitDetail, FilterInputDetail } from './filter-box/filter-box.js';
 import './filter-box/filter-box.js';
 import { ownerDeletedBadge, ownerDeletedStyles } from './artifact-owner-deleted.js';
@@ -243,16 +247,29 @@ export class ScionArtifactList extends LitElement {
     return isFeatureEnabled(ARTIFACTS_REVIEW_REQUESTS_FLAG);
   }
 
+  private get reviewDraftsEnabled(): boolean {
+    return isFeatureEnabled(ARTIFACTS_REVIEW_DRAFTS_FLAG);
+  }
+
   override connectedCallback(): void {
     super.connectedCallback();
     const params = new URLSearchParams(window.location.search);
+    const reviewParam = params.get('review_on_latest') ?? params.get('review_pending');
     const requestedParam = params.get('requested');
+    const hasLegacyReview = reviewParam === '1' || reviewParam === 'true';
     const hasLegacyRequested =
       this.reviewRequestsEnabled && (requestedParam === '1' || requestedParam === 'true');
+    const draftsParam = params.get('drafts');
+    const hasLegacyDrafts =
+      this.reviewDraftsEnabled && (draftsParam === '1' || draftsParam === 'true');
     let urlQ = params.get(this.urlParam) ?? '';
     let migratedLegacy = false;
-    if (!urlQ && hasLegacyRequested) {
-      urlQ = 'is:requested';
+    if (!urlQ && (hasLegacyReview || hasLegacyRequested || hasLegacyDrafts)) {
+      const migrated: string[] = [];
+      if (hasLegacyReview) migrated.push('is:reviewed');
+      if (hasLegacyRequested) migrated.push('is:requested');
+      if (hasLegacyDrafts) migrated.push('is:draft');
+      urlQ = migrated.join(' ');
       migratedLegacy = true;
     }
     if (urlQ) {
@@ -339,7 +356,10 @@ export class ScionArtifactList extends LitElement {
     } else {
       params.delete(this.urlParam);
     }
+    params.delete('review_on_latest');
+    params.delete('review_pending');
     params.delete('requested');
+    params.delete('drafts');
     replaceSearch(params);
   }
 
@@ -360,7 +380,7 @@ export class ScionArtifactList extends LitElement {
     void this.load();
   };
 
-  private onFlagChipClick(flag: 'shared' | 'requested'): void {
+  private onFlagChipClick(flag: 'shared' | 'reviewed' | 'requested' | 'draft'): void {
     const edit = toggleIsFlagInQueryWithNotice(
       this.filterQueryText,
       flag,
@@ -516,11 +536,14 @@ export class ScionArtifactList extends LitElement {
                 <td class="muted">${formatInstant(item.updatedAt)}</td>
                 <td>
                   ${item.ownerDeleted ? ownerDeletedBadge(item.ownerKind) : nothing}
-                  ${item.reviewPending
-                    ? html`<sl-badge pill variant="warning">Review pending</sl-badge>`
+                  ${item.reviewOnLatest
+                    ? html`<sl-badge pill variant="warning">Review on latest</sl-badge>`
                     : nothing}
                   ${item.reviewRequested
                     ? html`<sl-badge pill variant="primary">Review requested</sl-badge>`
+                    : nothing}
+                  ${item.reviewInDraft
+                    ? html`<sl-badge pill variant="neutral">Review in draft</sl-badge>`
                     : nothing}
                 </td>
               </tr>
@@ -556,11 +579,17 @@ export class ScionArtifactList extends LitElement {
       body = this.renderTable();
     }
     const sharedActive = hasIsFlagInQuery(this.filterQueryText, 'shared', PROJECT_ARTIFACTS_SCHEMA);
+    const reviewedActive = hasIsFlagInQuery(
+      this.filterQueryText,
+      'reviewed',
+      PROJECT_ARTIFACTS_SCHEMA
+    );
     const requestedActive = hasIsFlagInQuery(
       this.filterQueryText,
       'requested',
       PROJECT_ARTIFACTS_SCHEMA
     );
+    const draftActive = hasIsFlagInQuery(this.filterQueryText, 'draft', PROJECT_ARTIFACTS_SCHEMA);
     return html`
       <div class="toolbar">
         <scion-filter-box
@@ -569,7 +598,7 @@ export class ScionArtifactList extends LitElement {
           .notice=${this.filterNotice}
           placeholder=${this.reviewRequestsEnabled
             ? 'Filter artifacts… (try is:requested)'
-            : 'Filter artifacts… (try is:shared)'}
+            : 'Filter artifacts… (try is:reviewed)'}
           @filter-input=${this.onFilterInput}
           @filter-commit=${this.onFilterCommit}
         ></scion-filter-box>
@@ -581,6 +610,14 @@ export class ScionArtifactList extends LitElement {
         >
           Shared with this project
         </button>
+        <button
+          type="button"
+          class="filter-chip ${reviewedActive ? 'active' : ''}"
+          aria-pressed=${reviewedActive ? 'true' : 'false'}
+          @click=${(): void => this.onFlagChipClick('reviewed')}
+        >
+          Review on latest
+        </button>
         ${this.reviewRequestsEnabled
           ? html`<button
               type="button"
@@ -589,6 +626,16 @@ export class ScionArtifactList extends LitElement {
               @click=${(): void => this.onFlagChipClick('requested')}
             >
               Requested of me
+            </button>`
+          : nothing}
+        ${this.reviewDraftsEnabled
+          ? html`<button
+              type="button"
+              class="filter-chip ${draftActive ? 'active' : ''}"
+              aria-pressed=${draftActive ? 'true' : 'false'}
+              @click=${(): void => this.onFlagChipClick('draft')}
+            >
+              My drafts
             </button>`
           : nothing}
         <span class="spacer"></span>

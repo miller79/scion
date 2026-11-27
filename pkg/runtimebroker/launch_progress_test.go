@@ -678,6 +678,7 @@ func TestClassifyStartError_LaunchFailure(t *testing.T) {
 		{api.LaunchCodePodDisrupted, api.LaunchStepContainerCreate, "preempted by ns-secret/agent-secret-pod", "the agent pod was preempted, evicted or deleted while starting"},
 		{api.LaunchCodeLaunchTimeout, api.LaunchStepAwaitingCapacity, "", "launch timed out waiting for the agent pod to be ready"},
 		{api.LaunchCodeWorkspaceNotPermitted, api.LaunchStepLaunching, "", "the agent workspace path is not permitted"},
+		{api.LaunchCodeTelemetryEnforcementUnsupported, api.LaunchStepLaunching, "", "the runtime broker does not support enforced telemetry; upgrade the broker"},
 		// A reason that is not an enum (free text) is never reported.
 		{api.LaunchCodeCrashLoop, api.LaunchStepContainerStart, "back-off restarting ns-secret/agent-secret-pod", "the agent container keeps crashing on start"},
 	} {
@@ -730,6 +731,21 @@ func TestClassifyStartError_LaunchFailure(t *testing.T) {
 		}
 		if strings.Contains(msg, "secret-image") || strings.Contains(msg, "secret-proj") {
 			t.Fatalf("message %q leaked raw image reference", msg)
+		}
+	})
+	t.Run("limit_ceilings_unsupported classifies cleanly without leaking raw details", func(t *testing.T) {
+		err := &scionrt.LaunchFailure{
+			Code: api.LaunchCodeLimitCeilingsUnsupported,
+			Step: api.LaunchStepLaunching,
+			Err:  errors.New("broker /var/secret/path lacks limitCeilings"),
+		}
+		code, step, msg := classifyStartError(context.Background(), err, "", api.LaunchStepLaunching, store.LaunchKindCreate)
+		wantMsg := launchFailureText[api.LaunchCodeLimitCeilingsUnsupported]
+		if code != api.LaunchCodeLimitCeilingsUnsupported || step != api.LaunchStepLaunching || msg != wantMsg {
+			t.Fatalf("got (%q, %q, %q), want (%q, %q, %q)", code, step, msg, api.LaunchCodeLimitCeilingsUnsupported, api.LaunchStepLaunching, wantMsg)
+		}
+		if strings.Contains(msg, "/var/secret/path") {
+			t.Fatalf("message %q leaked raw error details", msg)
 		}
 	})
 }

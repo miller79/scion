@@ -30,6 +30,7 @@ import (
 
 	"github.com/GoogleCloudPlatform/scion/pkg/filterquery"
 	"github.com/GoogleCloudPlatform/scion/pkg/filterquery/schemas"
+	"github.com/GoogleCloudPlatform/scion/pkg/util/plaintext"
 )
 
 // ErrBackendUnavailable is returned by Service methods called directly in Go
@@ -58,10 +59,13 @@ var maxListScan = 500
 // whether its current version is a review awaiting the owner.
 type ArtifactListItem struct {
 	ArtifactInfo
-	ReviewPending bool `json:"reviewPending"`
+	ReviewOnLatest bool `json:"reviewOnLatest"`
 	// ReviewRequested is true when hub.artifacts_review_requests is enabled
 	// and the caller has an open review request on this artifact.
 	ReviewRequested bool `json:"reviewRequested,omitempty"`
+	// ReviewInDraft is true when hub.artifacts_review_drafts is enabled and
+	// the caller has a saved review draft on this artifact.
+	ReviewInDraft bool `json:"reviewInDraft,omitempty"`
 	// Access is why the caller sees the artifact: AccessOwned,
 	// AccessProject (it may read artifacts homed in the artifact's
 	// project) or AccessShared (a grant to it or to one of its projects).
@@ -77,6 +81,9 @@ type ArtifactListItem struct {
 	// caller may move the artifact to another project (see canAdministerWith)
 	// and moves are turned on (cross-project sharing).
 	CanManage bool `json:"canManage,omitempty"`
+	// Request is populated only by ReviewStateSummary on Requested.Items
+	// (requester, requestedSeq, note excerpt). It is never set by handleList.
+	Request *ReviewRequestInfo `json:"request,omitempty"`
 
 	// src is the stored artifact of the row.
 	src *Artifact
@@ -102,15 +109,16 @@ type ArtifactListResponse struct {
 
 // listParams is a validated list request.
 type listParams struct {
-	rawQuery      string
-	canonicalQ    string
-	reviewPending bool
-	requested     bool
-	ownedOnly     bool
-	scope         string
-	sharedOnly    bool
-	limit         int
-	cursor        string
+	rawQuery       string
+	canonicalQ     string
+	reviewOnLatest bool
+	requested      bool
+	drafts         bool
+	ownedOnly      bool
+	scope          string
+	sharedOnly     bool
+	limit          int
+	cursor         string
 }
 
 // invalidCursorMessage is the message of the 400 invalid_cursor answer for
@@ -130,9 +138,12 @@ const impossibleScopeID = "00000000-0000-0000-0000-000000000000"
 func (p listParams) binding() string {
 	v := url.Values{}
 	v.Set("q", p.canonicalQ)
-	v.Set("review_pending", strconv.FormatBool(p.reviewPending))
+	v.Set("review_on_latest", strconv.FormatBool(p.reviewOnLatest))
 	if p.requested {
 		v.Set("requested", "true")
+	}
+	if p.drafts {
+		v.Set("drafts", "true")
 	}
 	v.Set("owned", strconv.FormatBool(p.ownedOnly))
 	if p.scope != "" {
@@ -156,10 +167,20 @@ func parseListParams(q url.Values) (listParams, string) {
 		return p, "q must be valid text"
 	}
 	p.rawQuery = rawQ
+	switch q.Get("review_on_latest") {
+	case "", "0", "false":
+	case "1", "true":
+		p.reviewOnLatest = true
+	default:
+		return p, "review_on_latest must be 1 or 0"
+	}
+	// Hidden alias for older CLIs so review_pending=1 does not silently return all rows.
 	switch q.Get("review_pending") {
 	case "", "0", "false":
 	case "1", "true":
-		p.reviewPending = true
+		if q.Get("review_on_latest") == "" {
+			p.reviewOnLatest = true
+		}
 	default:
 		return p, "review_pending must be 1 or 0"
 	}
@@ -169,6 +190,13 @@ func parseListParams(q url.Values) (listParams, string) {
 		p.requested = true
 	default:
 		return p, "requested must be 1 or 0"
+	}
+	switch q.Get("drafts") {
+	case "", "0", "false":
+	case "1", "true":
+		p.drafts = true
+	default:
+		return p, "drafts must be 1 or 0"
 	}
 	switch q.Get("owner") {
 	case "":
@@ -300,10 +328,12 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reviewRequestsEnabled := s.featureEnabled(ctx, FeatureReviewRequests)
+	reviewDraftsEnabled := s.featureEnabled(ctx, FeatureReviewDrafts)
 	items, next, err := s.collect(ctx, host, b, CandidateQuery{
 		PrincipalKind: kind, PrincipalRef: ref, ScopeRefs: scopes, OwnedOnly: ownedOnly,
-		ReviewPending: p.reviewPending, RequestedOnly: p.requested,
-		ReviewRequestsEnabled: reviewRequestsEnabled, HomeScope: p.scope, ScopeShares: scopeShares,
+		ReviewOnLatest: p.reviewOnLatest, RequestedOnly: p.requested,
+		ReviewRequestsEnabled: reviewRequestsEnabled, DraftsOnly: p.drafts,
+		ReviewDraftsEnabled: reviewDraftsEnabled, HomeScope: p.scope, ScopeShares: scopeShares,
 		SharedOnly: p.sharedOnly, Query: queryTerms, After: after,
 	}, p.limit)
 	if err != nil {
@@ -372,15 +402,17 @@ func (s *Service) collect(ctx context.Context, host Host, b backend, q Candidate
 		if q.SharedOnly && q.HomeScope == "" && access != AccessShared {
 			continue
 		}
-		reviewPending := c.CurrentKind == VersionKindReview
+		reviewOnLatest := c.CurrentKind == VersionKindReview
 		reviewRequested := q.ReviewRequestsEnabled && c.RequestedByMe
-		if q.Query != nil && q.HomeScope == "" && !matchesQueryIsTerms(q.Query, reviewPending, reviewRequested, access) {
+		reviewInDraft := q.ReviewDraftsEnabled && c.MyDraft
+		if q.Query != nil && q.HomeScope == "" && !matchesQueryIsTerms(q.Query, reviewOnLatest, reviewRequested, reviewInDraft, access) {
 			continue
 		}
 		items = append(items, ArtifactListItem{
 			ArtifactInfo:    artifactInfo(&c.Artifact),
-			ReviewPending:   reviewPending,
+			ReviewOnLatest:  reviewOnLatest,
 			ReviewRequested: reviewRequested,
+			ReviewInDraft:   reviewInDraft,
 			Access:          access,
 			SharedWithScope: q.HomeScope != "" && c.ScopeRef != q.HomeScope,
 			src:             &c.Artifact,
@@ -503,10 +535,10 @@ func queryRequiresProjectShared(qt *QueryTerms) bool {
 }
 
 // matchesQueryIsTerms evaluates global-list `is:` terms against a row's
-// resolved ReviewPending and Access classification (required for `is:shared`
+// resolved ReviewOnLatest and Access classification (required for `is:shared`
 // and `-is:shared`, since AccessShared depends on host.Authorize per home
 // project).
-func matchesQueryIsTerms(qt *QueryTerms, reviewPending, reviewRequested bool, access string) bool {
+func matchesQueryIsTerms(qt *QueryTerms, reviewOnLatest, reviewRequested, reviewInDraft bool, access string) bool {
 	for _, t := range qt.Terms {
 		if t.Field != "is" {
 			continue
@@ -514,12 +546,16 @@ func matchesQueryIsTerms(qt *QueryTerms, reviewPending, reviewRequested bool, ac
 		matched := false
 		for _, v := range t.Values {
 			switch v {
-			case "review":
-				if reviewPending {
+			case "reviewed":
+				if reviewOnLatest {
 					matched = true
 				}
 			case "requested":
 				if reviewRequested {
+					matched = true
+				}
+			case "draft":
+				if reviewInDraft {
 					matched = true
 				}
 			case "mine":
@@ -753,41 +789,188 @@ func (s *Service) markDeletedScopes(ctx context.Context, b backend, items []Arti
 	return nil
 }
 
-// ReviewPendingSummary returns the count of live, unexpired, non-attachment
-// artifacts owned by the caller of ctx whose current version is a submitted
-// review awaiting owner action, whether the collect scan budget (maxListScan)
-// was reached, and up to previews newest items.
-func (s *Service) ReviewPendingSummary(ctx context.Context, previews int) (count int, capped bool, items []ArtifactListItem, err error) {
-	if previews < 0 {
-		previews = 0
+// reviewSummaryNoteMaxRunes caps the request note excerpt carried on
+// ReviewStateSummary.Requested.Items (matches reviewExcerptMaxRunes in hub).
+const reviewSummaryNoteMaxRunes = 240
+
+// ReviewStateCount is one bucket of ReviewStateSummary: the count of matching
+// readable artifacts within the maxListScan candidate budget, whether the scan
+// budget ran out, and up to opts.Previews newest items.
+type ReviewStateCount struct {
+	Count  int
+	Capped bool
+	Items  []ArtifactListItem // newest first, len <= opts.Previews
+}
+
+// ReviewStateSummary returns the caller's three artifact-review numbers for
+// the Inbox (inbox-cleanup design §7.2). Each count walks at most maxListScan
+// candidates through collect (so every row passes canReadWith) and sets Capped
+// when the scan budget ran out.
+type ReviewStateSummary struct {
+	ToAddress ReviewStateCount  // OwnedOnly && reviewOnLatest
+	Requested ReviewStateCount  // open request addressed to me (requests gate on)
+	Drafts    *ReviewStateCount // my saved drafts; nil when opts.Drafts is false
+}
+
+// ReviewSummaryOptions configures Service.ReviewStateSummary.
+type ReviewSummaryOptions struct {
+	Previews int
+	Requests bool // hub passes experimentEnabled(ArtifactsReviewRequests)
+	Drafts   bool // hub passes experimentEnabled(ArtifactsReviewDrafts)
+}
+
+// ReviewStateSummary returns the caller's ToAddress, Requested (when
+// opts.Requests is true), and Drafts (when opts.Drafts is true) counts and
+// previews. Each bucket runs through collect with the maxListScan candidate
+// budget so every counted row passes canReadWith. Requested.Items carry
+// ArtifactListItem.Request with the requester, requestedSeq, and cleaned note
+// excerpt.
+func (s *Service) ReviewStateSummary(ctx context.Context, opts ReviewSummaryOptions) (ReviewStateSummary, error) {
+	if opts.Previews < 0 {
+		opts.Previews = 0
 	}
 	b, ok := s.backend()
 	if !ok {
-		return 0, false, nil, ErrBackendUnavailable
+		return ReviewStateSummary{}, ErrBackendUnavailable
 	}
 	host := newMemoHost(s.host)
 	kind, ref, _, ok := host.Principal(ctx)
 	if !ok {
-		return 0, false, []ArtifactListItem{}, nil
+		summary := ReviewStateSummary{
+			ToAddress: ReviewStateCount{Items: []ArtifactListItem{}},
+			Requested: ReviewStateCount{Items: []ArtifactListItem{}},
+		}
+		if opts.Drafts {
+			summary.Drafts = &ReviewStateCount{Items: []ArtifactListItem{}}
+		}
+		return summary, nil
 	}
-	all, next, err := s.collect(ctx, host, b, CandidateQuery{
-		PrincipalKind: kind,
-		PrincipalRef:  ref,
-		OwnedOnly:     true,
-		ReviewPending: true,
-	}, maxListScan)
+
+	collectCount := func(q CandidateQuery) (ReviewStateCount, error) {
+		all, next, err := s.collect(ctx, host, b, q, maxListScan)
+		if err != nil {
+			return ReviewStateCount{}, err
+		}
+		items := []ArtifactListItem{}
+		if opts.Previews > 0 && len(all) > 0 {
+			items = all[:min(len(all), opts.Previews)]
+		}
+		return ReviewStateCount{
+			Count:  len(all),
+			Capped: next != nil,
+			Items:  items,
+		}, nil
+	}
+
+	toAddress, err := collectCount(CandidateQuery{
+		PrincipalKind:  kind,
+		PrincipalRef:   ref,
+		OwnedOnly:      true,
+		ReviewOnLatest: true,
+	})
 	if err != nil {
-		return 0, false, nil, err
+		return ReviewStateSummary{}, err
 	}
-	count = len(all)
-	capped = next != nil
-	if previews == 0 || len(all) == 0 {
-		return count, capped, []ArtifactListItem{}, nil
+
+	var scopes []string
+	if opts.Requests || opts.Drafts {
+		rawScopes, err := host.MemberScopes(ctx)
+		if err != nil {
+			return ReviewStateSummary{}, err
+		}
+		scopes = candidateScopes(ctx, rawScopes)
 	}
-	if len(all) > previews {
-		all = all[:previews]
+
+	requested := ReviewStateCount{Items: []ArtifactListItem{}}
+	if opts.Requests {
+		requested, err = collectCount(CandidateQuery{
+			PrincipalKind:         kind,
+			PrincipalRef:          ref,
+			ScopeRefs:             scopes,
+			RequestedOnly:         true,
+			ReviewRequestsEnabled: true,
+		})
+		if err != nil {
+			return ReviewStateSummary{}, err
+		}
+		if err := s.populateRequestedItems(ctx, b, kind, ref, requested.Items); err != nil {
+			return ReviewStateSummary{}, err
+		}
 	}
-	return count, capped, all, nil
+
+	var drafts *ReviewStateCount
+	if opts.Drafts {
+		dc, err := collectCount(CandidateQuery{
+			PrincipalKind:       kind,
+			PrincipalRef:        ref,
+			ScopeRefs:           scopes,
+			DraftsOnly:          true,
+			ReviewDraftsEnabled: true,
+		})
+		if err != nil {
+			return ReviewStateSummary{}, err
+		}
+		drafts = &dc
+	}
+
+	return ReviewStateSummary{
+		ToAddress: toAddress,
+		Requested: requested,
+		Drafts:    drafts,
+	}, nil
+}
+
+// populateRequestedItems attaches Request metadata (requester, requestedSeq,
+// cleaned note excerpt) to each item in ReviewStateSummary.Requested.Items in
+// a single batched store query and a single display-name lookup.
+func (s *Service) populateRequestedItems(ctx context.Context, b backend, reviewerKind, reviewerRef string, items []ArtifactListItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	reqByArt := make(map[string]ReviewRequest, len(items))
+	for start := 0; start < len(items); start += MaxGrantsForIDs {
+		end := min(start+MaxGrantsForIDs, len(items))
+		ids := make([]string, 0, end-start)
+		for _, it := range items[start:end] {
+			ids = append(ids, it.ID)
+		}
+		batch, err := b.store.GetOpenReviewRequestsFor(ctx, ids, reviewerKind, reviewerRef)
+		if err != nil {
+			return err
+		}
+		for k, v := range batch {
+			reqByArt[k] = v
+		}
+	}
+	if len(reqByArt) == 0 {
+		return nil
+	}
+	seenRefs := make(map[string]bool, 2*len(reqByArt))
+	refs := make([]string, 0, 2*len(reqByArt))
+	addRef := func(r string) {
+		if r != "" && !seenRefs[r] {
+			seenRefs[r] = true
+			refs = append(refs, r)
+		}
+	}
+	for _, rr := range reqByArt {
+		addRef(PrincipalRef(rr.ReviewerKind, rr.ReviewerRef))
+		addRef(PrincipalRef(rr.RequesterKind, rr.RequesterRef))
+	}
+	names := s.principalDisplayNames(ctx, refs)
+	if names == nil {
+		names = map[string]string{}
+	}
+	for i := range items {
+		rr, ok := reqByArt[items[i].ID]
+		if !ok {
+			continue
+		}
+		info := s.reviewRequestInfo(ctx, rr, names)
+		info.Note = plaintext.Clean(rr.Note, reviewSummaryNoteMaxRunes)
+		items[i].Request = &info
+	}
+	return nil
 }
 
 // ReadableArtifacts returns the ArtifactInfo for each artifact ID in ids that

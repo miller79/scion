@@ -104,6 +104,62 @@ export function chatConversationPath(target: ChatConversationTarget): string | n
   return `/chat/space/${encodeURIComponent(projectId)}/thread/${encodeURIComponent(key)}`;
 }
 
+/** Parsed components of a native group conversation's `thread:<projectId>:<topicId>` ref. */
+export interface ParsedThreadExternalRef {
+  projectId: string;
+  topicId: string;
+}
+
+/**
+ * Parses a native thread conversation `externalRef` (`thread:<projectId>:<topicId>`),
+ * mirroring `ParseThreadConversationExternalRef` in `pkg/messaging/derive_key.go`.
+ * Returns null for non-thread refs, missing parts, or a `dm:`-prefixed topic ID.
+ */
+export function parseThreadConversationExternalRef(ref?: string): ParsedThreadExternalRef | null {
+  if (!ref || !ref.startsWith('thread:')) return null;
+  const rest = ref.slice('thread:'.length);
+  const sep = rest.indexOf(':');
+  if (sep <= 0) return null;
+  const projectId = rest.slice(0, sep);
+  const topicId = rest.slice(sep + 1);
+  if (!projectId || !topicId || topicId.startsWith('dm:')) return null;
+  return { projectId, topicId };
+}
+
+/** Minimal conversation shape needed to build a `/chat/...` link. */
+export interface ConversationRouteInput {
+  kind: string;
+  surface?: string;
+  externalRef?: string;
+  projectId?: string;
+}
+
+/**
+ * Builds the `/chat/...` deep link for a conversation returned by
+ * `GET /api/v1/conversations`, or null when the conversation has no native
+ * chat route (for example, external-surface or unlinked group conversations).
+ */
+export function conversationChatPath(conv: ConversationRouteInput): string | null {
+  if (!conv || conv.surface !== 'native') return null;
+
+  if (conv.kind === 'direct') {
+    const key = conv.externalRef?.trim();
+    if (!key || !key.startsWith('dm:')) return null;
+    return chatConversationPath({ conversationKey: key });
+  }
+
+  if (conv.kind === 'group') {
+    const parsed = parseThreadConversationExternalRef(conv.externalRef);
+    if (!parsed) return null;
+    return chatConversationPath({
+      conversationKey: parsed.topicId,
+      projectId: parsed.projectId,
+    });
+  }
+
+  return null;
+}
+
 /**
  * The center message filter of a conversation route: `starred` shows only
  * the signed-in user's starred messages (`?messages=starred`), '' the whole
@@ -143,4 +199,50 @@ export function searchWithMessageFilter(search: string, filter: ChatMessageFilte
   else params.delete(CHAT_MESSAGE_FILTER_PARAM);
   const q = params.toString();
   return q ? `?${q}` : '';
+}
+
+/** localStorage key of the selected chat rail filter. */
+export const RAIL_FILTER_STORAGE_KEY = 'scion-chat-space-filter';
+
+/** The query parameter carrying a one-shot rail filter hydration target. */
+export const CHAT_RAIL_FILTER_PARAM = 'filter';
+
+/** Valid URL-hydratable rail filter values (design §7.1, §14.4). */
+export type ChatUrlRailFilter = 'unread' | 'mentions' | 'starred';
+
+/**
+ * The rail filter a URL query names (`?filter=unread|mentions|starred`), or
+ * null when absent or invalid.
+ */
+export function railFilterFromSearch(search: string): ChatUrlRailFilter | null {
+  const raw = new URLSearchParams(search).get(CHAT_RAIL_FILTER_PARAM);
+  if (raw === 'unread' || raw === 'mentions' || raw === 'starred') {
+    return raw;
+  }
+  return null;
+}
+
+export interface HydrateRailFilterDeps {
+  search: string;
+  replaceSearch: (params: URLSearchParams) => void;
+  persistFilter: (filter: ChatUrlRailFilter) => void;
+  applyFilter: (filter: ChatUrlRailFilter) => void;
+}
+
+/**
+ * One-shot hydration of `?filter=unread|mentions|starred` on chat routes
+ * (design §7.1, §14.4). Always strips `filter` via `replaceSearch` (preserving
+ * other query params). Invalid values are ignored without persisting or
+ * changing the rail.
+ */
+export function hydrateRailFilterFromSearch(deps: HydrateRailFilterDeps): ChatUrlRailFilter | null {
+  const params = new URLSearchParams(deps.search);
+  if (!params.has(CHAT_RAIL_FILTER_PARAM)) return null;
+  const requested = railFilterFromSearch(deps.search);
+  params.delete(CHAT_RAIL_FILTER_PARAM);
+  deps.replaceSearch(params);
+  if (!requested) return null;
+  deps.persistFilter(requested);
+  deps.applyFilter(requested);
+  return requested;
 }

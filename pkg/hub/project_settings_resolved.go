@@ -126,6 +126,27 @@ type ResolvedProjectSetting struct {
 	// the settings UI can display it as a placeholder hint. It is NOT an
 	// effective value and does not account for template or harness-config layers.
 	HubValue any `json:"hubValue"`
+
+	// Ceiling is the active Hub run-limit ceiling for this setting (int for
+	// turn/model-call limits, string for duration) when the
+	// agent_policy.limit_ceilings experiment is enabled and a ceiling is
+	// configured; null otherwise.
+	Ceiling any `json:"ceiling"`
+
+	// LockedBy reports the layer that locks this setting ("hub" when enforced
+	// by the hub operator), or null when the setting is not locked.
+	LockedBy *string `json:"lockedBy"`
+
+	// Effective is the enforced effective value when LockedBy is non-null
+	// (e.g. true when telemetry is locked by the hub operator), and null for
+	// all unlocked settings (this endpoint still does not resolve precedence
+	// for unlocked settings).
+	Effective any `json:"effective"`
+
+	// StoredValue holds the shadowed project value (e.g. false when the project
+	// had telemetryEnabled=false stored before hub enforcement was enabled), or
+	// null when unlocked or no shadowed project value exists.
+	StoredValue any `json:"storedValue"`
 }
 
 // ResolvedProjectSettings is the GET .../settings/resolved response body.
@@ -408,6 +429,7 @@ func (s *Server) handleProjectSettingsResolved(w http.ResponseWriter, r *http.Re
 // prevent.
 func (s *Server) resolvedProjectSettings(project *store.Project) *ResolvedProjectSettings {
 	agentDefaults, agentDefaultsReadable := s.hubAgentDefaultsDoc()
+	ceilings := s.agentLimitCeilings()
 
 	settings := make(map[string]ResolvedProjectSetting, len(projectSettingKeys))
 	for _, key := range projectSettingKeys {
@@ -432,6 +454,15 @@ func (s *Server) resolvedProjectSettings(project *store.Project) *ResolvedProjec
 		}
 
 		entry.HubDefault, entry.HubValue = s.hubDefaultFor(desc, agentDefaults, agentDefaultsReadable)
+		entry.Ceiling = limitCeilingForSetting(key, ceilings)
+		if key == projectSettingTelemetryEnabled && s.telemetryEnforced() {
+			lockedBy := "hub"
+			entry.LockedBy = &lockedBy
+			entry.Effective = true
+			if pol := projectTelemetryPolicy(project); pol != nil && !*pol {
+				entry.StoredValue = false
+			}
+		}
 		settings[key] = entry
 	}
 
@@ -439,6 +470,24 @@ func (s *Server) resolvedProjectSettings(project *store.Project) *ResolvedProjec
 		Project:  projectSettingsFromAnnotations(project),
 		Settings: settings,
 	}
+}
+
+func limitCeilingForSetting(key string, ceilings opsettings.AgentLimitsSettings) any {
+	switch key {
+	case projectSettingDefaultMaxTurns:
+		if ceilings.MaxTurns > 0 {
+			return ceilings.MaxTurns
+		}
+	case projectSettingDefaultMaxModelCalls:
+		if ceilings.MaxModelCalls > 0 {
+			return ceilings.MaxModelCalls
+		}
+	case projectSettingDefaultMaxDuration:
+		if ceilings.MaxDuration != "" {
+			return ceilings.MaxDuration
+		}
+	}
+	return nil
 }
 
 // projectAnnotationInEffect reports whether a stored project annotation is

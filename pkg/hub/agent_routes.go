@@ -52,6 +52,9 @@ const (
 	AgentRouteUsage              AgentSubRouteID = "agents.usage"
 	AgentRouteUsageEvents        AgentSubRouteID = "agents.usage.events"
 	AgentRouteUsageCapabilities  AgentSubRouteID = "agents.usage.capabilities"
+	AgentRouteTrajectoryPrepare  AgentSubRouteID = "agents.trajectory.segments.prepare"
+	AgentRouteTrajectoryCommit   AgentSubRouteID = "agents.trajectory.segments.commit"
+	AgentRouteTrajectoryContent  AgentSubRouteID = "agents.trajectory.segments.content"
 	AgentRouteActionStatus       AgentSubRouteID = "agents.action.status"
 	AgentRouteActionStart        AgentSubRouteID = "agents.action.start"
 	AgentRouteActionStop         AgentSubRouteID = "agents.action.stop"
@@ -71,6 +74,7 @@ const (
 	AgentRouteActionKeys         AgentSubRouteID = "agents.action.keys"
 	AgentRouteHoldLift           AgentSubRouteID = "agents.hold.lift"
 	AgentRoutePendingConfig      AgentSubRouteID = "agents.pendingConfig"
+	AgentRouteLabels             AgentSubRouteID = "agents.labels"
 	// Agent delegation (.design/agent-delegation.md §18.4).
 	AgentRouteDelegations          AgentSubRouteID = "agents.delegations"
 	AgentRouteDelegationExchange   AgentSubRouteID = "agents.delegations.exchange"
@@ -104,6 +108,7 @@ const (
 	ProjectAgentRouteActionReincarnate AgentSubRouteID = "projects.agents.action.reincarnate"
 	ProjectAgentRouteActionResetAuth   AgentSubRouteID = "projects.agents.action.resetAuth"
 	ProjectAgentRouteActionKeys        AgentSubRouteID = "projects.agents.action.keys"
+	ProjectAgentRouteLabels            AgentSubRouteID = "projects.agents.labels"
 )
 
 // AgentSubRouteSuffix is the typed tail of an agent sub-route.
@@ -186,6 +191,7 @@ func (row agentSubRouteRow) operation(method string) authzop.OperationID {
 const (
 	opAgentRead              authzop.OperationID = "agent.read"
 	opAgentUpdate            authzop.OperationID = "agent.update"
+	opAgentLabelsUpdate      authzop.OperationID = "agent.labels.update"
 	opAgentDelete            authzop.OperationID = "agent.lifecycle.delete"
 	opAgentAttach            authzop.OperationID = "agent.attach"
 	opAgentPortAccess        authzop.OperationID = "agent.portaccess"
@@ -205,6 +211,9 @@ const (
 	opAgentUsageRead         authzop.OperationID = "agent.usage.read"
 	opAgentUsageIngest       authzop.OperationID = "agent.usage.ingest"
 	opAgentUsageCapabilities authzop.OperationID = "agent.usage.capabilities"
+	opAgentTrajectoryPrepare authzop.OperationID = "agent.trajectory.segments.prepare"
+	opAgentTrajectoryCommit  authzop.OperationID = "agent.trajectory.segments.commit"
+	opAgentTrajectoryContent authzop.OperationID = "agent.trajectory.segments.content"
 	opAgentStatusUpdate      authzop.OperationID = "agent.status.update"
 	opAgentLogsRead          authzop.OperationID = "agent.logs.read"
 	opAgentScreenRead        authzop.OperationID = "agent.screen.read"
@@ -272,6 +281,11 @@ var agentSubRouteTable = []agentSubRouteRow{
 	{id: AgentRouteUsage, form: agentFormByID, segs: []string{"usage"}, ops: getOp(opAgentUsageRead)},
 	{id: AgentRouteUsageEvents, form: agentFormByID, segs: []string{"usage", "events"}, ops: postOp(opAgentUsageIngest)},
 	{id: AgentRouteUsageCapabilities, form: agentFormByID, segs: []string{"usage", "capabilities"}, ops: getOp(opAgentUsageCapabilities)},
+	{id: AgentRouteTrajectoryPrepare, form: agentFormByID, segs: []string{"trajectory", "segments:prepare"}, ops: postOp(opAgentTrajectoryPrepare)},
+	{id: AgentRouteTrajectoryCommit, form: agentFormByID, segs: []string{"trajectory", "segments:commit"}, ops: postOp(opAgentTrajectoryCommit)},
+	{id: AgentRouteTrajectoryContent, form: agentFormByID, segs: []string{"trajectory", "segments", agentRouteParam, "content"}, ops: map[string]authzop.OperationID{
+		http.MethodPut: opAgentTrajectoryContent,
+	}, paramNames: []string{"{segmentId}"}},
 	{id: AgentRouteActionStatus, form: agentFormByID, segs: []string{"status"}, ops: postOp(opAgentStatusUpdate)},
 	{id: AgentRouteActionStart, form: agentFormByID, segs: []string{"start"}, ops: postOp(opAgentLifecycleControl)},
 	{id: AgentRouteActionStop, form: agentFormByID, segs: []string{"stop"}, ops: postOp(opAgentLifecycleControl)},
@@ -296,6 +310,8 @@ var agentSubRouteTable = []agentSubRouteRow{
 	// Discard of held config edits (ptone/scion#3976), behind
 	// hub.agent_edit_held.
 	{id: AgentRoutePendingConfig, form: agentFormByID, segs: []string{"pending-config"}, ops: map[string]authzop.OperationID{http.MethodDelete: opAgentPendingDiscard}},
+	// Server-side label merge (ptone/scion#9521).
+	{id: AgentRouteLabels, form: agentFormByID, segs: []string{"labels"}, ops: map[string]authzop.OperationID{http.MethodPatch: opAgentLabelsUpdate}},
 	// Agent delegation (.design/agent-delegation.md §18.4): grant issuance
 	// and credential exchange, behind hub.agent_delegation; grant list,
 	// read, revoke and revoke-all, and delegated credential revoke, which
@@ -350,6 +366,8 @@ var agentSubRouteTable = []agentSubRouteRow{
 	// See AgentRouteActionKeys above: same early-branch choke point
 	// (handleProjectAgentAction's authorizeAgentKeys call).
 	{id: ProjectAgentRouteActionKeys, form: agentFormProject, segs: []string{"keys"}, ops: postOp(opAgentKeys)},
+	// Server-side label merge (ptone/scion#9521).
+	{id: ProjectAgentRouteLabels, form: agentFormProject, segs: []string{"labels"}, ops: map[string]authzop.OperationID{http.MethodPatch: opAgentLabelsUpdate}},
 }
 
 // agentRoutePatternPrefix returns the catalog-style pattern prefix of a form.
