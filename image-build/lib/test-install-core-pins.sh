@@ -101,7 +101,7 @@ echo "PASS both tools reject partial/floating pins, hash/download/extraction fai
 (
   unset KUBECTL_VERSION KUBECTL_SHA256_AMD64 KUBECTL_SHA256_ARM64
   unset GOLANGCI_LINT_VERSION GOLANGCI_LINT_SHA256_AMD64 GOLANGCI_LINT_SHA256_ARM64
-  # shellcheck disable=SC2317 # called indirectly by the step functions
+  # shellcheck disable=SC2317,SC2329 # called indirectly by the step functions
   command() {
     if [ "${1:-}" = -v ] && { [ "${2:-}" = kubectl ] || [ "${2:-}" = golangci-lint ]; }; then
       printf '/existing/%s\n' "$2"
@@ -114,7 +114,7 @@ echo "PASS both tools reject partial/floating pins, hash/download/extraction fai
 (
   unset KUBECTL_VERSION KUBECTL_SHA256_AMD64 KUBECTL_SHA256_ARM64
   unset GOLANGCI_LINT_VERSION GOLANGCI_LINT_SHA256_AMD64 GOLANGCI_LINT_SHA256_ARM64
-  # shellcheck disable=SC2317 # called indirectly by the step functions
+  # shellcheck disable=SC2317,SC2329 # called indirectly by the step functions
   command() {
     if [ "${1:-}" = -v ] && { [ "${2:-}" = kubectl ] || [ "${2:-}" = golangci-lint ]; }; then
       return 1
