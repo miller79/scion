@@ -69,7 +69,16 @@ RUN chmod 0755 /usr/local/bin/init-firewall.sh
 # RUN curl -fsSL https://claude.ai/install.sh | bash
 # ENV PATH=/home/scion/.local/bin:$PATH
 
+ARG CLAUDE_CLI_VERSION=latest
+ARG CLAUDE_CLI_URL
+ARG CLAUDE_CLI_SHA256
+ARG CLAUDE_CLI_INTEGRITY
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     npm cache clean --force \
-  && npm install -g @anthropic-ai/claude-code@latest \
+  && if [ -n "${CLAUDE_CLI_URL}${CLAUDE_CLI_SHA256}${CLAUDE_CLI_INTEGRITY}" ]; then \
+       sh /opt/scion-image-build/lib/install-pinned-npm.sh \
+         "${CLAUDE_CLI_VERSION}" "${CLAUDE_CLI_URL}" "${CLAUDE_CLI_SHA256}" "${CLAUDE_CLI_INTEGRITY}"; \
+     else \
+       npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}"; \
+     fi \
   && npm cache clean --force

@@ -17,13 +17,21 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 ARG CODEX_CLI_VERSION=latest
+ARG CODEX_CLI_URL
+ARG CODEX_CLI_SHA256
+ARG CODEX_CLI_INTEGRITY
 
 RUN mkdir -p /home/scion/.codex /home/scion/.codex/skills && \
   chown -R scion:scion /home/scion/.codex
 
 # install codex, expose it on standard shell PATH, and clean up
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
-    npm install -g @openai/codex@${CODEX_CLI_VERSION} \
+    if [ -n "${CODEX_CLI_URL}${CODEX_CLI_SHA256}${CODEX_CLI_INTEGRITY}" ]; then \
+      sh /opt/scion-image-build/lib/install-pinned-npm.sh \
+        "${CODEX_CLI_VERSION}" "${CODEX_CLI_URL}" "${CODEX_CLI_SHA256}" "${CODEX_CLI_INTEGRITY}"; \
+    else \
+      npm install -g "@openai/codex@${CODEX_CLI_VERSION}"; \
+    fi \
   && ln -sf /usr/local/share/npm-global/bin/codex /usr/local/bin/codex \
   && npm cache clean --force
 

@@ -17,6 +17,11 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 USER root
+ARG ANTIGRAVITY_CLI_VERSION
+ARG ANTIGRAVITY_CLI_URL_AMD64
+ARG ANTIGRAVITY_CLI_URL_ARM64
+ARG ANTIGRAVITY_CLI_SHA256_AMD64
+ARG ANTIGRAVITY_CLI_SHA256_ARM64
 
 RUN mkdir -p /home/scion/.gemini/antigravity-cli \
   && mkdir -p /home/scion/.agents \
@@ -30,12 +35,24 @@ RUN mkdir -p /home/scion/.gemini/antigravity-cli \
 #   so staging files and shell-rc PATH edits do not touch /root.
 # - Run `agy --version` to record the installed version in the build log and
 #   fail the build if the binary is missing or broken.
-RUN rm -f /usr/local/bin/agy \
+RUN if [ -n "${ANTIGRAVITY_CLI_VERSION}${ANTIGRAVITY_CLI_URL_AMD64}${ANTIGRAVITY_CLI_URL_ARM64}${ANTIGRAVITY_CLI_SHA256_AMD64}${ANTIGRAVITY_CLI_SHA256_ARM64}" ]; then \
+      case "$(dpkg --print-architecture)" in \
+        amd64) URL="${ANTIGRAVITY_CLI_URL_AMD64}"; SHA="${ANTIGRAVITY_CLI_SHA256_AMD64}" ;; \
+        arm64) URL="${ANTIGRAVITY_CLI_URL_ARM64}"; SHA="${ANTIGRAVITY_CLI_SHA256_ARM64}" ;; \
+        *) exit 1 ;; \
+      esac && \
+      test -n "${ANTIGRAVITY_CLI_VERSION}" && test -n "$URL" && test -n "$SHA" && \
+      curl -fsSL "$URL" -o /tmp/agy.tar.gz && \
+      printf '%s  /tmp/agy.tar.gz\n' "$SHA" | sha256sum -c - && \
+      tar -xzf /tmp/agy.tar.gz -C /usr/local/bin agy && \
+      chmod +x /usr/local/bin/agy && rm /tmp/agy.tar.gz; \
+    else \
+    rm -f /usr/local/bin/agy \
   && tmp_home="$(mktemp -d)" \
   && curl -fsSL -o /tmp/agy-install.sh https://antigravity.google/cli/install.sh \
   && HOME="${tmp_home}" bash /tmp/agy-install.sh --dir /usr/local/bin \
   && rm -rf /tmp/agy-install.sh "${tmp_home}" \
-  && /usr/local/bin/agy --version
+  ; fi && /usr/local/bin/agy --version
 
 RUN printf 'if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then\n    eval $(dbus-launch --sh-syntax)\n    export DBUS_SESSION_BUS_ADDRESS\nfi\nif ! pgrep gnome-keyring-daemon >/dev/null; then\n    eval $(echo "test" | gnome-keyring-daemon --unlock 2>/dev/null)\n    gnome-keyring-daemon --start --components=secrets,pkcs11,ssh >/dev/null 2>&1\nfi\n' >> /etc/bash.bashrc
 

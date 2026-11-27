@@ -17,6 +17,8 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 ARG HERMES_VERSION=
+ARG HERMES_URL
+ARG HERMES_SHA256
 
 # Install Node.js 22 LTS (required by Hermes for tool execution).
 # After installing, remove the nodesource apt-source entries so that
@@ -53,7 +55,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3-pip \
 # Debian's sys.path, so the dpkg copies are shadowed, not modified: apt/dpkg's
 # own records and files are untouched.
 RUN --mount=type=secret,id=pipconf,target=/etc/pip.conf,required=false \
-    if [ -n "${HERMES_VERSION}" ]; then \
+    if [ -n "${HERMES_URL}${HERMES_SHA256}" ]; then \
+      test -n "${HERMES_VERSION}" && test -n "${HERMES_URL}" && test -n "${HERMES_SHA256}" && \
+      curl -fsSL "${HERMES_URL}" -o /tmp/hermes-agent.tar.gz && \
+      printf '%s  /tmp/hermes-agent.tar.gz\n' "${HERMES_SHA256}" | sha256sum -c - && \
+      pip install --no-cache-dir --break-system-packages --ignore-installed "/tmp/hermes-agent.tar.gz[vertex]" && \
+      rm /tmp/hermes-agent.tar.gz; \
+    elif [ -n "${HERMES_VERSION}" ]; then \
       pip install --no-cache-dir --break-system-packages --ignore-installed "hermes-agent[vertex]==${HERMES_VERSION}"; \
     else \
       pip install --no-cache-dir --break-system-packages --ignore-installed "hermes-agent[vertex]"; \

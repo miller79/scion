@@ -17,6 +17,9 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 ARG GEMINI_CLI_VERSION=latest
+ARG GEMINI_CLI_URL
+ARG GEMINI_CLI_SHA256
+ARG GEMINI_CLI_INTEGRITY
 
 # Set `DEVCONTAINER` environment variable to help with orientation
 ENV DEVCONTAINER=true
@@ -26,7 +29,12 @@ RUN mkdir -p /home/scion/.gemini /home/scion/.gemini/skills && \
 
 # Install gemini-cli and clean up
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
-    npm install -g @google/gemini-cli@${GEMINI_CLI_VERSION} \
+    if [ -n "${GEMINI_CLI_URL}${GEMINI_CLI_SHA256}${GEMINI_CLI_INTEGRITY}" ]; then \
+      sh /opt/scion-image-build/lib/install-pinned-npm.sh \
+        "${GEMINI_CLI_VERSION}" "${GEMINI_CLI_URL}" "${GEMINI_CLI_SHA256}" "${GEMINI_CLI_INTEGRITY}"; \
+    else \
+      npm install -g "@google/gemini-cli@${GEMINI_CLI_VERSION}"; \
+    fi \
   && npm cache clean --force
 
 # Default entrypoint when none specified
