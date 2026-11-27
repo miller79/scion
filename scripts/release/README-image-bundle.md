@@ -129,6 +129,13 @@ the source distribution, while its build/transitive dependencies still resolve.
 Hashing bytes is not independent publisher authentication. Fully reproducible
 images require those remaining inputs to be locked too.
 
+Copilot is now installed from npm. In bundle pin mode, its top-level archive
+is pinned by version, URL, SHA256 and SRI integrity through
+`image-build/lib/install-pinned-npm.sh`. Its platform-specific packages and
+transitive npm dependencies are fetched by npm and are **not hash-locked by
+the bundle**. The former per-architecture Copilot archive hashes were removed;
+this is a known limitation.
+
 Resolver HTTP redirects must remain HTTPS on the same host and port; mirrors
 that redirect to a different artifact host must supply that host's final URL
 rather than an API redirect. Authorization headers never cross this boundary.
@@ -161,7 +168,7 @@ python3 -I scripts/release/generate-image-bundle.py \
 python3 -I - release/toolchain.json release/sbom.cdx.json <<'PY'
 import json, sys
 m, b = [json.load(open(p)) for p in sys.argv[1:]]
-assert len(m["tools"]) == 10 and len(m["harness_tools"]) == 14
+assert len(m["tools"]) == 10 and len(m["harness_tools"]) == 13
 assert all(t["status"] == "resolved" for t in m["tools"] + m["harness_tools"])
 assert all(x["digest"] for x in m["base_images"] if x["kind"] == "external")
 assert b["bomFormat"] == "CycloneDX" and b["specVersion"] == "1.5"
