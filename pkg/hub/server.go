@@ -371,6 +371,9 @@ type ServerConfig struct {
 	// DefaultChatSearchMaxConcurrent. On Postgres the effective cap is
 	// clamped to a quarter of DatabaseMaxOpenConns (EffectiveChatSearchCap).
 	ChatSearchMaxConcurrent int
+	// Uploads holds the web upload limits (server config
+	// hub.uploads): per-file maximums. Zero fields mean the defaults.
+	Uploads config.HubUploadsConfig
 	// DatabaseMaxOpenConns is the hub's main pool size (server config
 	// database.max_open_conns after the driver defaults). It bounds the
 	// Postgres chat search cap. Zero means unknown (read as the default pool).
@@ -5402,6 +5405,13 @@ func (s *Server) SetWebChatStore(wcs WebChatStore) {
 	s.mu.Unlock()
 }
 
+// currentWebChatStore returns the configured WebChatStore under s.mu.
+func (s *Server) currentWebChatStore() WebChatStore {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.webChatStore
+}
+
 // SetAttachmentStore sets the attachment file store for upload/download (W7).
 func (s *Server) SetAttachmentStore(as AttachmentStore) {
 	s.mu.Lock()
@@ -6026,6 +6036,7 @@ func (s *Server) StartNotificationDispatcher() {
 	nd := NewNotificationDispatcher(s.store, s.events, s.GetDispatcher, logging.Subsystem("hub.notifications"))
 	nd.messageLog = s.dedicatedMessageLog
 	nd.channelRegistryFn = s.currentChannelRegistry
+	nd.webChatStoreFn = s.currentWebChatStore
 	nd.autoWakeFn = s.autoWakeNotificationSubscriber
 	nd.idleSuspendGateFn = s.idleSuspendDeliveryGateActive
 	nd.autoSuspendThresholdFn = s.autoSuspendThreshold
@@ -6709,8 +6720,13 @@ func (s *Server) autoSuspendAgent(ctx context.Context, dispatcher AgentDispatche
 		priorIntent, intentAt, claimUntil, err = s.claimIdleSuspend(ctx, agent, idleCond)
 		if errors.Is(err, store.ErrIdleSuspendPrecondition) {
 			s.clearWorkspaceAtStop(ctx, agent)
-			slog.Info("Scheduler: skipping idle auto-suspend; precondition lost before stop",
-				"agent_id", agent.ID, "agent_name", agent.Name)
+			attrs := []any{"agent_id", agent.ID, "agent_name", agent.Name, "hub_now", time.Now().UTC()}
+			var preErr *store.IdleSuspendPreconditionError
+			if errors.As(err, &preErr) {
+				attrs = append(attrs, "predicate", preErr.Predicate)
+				attrs = append(attrs, preErr.Attrs...)
+			}
+			slog.Info("Scheduler: skipping idle auto-suspend; precondition lost before stop", attrs...)
 			return false
 		}
 		if err != nil {

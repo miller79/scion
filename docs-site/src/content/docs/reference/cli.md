@@ -587,7 +587,7 @@ View and manage messages sent to you by agents. Running `scion messages` without
 
 ### `scion message-policy`
 
-Author, inspect, test, and audit project message policies (CEL and optional System One judgments) on the Hub (requires the `hub.message_policies` [experiment](/scion/reference/experiments/) on the Hub; policies with a `system_one_rule` also require `hub.system_one` and an allowlisted Hub instance; while `hub.message_policies` is off, every subcommand fails with an error saying the experiment must be enabled). Policies evaluate only outbound agent sends on the surfaces this Hub enforces, currently `agent_to_user` and `agent_to_conversation`. Other agent paths (`agent_dm`, `group_post`, `group_set`, `mention_fanout`, `mention_delivery`, `broadcast`), scheduled deliveries, user-originated sends, and inbound external bridges are not evaluated. `list` and `get` print this Hub's coverage (`enforced_surfaces` and `uncovered_agent_paths`). In agent mode only `list` and `get` are available; the other subcommands need project owner/admin or Hub admin permissions (`project.manage_message_policies`). Note that while authoring a live policy bound to an allowlisted project-secret instance requires only `project.manage_message_policies`, live `test` runs against a `project` or `project_or_hub` named-secret instance additionally require `project.read` and `project.secret_read` (so a Hub admin or manage-only UAT can create a live policy but must supply synthetic judgments to test it). Every subcommand accepts `--json`.
+Author, inspect, test, and audit project message policies (CEL and optional System One judgments) on the Hub (requires the `hub.message_policies` [experiment](/scion/reference/experiments/) on the Hub; policies with a `system_one_rule` also require `hub.system_one` and an allowlisted Hub instance; while `hub.message_policies` is off, every subcommand fails with an error saying the experiment must be enabled). Policies evaluate only outbound agent sends on the surfaces this Hub enforces: `agent_to_user`, `agent_to_conversation`, `agent_dm`, and `mention_delivery`. On `agent_to_user` and `agent_to_conversation`, user-visible decision text (question, choice labels and descriptions, Other), secret-request description and requested variable name, and command-request script, description and displayed workdir are appended to `message.body` for policy evaluation (mention facts use only the intro; secret values, URLs and IDs are excluded). Uncovered agent paths (`group_post`, `group_set`, `mention_fanout`, `broadcast`), scheduled deliveries, user-originated sends, and inbound external bridges are not evaluated. `list` and `get` print this Hub's coverage (`enforced_surfaces` and `uncovered_agent_paths`). In agent mode only `list` and `get` are available; the other subcommands need project owner/admin or Hub admin permissions (`project.manage_message_policies`). Note that while authoring a live policy bound to an allowlisted project-secret instance requires only `project.manage_message_policies`, live `test` runs against a `project` or `project_or_hub` named-secret instance additionally require `project.read` and `project.secret_read` (so a Hub admin or manage-only UAT can create a live policy but must supply synthetic judgments to test it). Every subcommand accepts `--json`.
 
 - `scion message-policy create [name]`: Create a policy from flags, from a YAML or JSON spec file (`-f`/`--file <path|->`, at most 64 KiB, unknown fields refused), or both (flags override the file). Requires a name, at least one `--surface`, a CEL violation rule (`--rule <cel>` or `--rule-file <path|->`, mutually exclusive; a `true` result is a violation), and `--on-failed admit|reject`. Other flags: `--description`, `--mode shadow|enforce` (Hub default `shadow`), `--enabled` (default `true`; pass `--enabled=false` to create disabled), repeatable `--sender-agent <uuid>` or `--all-agents`, repeatable `--recipient-kind user|conversation`, `--system-one-rule <json>` or `--system-one-rule-file <path|->` (mutually exclusive, at most 16 KiB; makes `--on-uncertain` required), `--on-uncertain admit|reject`, repeatable `--on-failed-reason REASON=OUTCOME`, and the `--reject-reason` and `--reject-remediation` templates returned with an enforced rejection (`422`). An uncovered surface returns `400 surface_not_covered`. For CEL-only policies, messages longer than 16 KiB fail with `body_truncated` (handled by `--on-failed`); policies with a `system_one_rule` pass the full body to System One, where `on_oversize` (`reject` → `input_too_large`, or `truncate`) applies.
 - `scion message-policy update <id-or-name>`: Partially update a stored policy via `PATCH` (only flags explicitly passed are sent; pass `--system-one-rule ""` to clear a System One rule). Supports `--name`, `--description`, `--mode shadow|enforce`, `--enabled=true|false` (use `--enabled=false` to disable), `--surface`, `--sender-agent`, `--all-agents`, `--recipient-kind`, `--rule` / `--rule-file`, `--system-one-rule` / `--system-one-rule-file`, `--on-uncertain`, `--on-failed`, `--on-failed-reason`, `--reject-reason`, `--reject-remediation`, `--expected-revision`, and `-f`/`--file`.
@@ -773,6 +773,35 @@ scion inbox --previews 5
 scion inbox --previews 0
 scion inbox --chat mentions
 scion inbox --format json
+```
+
+### `scion usage`
+
+Shows Track 1 LLM token and API call usage from the Hub usage ledger (`GET /api/v1/projects/{id}/usage`, `/api/v1/me/usage`, `/api/v1/users/{id}/usage`, `/api/v1/usage`, and `/api/v1/agents/{id}/usage`). Requires the `tokenomics.usage_ledger` [experiment](/scion/reference/experiments/) on the Hub. Available in both human and agent CLI modes and on Windows.
+
+By default, `scion usage` scopes to the current project when invoked inside one (or the calling agent's own project in agent mode), and otherwise to your own user usage (`/api/v1/me/usage`). Human output renders a summary header (`Scope`, `Window`, `Status` including `measurement_status` and any `stale` / `unmeasured` agent counts) followed by aligned totals and breakdown tables. Unknown token buckets are shown as `—` (never `0`); partial values (buckets with mixed known and unknown events) are marked with `*`; saturated `int64` sums are marked with `+`.
+
+**Usage:** `scion usage [flags]`
+
+- **Flags:**
+    - `--project <slug|id>` (global flag): Query usage for a specific project. Mutually exclusive with `--user`, `--agent`, and `--all`.
+    - `--user <id|me>`: Query usage for a user (`me` for your own usage, or a user ID if you have `hub.metrics.read`). Human mode only.
+    - `--agent <id|slug>`: Query usage for a single agent (always returns a `by_model` breakdown; `--by` is not supported with `--agent`).
+    - `--all`: Query hub-wide usage across all projects (requires `hub.metrics.read`). Human mode only.
+    - `--since <window>`: Window start as RFC 3339 timestamp, `YYYY-MM-DD`, or relative duration (for example `7d`, `24h`). Defaults to 30 days.
+    - `--until <ts|date>`: Window end as RFC 3339 timestamp or `YYYY-MM-DD`. Defaults to now (DB clock).
+    - `--by <dims>`: Comma-separated grouping dimensions (`model`, `harness`, `agent`, `user`, `project`, `day`, `hour`). `day` and `hour` are mutually exclusive; `hour` requires the window to fall within hourly rollup coverage and retention.
+    - `--limit <n>`: Maximum number of grouped rows returned (`1` to `500`).
+    - `--json` (or global `--format json`): Print the raw Hub API JSON response verbatim.
+
+```bash
+scion usage
+scion usage --since 7d --by model
+scion usage --project my-proj --since 24h --by hour
+scion usage --user me --since 30d --by project,day
+scion usage --agent my-agent --since 7d
+scion usage --all --since 7d --by project
+scion usage --since 7d --json
 ```
 
 ### `scion logs`
