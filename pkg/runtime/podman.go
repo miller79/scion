@@ -402,8 +402,6 @@ func (r *PodmanRuntime) Run(ctx context.Context, config RunConfig) (string, erro
 
 	newArgs = appendSharedDirGroupArgs(newArgs, config, podmanRuntimeName(r.Rootless), !r.Rootless)
 
-	newArgs = appendSandboxRuntimeArgs(newArgs, config)
-
 	newArgs = append(newArgs, args[1:]...)
 
 	// Secret values go to podman through its environment, not argv
@@ -421,7 +419,7 @@ func (r *PodmanRuntime) Run(ctx context.Context, config RunConfig) (string, erro
 	if err := hooks.checkpoint(ctx, CheckpointStepLaunching); err != nil {
 		return "", err
 	}
-	if runtimeManagedInterception(config) {
+	if config.MetadataInterception {
 		checkImageNetnsSetupSupport(ctx, r.Command, config.Image)
 	}
 	// Rootless podman that starts its user namespace's pause process
@@ -471,7 +469,7 @@ func (r *PodmanRuntime) Run(ctx context.Context, config RunConfig) (string, erro
 		}
 		return "", err
 	}
-	if runtimeManagedInterception(config) {
+	if config.MetadataInterception {
 		if err := runNetnsSetup(ctx, r.Command, id, config); err != nil {
 			removeNetnsSetupContainers(ctx, r.Command, id)
 			if rmErr := removeCreatedContainer(r.Command, id); rmErr != nil {

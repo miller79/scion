@@ -25,10 +25,12 @@ import (
 // runtime name, decides which extra container flags Scion adds: those flags
 // are only safe under the matching sandbox.
 const (
-	// SandboxKindGVisor is gVisor (runsc). The agent gets every capability,
-	// an unconfined seccomp profile at the engine level and an executable
-	// tmpfs for /var/lib/docker; all of that exists only inside gVisor's
-	// user-space kernel, which applies its own seccomp filter on the host.
+	// SandboxKindGVisor is gVisor (runsc). The agent gets the capabilities an
+	// inner Docker engine needs, an unconfined seccomp profile at the engine
+	// level and an executable tmpfs for /var/lib/docker; all of that exists
+	// only inside gVisor's user-space kernel, which applies its own seccomp
+	// filter on the host. The runtime's binary must be runsc: Scion checks
+	// the engine's runtime table before every start.
 	SandboxKindGVisor = "gvisor"
 	// SandboxKindSysbox is Sysbox (sysbox-runc). It needs no extra flags.
 	SandboxKindSysbox = "sysbox"

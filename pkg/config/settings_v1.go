@@ -4087,9 +4087,9 @@ type V1ProfileConfig struct {
 	// V1RuntimeConfig.KubernetesBlockServiceAccount.
 	KubernetesBlockServiceAccount string `json:"kubernetes_block_service_account,omitempty" yaml:"kubernetes_block_service_account,omitempty" koanf:"kubernetes_block_service_account"`
 	// SandboxRuntime runs agents under this profile with a sandboxing OCI
-	// runtime registered with the local Docker or Podman engine (for example
-	// gVisor's runsc), so the agent can run its own container engine without
-	// host access. Docker and Podman only; read from the global settings file
+	// runtime registered with the local Docker engine (for example gVisor's
+	// runsc), so the agent can run its own container engine without host
+	// access. Docker only; read from the global settings file
 	// only (LoadProfileSandboxRuntime) and gated by the
 	// agent_policy.sandbox_runtime experiment. See V1SandboxRuntime.
 	SandboxRuntime *V1SandboxRuntime `json:"sandbox_runtime,omitempty" yaml:"sandbox_runtime,omitempty" koanf:"sandbox_runtime"`

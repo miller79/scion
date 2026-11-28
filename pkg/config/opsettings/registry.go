@@ -865,7 +865,7 @@ func compileSchemas() {
 					"tolerations":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}},
 					"runtime_class_name": map[string]interface{}{"type": "string"},
 
-					// Docker/Podman sandbox runtime (miller79/scion#37); shape
+					// Docker sandbox runtime (miller79/scion#37); shape
 					// only. The broker reads it from its own global settings
 					// file only (config.LoadProfileSandboxRuntime), so a value
 					// stored here has no effect on agent starts.

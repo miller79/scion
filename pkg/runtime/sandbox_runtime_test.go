@@ -15,7 +15,9 @@
 package runtime
 
 import (
+	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/GoogleCloudPlatform/scion/pkg/config"
@@ -32,11 +34,11 @@ func TestAppendSandboxRuntimeArgs(t *testing.T) {
 		{"none", nil, []string{"run", "-t"}},
 		{"empty name", &config.V1SandboxRuntime{Kind: config.SandboxKindGVisor}, []string{"run", "-t"}},
 		{"gvisor default size", &config.V1SandboxRuntime{Name: "runsc-dind", Kind: config.SandboxKindGVisor},
-			[]string{"run", "-t", "--runtime", "runsc-dind", "--cap-add", "AUDIT_WRITE", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER", "--cap-add", "FSETID", "--cap-add", "KILL", "--cap-add", "MKNOD", "--cap-add", "NET_ADMIN", "--cap-add", "NET_BIND_SERVICE", "--cap-add", "NET_RAW", "--cap-add", "SETFCAP", "--cap-add", "SETGID", "--cap-add", "SETPCAP", "--cap-add", "SETUID", "--cap-add", "SYS_ADMIN", "--cap-add", "SYS_CHROOT", "--security-opt", "seccomp=unconfined", "--tmpfs", "/var/lib/docker:rw,exec,size=6g"}},
+			[]string{"run", "-t", "--runtime", "runsc-dind", "-e", "SCION_SANDBOX_KIND=gvisor", "--cap-add", "AUDIT_WRITE", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER", "--cap-add", "FSETID", "--cap-add", "KILL", "--cap-add", "MKNOD", "--cap-add", "NET_ADMIN", "--cap-add", "NET_BIND_SERVICE", "--cap-add", "NET_RAW", "--cap-add", "SETFCAP", "--cap-add", "SETGID", "--cap-add", "SETPCAP", "--cap-add", "SETUID", "--cap-add", "SYS_ADMIN", "--cap-add", "SYS_CHROOT", "--security-opt", "seccomp=unconfined", "--tmpfs", "/var/lib/docker:rw,exec,size=6g"}},
 		{"gvisor size", &config.V1SandboxRuntime{Name: "runsc", Kind: config.SandboxKindGVisor, DockerStorageSize: "2g"},
-			[]string{"run", "-t", "--runtime", "runsc", "--cap-add", "AUDIT_WRITE", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER", "--cap-add", "FSETID", "--cap-add", "KILL", "--cap-add", "MKNOD", "--cap-add", "NET_ADMIN", "--cap-add", "NET_BIND_SERVICE", "--cap-add", "NET_RAW", "--cap-add", "SETFCAP", "--cap-add", "SETGID", "--cap-add", "SETPCAP", "--cap-add", "SETUID", "--cap-add", "SYS_ADMIN", "--cap-add", "SYS_CHROOT", "--security-opt", "seccomp=unconfined", "--tmpfs", "/var/lib/docker:rw,exec,size=2g"}},
+			[]string{"run", "-t", "--runtime", "runsc", "-e", "SCION_SANDBOX_KIND=gvisor", "--cap-add", "AUDIT_WRITE", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER", "--cap-add", "FSETID", "--cap-add", "KILL", "--cap-add", "MKNOD", "--cap-add", "NET_ADMIN", "--cap-add", "NET_BIND_SERVICE", "--cap-add", "NET_RAW", "--cap-add", "SETFCAP", "--cap-add", "SETGID", "--cap-add", "SETPCAP", "--cap-add", "SETUID", "--cap-add", "SYS_ADMIN", "--cap-add", "SYS_CHROOT", "--security-opt", "seccomp=unconfined", "--tmpfs", "/var/lib/docker:rw,exec,size=2g"}},
 		{"sysbox runtime only", &config.V1SandboxRuntime{Name: "sysbox-runc", Kind: config.SandboxKindSysbox},
-			[]string{"run", "-t", "--runtime", "sysbox-runc"}},
+			[]string{"run", "-t", "--runtime", "sysbox-runc", "-e", "SCION_SANDBOX_KIND=sysbox"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -119,5 +121,65 @@ func TestBuildCommonRunArgs_NetRawDropKeptExceptUnderGVisor(t *testing.T) {
 	}
 	if !hasNetRawDrop(args) {
 		t.Fatalf("sysbox sandbox: want --cap-drop NET_RAW in %q", args)
+	}
+}
+
+func TestCheckSandboxRuntimeInfo(t *testing.T) {
+	info := `{"runc":{"path":"runc"},"runsc-dind":{"path":"/usr/local/bin/runsc","runtimeArgs":["--net-raw"]},` +
+		`"shim-runsc":{"runtimeType":"io.containerd.runsc.v1"},"sneaky":{"path":"/usr/bin/runc"},` +
+		`"sysbox-runc":{"path":"/usr/bin/sysbox-runc"},"youki":{"path":"/usr/bin/youki"}}`
+	gv := func(n string) *config.V1SandboxRuntime {
+		return &config.V1SandboxRuntime{Name: n, Kind: config.SandboxKindGVisor}
+	}
+	sb := func(n string) *config.V1SandboxRuntime {
+		return &config.V1SandboxRuntime{Name: n, Kind: config.SandboxKindSysbox}
+	}
+	tests := []struct {
+		name    string
+		info    string
+		s       *config.V1SandboxRuntime
+		wantErr string
+	}{
+		{"runsc path", info, gv("runsc-dind"), ""},
+		{"runsc shim type", info, gv("shim-runsc"), ""},
+		{"sysbox path", info, sb("sysbox-runc"), ""},
+		{"alias to runc refused", info, gv("sneaky"), "is not a gvisor runtime"},
+		{"youki as gvisor refused", info, gv("youki"), "is not a gvisor runtime"},
+		{"sysbox named as gvisor refused", info, gv("sysbox-runc"), "is not a gvisor runtime"},
+		{"runsc named as sysbox refused", info, sb("runsc-dind"), "is not a sysbox runtime"},
+		{"unregistered", info, gv("runsc"), "not registered"},
+		{"bad json", "not json", gv("runsc-dind"), "cannot read"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkSandboxRuntimeInfo(tt.info, tt.s)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("checkSandboxRuntimeInfo() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("checkSandboxRuntimeInfo() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestInitFirewallRequested(t *testing.T) {
+	for env, want := range map[string]bool{"SCION_INIT_FIREWALL=true": true, "SCION_INIT_FIREWALL=false": false, "OTHER=1": false} {
+		if got := InitFirewallRequested(RunConfig{Env: []string{env}}); got != want {
+			t.Errorf("InitFirewallRequested(%q) = %v, want %v", env, got, want)
+		}
+	}
+}
+
+func TestCheckSandboxRuntimeNonDocker(t *testing.T) {
+	s := &config.V1SandboxRuntime{Name: "runsc", Kind: config.SandboxKindGVisor}
+	if err := CheckSandboxRuntime(context.Background(), &PodmanRuntime{}, s); err == nil || !strings.Contains(err.Error(), "only the Docker runtime") {
+		t.Fatalf("CheckSandboxRuntime(podman) = %v, want Docker-only refusal", err)
+	}
+	if err := CheckSandboxRuntime(context.Background(), &PodmanRuntime{}, nil); err != nil {
+		t.Fatalf("CheckSandboxRuntime(nil sandbox) = %v, want nil", err)
 	}
 }

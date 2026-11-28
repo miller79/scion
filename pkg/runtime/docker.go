@@ -62,6 +62,9 @@ func (r *DockerRuntime) Run(ctx context.Context, config RunConfig) (string, erro
 	if err := checkFirewallWithoutMetadataInterception(config); err != nil {
 		return "", err
 	}
+	if err := verifySandboxRuntime(ctx, r.Command, config); err != nil {
+		return "", err
+	}
 	if err := prepareContainerSecretEnv(&config); err != nil {
 		return "", err
 	}

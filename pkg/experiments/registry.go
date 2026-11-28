@@ -221,8 +221,8 @@ const AgentPolicyLimitCeilings = "agent_policy.limit_ceilings"
 // survive broker restarts and flag toggles.
 const AgentPolicyDurationBackstop = "agent_policy.duration_backstop"
 
-// AgentSandboxRuntime gates operator-declared sandbox runtimes on Docker and
-// Podman profiles (profiles.<name>.sandbox_runtime in the broker's global
+// AgentSandboxRuntime gates operator-declared sandbox runtimes on Docker
+// profiles (profiles.<name>.sandbox_runtime in the broker's global
 // settings; miller79/scion#37). When on, an agent started under such a profile
 // runs with `--runtime <name>` and the flags that sandbox needs for an inner
 // container engine (for example Docker inside gVisor). While off, the profile

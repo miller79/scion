@@ -1925,6 +1925,10 @@ authDone:
 			return nil, refuseAgentPolicy(opts.Name, NewAgentPolicyError("profile", "profiles."+profileName+".sandbox_runtime",
 				"host networking is forced (%s) but a gVisor sandbox cannot use host networking", runtime.ForceHostNetworkEnvVar))
 		}
+		if hubEndpointIsLoopback(opts.Env) {
+			return nil, refuseAgentPolicy(opts.Name, NewAgentPolicyError("SCION_HUB_ENDPOINT", "profiles."+profileName+".sandbox_runtime",
+				"the hub endpoint is a loopback address, which a gVisor sandbox cannot reach; use host.docker.internal or the host's address"))
+		}
 	} else {
 		networkMode = runtime.ResolveHostNetworking(m.Runtime.Name(), opts.Env)
 	}
@@ -3254,6 +3258,14 @@ authDone:
 	// After the policy: max_resources may have filled the memory limit.
 	if err := checkSandboxMemory(opts.Name, runCfg.Sandbox, runCfg.Resources); err != nil {
 		return nil, err
+	}
+	if err := checkSandboxInitFirewall(opts.Name, profileName, &runCfg); err != nil {
+		return nil, err
+	}
+	if runCfg.Sandbox != nil {
+		if err := runtime.CheckSandboxRuntime(ctx, m.Runtime, runCfg.Sandbox); err != nil {
+			return nil, refuseAgentPolicy(opts.Name, NewAgentPolicyError("profile", "profiles."+profileName+".sandbox_runtime", "%v", err))
+		}
 	}
 	slog.Info("agent start: pre-runtime provisioning complete", "agent", opts.Name,
 		"elapsed_ms", time.Since(startEntry).Milliseconds())
