@@ -112,7 +112,7 @@ func (r *DockerRuntime) Run(ctx context.Context, config RunConfig) (string, erro
 	if err := hooks.checkpoint(ctx, CheckpointStepLaunching); err != nil {
 		return "", err
 	}
-	if config.MetadataInterception {
+	if runtimeManagedInterception(config) {
 		checkImageNetnsSetupSupport(ctx, r.Command, config.Image)
 	}
 	out, err := runSimpleCommand(ctx, r.Command, newArgs...)
@@ -137,7 +137,7 @@ func (r *DockerRuntime) Run(ctx context.Context, config RunConfig) (string, erro
 	// Run returns the whole trimmed output, as before; only the launch
 	// handle is restricted to a well-formed container ID line.
 	id := strings.TrimSpace(out)
-	if config.MetadataInterception {
+	if runtimeManagedInterception(config) {
 		if err := runNetnsSetup(ctx, r.Command, id, config); err != nil {
 			removeNetnsSetupContainers(ctx, r.Command, id)
 			if rmErr := removeCreatedContainer(r.Command, id); rmErr != nil {

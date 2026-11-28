@@ -48,6 +48,47 @@ func TestAppendSandboxRuntimeArgs(t *testing.T) {
 	}
 }
 
+func TestBuildCommonRunArgs_MetadataInterceptionInSandboxUnderGVisor(t *testing.T) {
+	hasEnv := func(args []string, kv string) bool {
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == "-e" && args[i+1] == kv {
+				return true
+			}
+		}
+		return false
+	}
+	required := MetadataInterceptionEnvVar + "=" + MetadataInterceptionRequired
+	runtimeSource := MetadataInterceptionSourceEnvVar + "=" + MetadataInterceptionSourceRuntime
+	cfg := RunConfig{Name: "a", Image: "img", RuntimeName: "docker", UnixUsername: "scion", Harness: &harness.Generic{}, MetadataInterception: true}
+
+	args, err := buildCommonRunArgs(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasEnv(args, required) || !hasEnv(args, runtimeSource) || !runtimeManagedInterception(cfg) {
+		t.Fatalf("default runtime: want runtime-managed interception (%s, %s) in %q", required, runtimeSource, args)
+	}
+
+	cfg.Sandbox = &config.V1SandboxRuntime{Name: "runsc", Kind: config.SandboxKindGVisor}
+	if args, err = buildCommonRunArgs(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !hasEnv(args, required) {
+		t.Fatalf("gVisor: interception must stay required (%s) in %q", required, args)
+	}
+	if hasEnv(args, runtimeSource) || runtimeManagedInterception(cfg) {
+		t.Fatalf("gVisor: want in-sandbox interception (no %s, no setup container) in %q", runtimeSource, args)
+	}
+
+	cfg.Sandbox = &config.V1SandboxRuntime{Name: "sysbox-runc", Kind: config.SandboxKindSysbox}
+	if args, err = buildCommonRunArgs(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !hasEnv(args, runtimeSource) || !runtimeManagedInterception(cfg) {
+		t.Fatalf("sysbox: want runtime-managed interception in %q", args)
+	}
+}
+
 func TestBuildCommonRunArgs_NetRawDropKeptExceptUnderGVisor(t *testing.T) {
 	hasNetRawDrop := func(args []string) bool {
 		for i := 0; i+1 < len(args); i++ {

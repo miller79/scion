@@ -1064,9 +1064,20 @@ func buildCommonRunArgs(config RunConfig) ([]string, error) {
 	// config.MetadataInterception, never from config.Env, a secret or the
 	// template fallback. The Apple runtime does not run the setup container,
 	// so it never reports interception as required.
+	//
+	// A gVisor sandbox is the exception: gVisor runs its own network stack,
+	// so rules the setup container installs in the container's host-side
+	// network namespace never see the agent's traffic. There the runtime
+	// marker is left out and the setup container is not run
+	// (runtimeManagedInterception), so sciontool installs the redirect inside
+	// the sandbox with its in-container path: it runs as root with the
+	// sandbox-only CAP_NET_ADMIN, and still refuses the start if the redirect
+	// cannot be verified.
 	if config.MetadataInterception && config.RuntimeName != appleContainerRuntimeName {
 		addTrackedArgEnv(MetadataInterceptionEnvVar+"="+MetadataInterceptionRequired, false)
-		addTrackedArgEnv(MetadataInterceptionSourceEnvVar+"="+MetadataInterceptionSourceRuntime, false)
+		if runtimeManagedInterception(config) {
+			addTrackedArgEnv(MetadataInterceptionSourceEnvVar+"="+MetadataInterceptionSourceRuntime, false)
+		}
 	} else {
 		addTrackedArgEnv(MetadataInterceptionEnvVar+"="+MetadataInterceptionOff, false)
 	}

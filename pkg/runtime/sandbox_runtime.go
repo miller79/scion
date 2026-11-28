@@ -24,6 +24,16 @@ func sandboxIsGVisor(cfg RunConfig) bool {
 	return cfg.Sandbox != nil && cfg.Sandbox.Kind == config.SandboxKindGVisor
 }
 
+// runtimeManagedInterception reports whether the runtime installs the
+// metadata redirect from a setup container sharing the agent's network
+// namespace. It does not under gVisor, whose own network stack never sees
+// those host-side rules; sciontool installs the redirect inside the sandbox
+// instead (it needs iptables-legacy in the image: gVisor implements the
+// legacy xtables interface, not nftables).
+func runtimeManagedInterception(cfg RunConfig) bool {
+	return cfg.MetadataInterception && !sandboxIsGVisor(cfg)
+}
+
 // appendSandboxRuntimeArgs adds the operator-declared sandbox runtime and the
 // flags its kind needs for an inner container engine. The flags are added
 // only together with --runtime and only for the matching kind: under the
