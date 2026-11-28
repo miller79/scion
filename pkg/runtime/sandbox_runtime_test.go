@@ -32,9 +32,9 @@ func TestAppendSandboxRuntimeArgs(t *testing.T) {
 		{"none", nil, []string{"run", "-t"}},
 		{"empty name", &config.V1SandboxRuntime{Kind: config.SandboxKindGVisor}, []string{"run", "-t"}},
 		{"gvisor default size", &config.V1SandboxRuntime{Name: "runsc-dind", Kind: config.SandboxKindGVisor},
-			[]string{"run", "-t", "--runtime", "runsc-dind", "--cap-add", "ALL", "--security-opt", "seccomp=unconfined", "--tmpfs", "/var/lib/docker:rw,exec,size=6g"}},
+			[]string{"run", "-t", "--runtime", "runsc-dind", "--cap-add", "AUDIT_WRITE", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER", "--cap-add", "FSETID", "--cap-add", "KILL", "--cap-add", "MKNOD", "--cap-add", "NET_ADMIN", "--cap-add", "NET_BIND_SERVICE", "--cap-add", "NET_RAW", "--cap-add", "SETFCAP", "--cap-add", "SETGID", "--cap-add", "SETPCAP", "--cap-add", "SETUID", "--cap-add", "SYS_ADMIN", "--cap-add", "SYS_CHROOT", "--security-opt", "seccomp=unconfined", "--tmpfs", "/var/lib/docker:rw,exec,size=6g"}},
 		{"gvisor size", &config.V1SandboxRuntime{Name: "runsc", Kind: config.SandboxKindGVisor, DockerStorageSize: "2g"},
-			[]string{"run", "-t", "--runtime", "runsc", "--cap-add", "ALL", "--security-opt", "seccomp=unconfined", "--tmpfs", "/var/lib/docker:rw,exec,size=2g"}},
+			[]string{"run", "-t", "--runtime", "runsc", "--cap-add", "AUDIT_WRITE", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER", "--cap-add", "FSETID", "--cap-add", "KILL", "--cap-add", "MKNOD", "--cap-add", "NET_ADMIN", "--cap-add", "NET_BIND_SERVICE", "--cap-add", "NET_RAW", "--cap-add", "SETFCAP", "--cap-add", "SETGID", "--cap-add", "SETPCAP", "--cap-add", "SETUID", "--cap-add", "SYS_ADMIN", "--cap-add", "SYS_CHROOT", "--security-opt", "seccomp=unconfined", "--tmpfs", "/var/lib/docker:rw,exec,size=2g"}},
 		{"sysbox runtime only", &config.V1SandboxRuntime{Name: "sysbox-runc", Kind: config.SandboxKindSysbox},
 			[]string{"run", "-t", "--runtime", "sysbox-runc"}},
 	}

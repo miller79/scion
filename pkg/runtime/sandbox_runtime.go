@@ -19,6 +19,17 @@ import "github.com/GoogleCloudPlatform/scion/pkg/config"
 // sandboxDockerDir is where an inner Docker engine keeps its state.
 const sandboxDockerDir = "/var/lib/docker"
 
+// gvisorInnerEngineCaps is the capability set an inner Docker engine needs
+// under gVisor: the list from gVisor's Docker-in-gVisor tutorial, without
+// SYS_PTRACE (debuggers only). These are granted inside gVisor's user-space
+// kernel only, never on the host, and are only ever added together with the
+// sandbox runtime.
+var gvisorInnerEngineCaps = []string{
+	"AUDIT_WRITE", "CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "MKNOD",
+	"NET_ADMIN", "NET_BIND_SERVICE", "NET_RAW", "SETFCAP", "SETGID", "SETPCAP",
+	"SETUID", "SYS_ADMIN", "SYS_CHROOT",
+}
+
 // sandboxIsGVisor reports whether the run uses a gVisor sandbox runtime.
 func sandboxIsGVisor(cfg RunConfig) bool {
 	return cfg.Sandbox != nil && cfg.Sandbox.Kind == config.SandboxKindGVisor
@@ -39,11 +50,12 @@ func runtimeManagedInterception(cfg RunConfig) bool {
 // only together with --runtime and only for the matching kind: under the
 // default runtime they would give the agent host-level privileges.
 //
-// gVisor: every capability and an unconfined engine-level seccomp profile
-// (both confined to gVisor's user-space kernel, which installs its own
-// seccomp filter on the host), plus an executable tmpfs for /var/lib/docker
-// (Docker's default --tmpfs is noexec, which fails every inner container).
-// Sysbox needs nothing beyond --runtime.
+// gVisor: the inner-engine capabilities (gvisorInnerEngineCaps) and an
+// unconfined engine-level seccomp profile (both confined to gVisor's
+// user-space kernel, which installs its own seccomp filter on the host), plus
+// an executable tmpfs for /var/lib/docker (Docker's default --tmpfs is
+// noexec, which fails every inner container). Sysbox needs nothing beyond
+// --runtime.
 func appendSandboxRuntimeArgs(args []string, cfg RunConfig) []string {
 	s := cfg.Sandbox
 	if s == nil || s.Name == "" {
@@ -51,8 +63,10 @@ func appendSandboxRuntimeArgs(args []string, cfg RunConfig) []string {
 	}
 	args = append(args, "--runtime", s.Name)
 	if s.Kind == config.SandboxKindGVisor {
+		for _, c := range gvisorInnerEngineCaps {
+			args = append(args, "--cap-add", c)
+		}
 		args = append(args,
-			"--cap-add", "ALL",
 			"--security-opt", "seccomp=unconfined",
 			"--tmpfs", sandboxDockerDir+":rw,exec,size="+s.StorageSize(),
 		)

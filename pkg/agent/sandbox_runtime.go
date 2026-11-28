@@ -21,7 +21,43 @@ import (
 	"github.com/GoogleCloudPlatform/scion/pkg/api"
 	"github.com/GoogleCloudPlatform/scion/pkg/config"
 	"github.com/GoogleCloudPlatform/scion/pkg/experiments"
+	"github.com/GoogleCloudPlatform/scion/pkg/util"
 )
+
+// sandboxWorkloadHeadroom is the memory a gVisor agent should have beyond its
+// /var/lib/docker tmpfs for the harness, build tools and inner containers.
+const sandboxWorkloadHeadroom = int64(2) << 30
+
+// checkSandboxMemory checks a gVisor agent's final memory limit against its
+// /var/lib/docker tmpfs, which lives in memory and counts against the limit:
+// a limit at or below the tmpfs size is refused (filling the image store
+// would OOM-kill the agent), a limit with less than sandboxWorkloadHeadroom
+// beyond it, or no limit at all, is logged.
+func checkSandboxMemory(agentName string, s *config.V1SandboxRuntime, res *api.ResourceSpec) error {
+	if s == nil || s.Kind != config.SandboxKindGVisor {
+		return nil
+	}
+	tmpfs := s.StorageSizeBytes()
+	if res == nil || res.Limits.Memory == "" {
+		slog.Warn("gVisor sandbox has no memory limit; its in-memory Docker image store and the workload are unbounded",
+			"agent", agentName, "docker_storage_size", s.StorageSize())
+		return nil
+	}
+	mem, err := util.ParseMemory(res.Limits.Memory)
+	if err != nil {
+		return nil // the runtime reports the invalid limit
+	}
+	if mem <= tmpfs {
+		return refuseAgentPolicy(agentName, NewAgentPolicyError("resources.limits.memory", "sandbox_runtime.docker_storage_size",
+			"the memory limit %s does not exceed the sandbox's in-memory Docker storage (%s); raise the limit or lower docker_storage_size",
+			res.Limits.Memory, s.StorageSize()))
+	}
+	if mem-tmpfs < sandboxWorkloadHeadroom {
+		slog.Warn("gVisor sandbox leaves less than 2 GiB of memory beyond its in-memory Docker storage",
+			"agent", agentName, "memory_limit", res.Limits.Memory, "docker_storage_size", s.StorageSize())
+	}
+	return nil
+}
 
 // loadProfileSandboxRuntime is a seam for tests.
 var loadProfileSandboxRuntime = config.LoadProfileSandboxRuntime

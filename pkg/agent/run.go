@@ -3251,6 +3251,10 @@ authDone:
 	if err := enforceAgentPolicy(agentPolicy, opts.Name, m.Runtime.Name(), &runCfg); err != nil {
 		return nil, err
 	}
+	// After the policy: max_resources may have filled the memory limit.
+	if err := checkSandboxMemory(opts.Name, runCfg.Sandbox, runCfg.Resources); err != nil {
+		return nil, err
+	}
 	slog.Info("agent start: pre-runtime provisioning complete", "agent", opts.Name,
 		"elapsed_ms", time.Since(startEntry).Milliseconds())
 	// Record the phase, runtime and profile before the container starts

@@ -125,3 +125,12 @@ profiles:
 		t.Fatalf("LoadProfileSandboxRuntime(build) = %+v, %v; want nil, nil", got, err)
 	}
 }
+
+func TestSandboxRuntimeStorageSizeBytes(t *testing.T) {
+	for in, want := range map[string]int64{"": 6 << 30, "6g": 6 << 30, "512m": 512 << 20, "100k": 100 << 10, "bad": 0} {
+		s := &V1SandboxRuntime{Name: "runsc", Kind: SandboxKindGVisor, DockerStorageSize: in}
+		if got := s.StorageSizeBytes(); got != want {
+			t.Errorf("StorageSizeBytes(%q) = %d, want %d", in, got, want)
+		}
+	}
+}

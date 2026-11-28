@@ -17,6 +17,7 @@ package config
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -90,6 +91,28 @@ func (s *V1SandboxRuntime) StorageSize() string {
 		return DefaultSandboxDockerStorageSize
 	}
 	return s.DockerStorageSize
+}
+
+// StorageSizeBytes returns the gVisor tmpfs size in bytes, as Docker reads a
+// --tmpfs size= value (k, m and g are powers of 1024). It returns 0 for a
+// value Validate refuses.
+func (s *V1SandboxRuntime) StorageSizeBytes() int64 {
+	v := s.StorageSize()
+	if !sandboxTmpfsSizeRE.MatchString(v) {
+		return 0
+	}
+	n, err := strconv.ParseInt(v[:len(v)-1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	switch v[len(v)-1] {
+	case 'k':
+		return n << 10
+	case 'm':
+		return n << 20
+	default:
+		return n << 30
+	}
 }
 
 // LoadProfileSandboxRuntime returns the sandbox_runtime of the named profile
